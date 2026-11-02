@@ -1,0 +1,18 @@
+# Один шаблон на всех ботов сервера: tg_to_max@ИМЯ работает в папке /root/bots/ИМЯ.
+# Каждый бот круглосуточно, сам перезапускается после сбоя и перезагрузки.
+[Unit]
+Description=TG to MAX bot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/bots/%i
+ExecStart=/root/bots/venv/bin/python /root/bots/tg_to_max.py
+Restart=always
+RestartSec=10
+StandardInput=null
+Environment=PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 TG_MAX_NO_SEARCH=1
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

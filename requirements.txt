@@ -1,0 +1,6 @@
+telethon==1.45.0
+requests
+Pillow
+python-dotenv
+yt-dlp[default,curl-cffi]
+pycryptodomex
