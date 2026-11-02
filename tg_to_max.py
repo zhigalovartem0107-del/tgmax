@@ -27,6 +27,9 @@ import types
 from collections import Counter, deque
 from difflib import SequenceMatcher
 
+for _k in [k for k in sys.modules if k == "reloader" or k.startswith("reloader.")]:
+    del sys.modules[_k]                   # каждая загрузка файла — свой, свежий пакет reloader
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests
 import urllib3
 from requests.adapters import HTTPAdapter
@@ -74,69 +77,8 @@ LIMIT_ADMINS = 3
 for _stream in (sys.stdout, sys.stderr):              # логи хостинга видны сразу, а не когда наберётся буфер
     with contextlib.suppress(Exception):
         _stream.reconfigure(line_buffering=True)
-LOG_FILE = "bot.log"
-JOURNAL = deque(maxlen=300)          # что бот делал с постами — для команды /log и кнопки «Журнал»
-
-
-def _log_line(line):
-    try:
-        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
-            os.replace(LOG_FILE, LOG_FILE + ".1")
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError:
-        pass
-
-
-def _quiet_unraisable(arg):
-    """Telethon при обрыве связи шлёт «Exception ignored … _recv_loop … GeneratorExit» — это не ошибка бота.
-    Такие строки пишем только в bot.log, в консоль хостинга не сыплем."""
-    exc = getattr(arg, "exc_value", None)
-    if isinstance(exc, (GeneratorExit, asyncio.CancelledError)) or "telethon" in repr(getattr(arg, "object", "")):
-        _log_line(time.strftime("%H:%M:%S") + f" (тихо) {type(exc).__name__}: {getattr(arg, 'object', '')!r}"[:300])
-        return
-    sys.__unraisablehook__(arg)
-
-
-sys.unraisablehook = _quiet_unraisable
-
-
-def print(*args, **kwargs):          # всё, что бот пишет в консоль, дублируется в bot.log
-    line = time.strftime("%H:%M:%S") + " " + " ".join(str(a) for a in args)
-    kwargs.setdefault("flush", True)
-    builtins.print(line, **kwargs)
-    _log_line(line)
-
-
-class _JLine(str):
-    """Строка журнала + чей это кабинет (в host-режиме журнал показываем только владельцу)."""
-    owner = ""
-
-
-def journal(text):
-    """Запись о том, что произошло с постом: видна в консоли, в bot.log и в /log."""
-    print(text)
-    line = _JLine(time.strftime("%d.%m %H:%M") + " " + text)
-    t = globals().get("CUR").get() if globals().get("CUR") is not None else None
-    line.owner = getattr(t, "owner", "") or ""
-    JOURNAL.append(line)
-
-
-def log_exc(where):
-    """Ошибка с подробностями: в консоль — одна строка, полный текст — в bot.log."""
-    e = sys.exc_info()[1]
-    _log_line(time.strftime("%H:%M:%S") + f" ОШИБКА в {where}:\n" + traceback.format_exc())
-    builtins.print(time.strftime("%H:%M:%S") + f" ⚠️ {where}: {type(e).__name__}: {e} (подробности в {LOG_FILE})",
-                   flush=True)
-
-
-def _excepthook(tp, val, tb):
-    _log_line("НЕПЕРЕХВАЧЕННАЯ ОШИБКА:\n" + "".join(traceback.format_exception(tp, val, tb)))
-    builtins.print(f"⚠️ {tp.__name__}: {val} (подробности в {LOG_FILE})", flush=True)
-
-
-sys.excepthook = _excepthook
-threading.excepthook = lambda a: _excepthook(a.exc_type, a.exc_value, a.exc_traceback)
+from reloader.core import log as _log
+from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
 
 DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",
               "posted_history.json", "stash.json", "cards.json", "channel_id.txt"]
@@ -613,6 +555,7 @@ def _load_themes():
 THEMES, META = _load_themes()
 _VOID = Theme("__void__", "—", "")                    # запасная тема, чтобы cur() не падал без кабинетов
 CUR = contextvars.ContextVar("theme", default=None)   # тема, с которой сейчас работает код
+_log.CUR = CUR                         # журнал знает, чей кабинет
 
 
 def cur():
@@ -11815,6 +11758,22 @@ async def main():
         log_exc("главный цикл чтения")                   # ничто не должно останавливать поиск постов
         await asyncio.sleep(3)
 
+
+
+class _Facade(types.ModuleType):
+    """Для тестов: bot.X = подделка ставится и в модуль reloader, где X теперь живёт, — подделку видят все."""
+    def __setattr__(self, name, value):
+        for m in _MOVED:
+            if name in vars(m):
+                setattr(m, name, value)
+        super().__setattr__(name, value)
+
+
+_MOVED = [_log]                          # модули, куда уже переехал код из этого файла
+_me = next((o for o in __import__("gc").get_referrers(globals())
+            if isinstance(o, types.ModuleType) and vars(o) is globals()), None)
+if _me is not None:
+    _me.__class__ = _Facade
 
 if __name__ == "__main__":
     if "--check" in sys.argv:

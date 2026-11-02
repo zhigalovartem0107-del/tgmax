@@ -22,6 +22,7 @@ open(f"{pk}/telethon/errors.py", "w").write("class SessionPasswordNeededError(Ex
 def start(srv, workdir, **extra):
     """Как на Bothost: файл бота лежит под именем main.py, токен в BOT_TOKEN, вывод идёт в трубу (не в терминал)."""
     shutil.copy(ROOT + "/tg_to_max.py", f"{workdir}/main.py")
+    shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{workdir}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
     env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_TOKEN="TESTTOKEN",
                MAX_CHANNEL_LINK="https://max.ru/mychannel", MAX_API_URL=srv.url,
                HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9")
@@ -133,6 +134,7 @@ print("h5 ok: ссылка «@канал» и MAX_CHAT_ID из переменн�
 # 6) нет токена на хостинге — понятное сообщение и выход, без вопросов в пустую консоль
 w6 = tempfile.mkdtemp()
 shutil.copy(ROOT + "/tg_to_max.py", f"{w6}/main.py")
+shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{w6}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
 env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_ID="bot_1")
 for k in ("BOT_TOKEN", "MAX_TOKEN", "MAX_CHANNEL_LINK"):
     env.pop(k, None)
@@ -144,6 +146,7 @@ print("h6 ok: на хостинге без токена — понятная п�
 srv = FakeMax()
 w7 = tempfile.mkdtemp()
 shutil.copy(ROOT + "/tg_to_max.py", f"{w7}/main.py")
+shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{w7}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
 json.dump({"max_token": "TESTTOKEN", "max_channel_link": "https://max.ru/mychannel", "max_api": srv.url},
           open(f"{w7}/config.json", "w"))
 env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8")
@@ -160,6 +163,7 @@ print("h7 ok: main.py рядом с config.json (телефон) работае�
 for tz, expect in ((None, "MSK"), ("UTC0", "UTC")):
     w8 = tempfile.mkdtemp()
     shutil.copy(ROOT + "/tg_to_max.py", f"{w8}/main.py")
+    shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{w8}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
     open(f"{w8}/probe.py", "w").write("import runpy, sys, time\nsys.argv=['main.py','--tzprobe']\n"
         "try:\n    runpy.run_path('main.py', run_name='not_main')\nexcept SystemExit: pass\nprint('TZNAME', time.tzname[0])\n")
     env = dict(os.environ, PYTHONPATH=pk, BOT_ID="bot_1", BOT_TOKEN="T", MAX_CHANNEL_LINK="https://max.ru/x")
