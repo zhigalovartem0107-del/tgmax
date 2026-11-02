@@ -78,6 +78,8 @@ for _stream in (sys.stdout, sys.stderr):              # логи хостинг�
     with contextlib.suppress(Exception):
         _stream.reconfigure(line_buffering=True)
 from reloader.core import log as _log
+from reloader.keyboards import buttons as _buttons
+from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
 
 DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",
@@ -2600,15 +2602,6 @@ def new_host_code():
     print("=" * 40)
 
 
-def B(text, payload):
-    return {"type": "callback", "text": text, "payload": payload}
-
-
-def LB(text, url):
-    """Кнопка-ссылка (откроет страницу оплаты и т.п.)."""
-    return {"type": "link", "text": text, "url": url}
-
-
 def api_send(chat_id, text, rows=None, image_token=None):
     body = {"text": text}
     atts = []
@@ -2943,10 +2936,6 @@ def stash_fill_rows():
 
 def stash_prompt():
     return PROMPTS["stashadd"] + (f"\n\n🎭 Тема: {cur().name}" if len(THEMES) > 1 else "")
-
-
-def on_off(v):
-    return "ВКЛ ✅" if v else "ВЫКЛ ⛔"
 
 
 def fmt_iv(s):
@@ -11769,7 +11758,7 @@ class _Facade(types.ModuleType):
         super().__setattr__(name, value)
 
 
-_MOVED = [_log]                          # модули, куда уже переехал код из этого файла
+_MOVED = [_log, _buttons]                          # модули, куда уже переехал код из этого файла
 _me = next((o for o in __import__("gc").get_referrers(globals())
             if isinstance(o, types.ModuleType) and vars(o) is globals()), None)
 if _me is not None:
