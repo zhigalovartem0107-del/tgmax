@@ -18,12 +18,32 @@ def block(lines, name):
     """(начало, конец) блока def/class name верхнего уровня, вместе с декораторами (границы — по ast)."""
     import ast
     tree = ast.parse("\n".join(lines))
-    node = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                 and n.name == name), None)
+    node = next((n for n in tree.body if (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                 and n.name == name) or (isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == name for t in n.targets))), None)
     if node is None:
         sys.exit(f"не нашёл {name}")
-    start = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
+    start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]) - 1
     return start, node.end_lineno
+
+
+def undefined(text):
+    """Имена, которые модуль использует, но нигде не получает (ни def, ни import, ни присваивание, ни builtins)."""
+    import ast
+    import builtins
+    tree = ast.parse(text)
+    have = set(dir(builtins))
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            have.add(n.name)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            have |= {a.asname or a.name.split(".")[0] for a in n.names}
+        elif isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load):
+            have.add(n.id)
+        elif isinstance(n, ast.arg):
+            have.add(n.arg)
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    return sorted(used - have)
 
 
 def main(dst, doc, imports, names):
@@ -42,6 +62,9 @@ def main(dst, doc, imports, names):
     else:
         imp = "\n".join(x.strip() for x in imports.split(",") if x.strip())
         text = f'"""{doc}"""\n' + (imp + "\n" if imp else "") + "\n\n" + "\n\n\n".join(parts) + "\n"
+    missing = undefined(text)
+    if missing:
+        sys.exit(f"не переношу: в {dst} останутся неизвестные имена {missing} — добавь их в перенос")
     open(mod, "w", encoding="utf-8").write(text)
     dotted = dst[:-3].replace("/", ".")
     alias = "_" + dotted.split(".")[-1]

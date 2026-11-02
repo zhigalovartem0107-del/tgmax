@@ -45,3 +45,10 @@ def week_range(since, now):
     if a.tm_mon == b.tm_mon:
         return f"{a.tm_mday}–{b.tm_mday} {MONTHS_GEN[b.tm_mon - 1]}"
     return f"{a.tm_mday} {MONTHS_SHORT[a.tm_mon - 1]} – {b.tm_mday} {MONTHS_SHORT[b.tm_mon - 1]}"
+
+
+MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+              "ноября", "декабря"]
+
+
+MONTHS_SHORT = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]

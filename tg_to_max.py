@@ -78,6 +78,7 @@ for _stream in (sys.stdout, sys.stderr):              # логи хостинг�
     with contextlib.suppress(Exception):
         _stream.reconfigure(line_buffering=True)
 from reloader.core import log as _log
+from reloader.core.timeutil import MONTHS_GEN, MONTHS_SHORT  # noqa: E402
 from reloader.core import timeutil as _timeutil
 from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
 from reloader.keyboards import buttons as _buttons
@@ -7054,9 +7055,6 @@ def analytics_caption(name, a):
 
 
 # ---------- 📊 «Итоги недели»: один дашборд на канал (просмотры, когда выкладывать, лучшие посты) ----------
-MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
-              "ноября", "декабря"]
-MONTHS_SHORT = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
 WEEKDAYS_LOW = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
