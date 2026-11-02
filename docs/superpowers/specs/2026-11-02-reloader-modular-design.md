@@ -117,6 +117,13 @@ reloader-bot/                       # new GitHub repo
 
 About 50 modules, 100 to 600 lines each.
 
+### 5.1 Changes decided during step 0
+- The folders live inside one package, `reloader/` (`reloader/core`, `reloader/services`, `reloader/handlers`,
+  `reloader/keyboards`, `reloader/workers`, `reloader/storage`). That way generic names like `services` can't clash
+  with installed libraries, and the facade can load a fresh copy of the whole package.
+- Step 0c is dropped: the tests that load a second copy (`bot2`, `b2`) stay unchanged. Loading `tg_to_max.py` under a
+  new name imports a fresh `reloader` package, so each copy has its own state (§7.2).
+
 ## 6. Design rules
 
 ### 6.1 No behavior change in release 1
