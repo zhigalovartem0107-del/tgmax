@@ -78,6 +78,8 @@ for _stream in (sys.stdout, sys.stderr):              # логи хостинг�
     with contextlib.suppress(Exception):
         _stream.reconfigure(line_buffering=True)
 from reloader.core import log as _log
+from reloader.core import timeutil as _timeutil
+from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
 from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
@@ -1872,11 +1874,6 @@ def note_allowed(chat_id):
         print(f"Канал MAX {chat_id}: доступ есть, публикую ✅")
 
 
-def plain_snip(text, n):
-    """Начало текста для списков: без значков разметки (**, __) и переносов."""
-    return re.sub(r"[*_~`]{2,}", "", text or "(без текста)").strip()[:n].replace("\n", " ")
-
-
 # ---------- ВРЕМЯ, НОЧЬ, ОТЧЁТ ----------
 def local_hour():
     return time.localtime(time.time()).tm_hour
@@ -2940,17 +2937,6 @@ def stash_prompt():
 
 def fmt_iv(s):
     return f"{s} сек" if s < 60 else f"{s // 60} мин"
-
-
-def fmt_min(m):
-    m = int(m)
-    if m < 60:
-        return f"{m} мин"
-    return f"{m // 60} ч" + (f" {m % 60} мин" if m % 60 else "")
-
-
-def fmt_words(words):
-    return ", ".join(words) if words else "—"
 
 
 def next_pub_text():
@@ -7137,20 +7123,8 @@ def best_slots(a, n=3, prior=1):
     return [(d, h, x) for _, x, d, h in sorted(cells, reverse=True)[:n]]
 
 
-def num_sp(n):
-    """12345 -> «12 345»."""
-    return f"{int(round(n)):,}".replace(",", " ")
-
-
 def times_x(x):
     return f"{x:.1f}".replace(".", ",")
-
-
-def week_range(since, now):
-    a, b = time.localtime(since), time.localtime(now)
-    if a.tm_mon == b.tm_mon:
-        return f"{a.tm_mday}–{b.tm_mday} {MONTHS_GEN[b.tm_mon - 1]}"
-    return f"{a.tm_mday} {MONTHS_SHORT[a.tm_mon - 1]} – {b.tm_mday} {MONTHS_SHORT[b.tm_mon - 1]}"
 
 
 @functools.lru_cache(maxsize=None)
@@ -9276,15 +9250,6 @@ def client_mode(c, now=None):
     return "run" if c.get("until", 0) > (now or time.time()) else "expired"
 
 
-def fmt_date(ts):
-    return time.strftime("%d.%m.%Y", time.localtime(ts))
-
-
-def price90(p):
-    """Цена за 90 дней: как 2,5 месяца (300 -> 750)."""
-    return int(round(p * 2.5 / 10.0) * 10)
-
-
 def sub_info():
     """Подписка текущего кабинета: в host-режиме — из TENANTS, у клиента-подпроцесса — из subscription.json."""
     if HOST_MODE:
@@ -10105,13 +10070,6 @@ def my_prices():
     """(цена 30 дней, цена 90 дней) по тарифу клиента."""
     t = tariff_by_name(sub_info().get("plan") or "")
     return (t["price"], price90(t["price"])) if t else (PRICE_30, PRICE_90)
-
-
-def n_word(n, one, few, many):
-    n = abs(n) % 100
-    if 10 < n < 20:
-        return many
-    return one if n % 10 == 1 else few if 2 <= n % 10 <= 4 else many
 
 
 def free_plan_text():
@@ -11758,7 +11716,7 @@ class _Facade(types.ModuleType):
         super().__setattr__(name, value)
 
 
-_MOVED = [_log, _buttons]                          # модули, куда уже переехал код из этого файла
+_MOVED = [_log, _buttons, _timeutil]                          # модули, куда уже переехал код из этого файла
 _me = next((o for o in __import__("gc").get_referrers(globals())
             if isinstance(o, types.ModuleType) and vars(o) is globals()), None)
 if _me is not None:
