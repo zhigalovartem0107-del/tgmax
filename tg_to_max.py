@@ -78,49 +78,14 @@ for _stream in (sys.stdout, sys.stderr):              # логи хостинг�
     with contextlib.suppress(Exception):
         _stream.reconfigure(line_buffering=True)
 from reloader.core import log as _log
+from reloader.core import files as _files
+from reloader.core.files import load_json, _WRITE_LOCK, save_json, DATA_FILES, DATA_GLOBS, SKIP_DIRS, _find_sessions  # noqa: E402
 from reloader.core.timeutil import MONTHS_GEN, MONTHS_SHORT  # noqa: E402
 from reloader.core import timeutil as _timeutil
 from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
 from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
-
-DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",
-              "posted_history.json", "stash.json", "cards.json", "channel_id.txt"]
-DATA_GLOBS = ["queue_*.json", "pub_state_*.json", "stash_*.json", "last_posts_*.json", "posted_history_*.json"]
-SKIP_DIRS = {"DCIM", "Pictures", "Movies", "Music", "Podcasts", "Telegram", "WhatsApp", "Alarms",
-             "Ringtones", "Notifications", "Download.tmp", "cache", "__pycache__"}
-
-
-def _find_sessions(roots, skip, max_depth=5, max_dirs=20000, max_sec=15):
-    """Все найденные на устройстве файлы session.session (кроме папки skip), свежие первыми."""
-    found, seen, t0, visited = {}, set(), time.time(), 0
-    skip = os.path.abspath(skip)
-    for root in roots:
-        stack = [(root, 0)]
-        while stack and visited < max_dirs and time.time() - t0 < max_sec:
-            d, depth = stack.pop()
-            real = os.path.realpath(d)
-            if real in seen:
-                continue
-            seen.add(real)
-            visited += 1
-            try:
-                entries = list(os.scandir(d))
-            except OSError:
-                continue
-            for e in entries:
-                try:
-                    if e.is_file() and e.name == "session.session":
-                        if os.path.abspath(d) != skip and os.path.getsize(e.path) > 0:
-                            found[os.path.abspath(d)] = e.stat().st_mtime
-                    elif (e.is_dir(follow_symlinks=False) and depth < max_depth
-                          and not e.name.startswith(".") and e.name not in SKIP_DIRS):
-                        stack.append((e.path, depth + 1))
-                except OSError:
-                    continue
-    return [d for d, _ in sorted(found.items(), key=lambda kv: -kv[1])]
-
 
 # Ключи официального Telegram Desktop: вход без my.telegram.org. Владелец выбрал это сам, на свой риск —
 # Telegram может ограничить аккаунт за чужие ключи. Свои ключи — кнопка «🔧 Свои ключи».
@@ -451,24 +416,6 @@ if __name__ == "__main__":
     setup_data_dir()                      # до загрузки настроек: подтянуть рабочий вход и данные
 
 # ---------- файлы состояния и настройки ----------
-def load_json(path, default):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-_WRITE_LOCK = threading.Lock()
-
-
-def save_json(path, data):
-    """Атомарная запись: если процесс убили посередине, файл не повреждается."""
-    with _WRITE_LOCK:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
 
 
 if CLIENT_MODE:                           # бот клиента начинает с чистого листа: свои каналы, своя подпись
@@ -11714,7 +11661,7 @@ class _Facade(types.ModuleType):
         super().__setattr__(name, value)
 
 
-_MOVED = [_log, _buttons, _timeutil]                          # модули, куда уже переехал код из этого файла
+_MOVED = [_log, _buttons, _timeutil, _files]                          # модули, куда уже переехал код из этого файла
 _me = next((o for o in __import__("gc").get_referrers(globals())
             if isinstance(o, types.ModuleType) and vars(o) is globals()), None)
 if _me is not None:
