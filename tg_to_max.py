@@ -3450,8 +3450,6 @@ PROMPTS = {
                  "Пришли рекламный пост: текст и/или одну картинку."),
     "cladmark": ("Теперь маркировка по закону о рекламе. Пришли одной строкой рекламодателя и erid (токен из ОРД), "
                  "например:\nООО «Ромашка», ИНН 7700000000, erid: 2VtzqwXXXX\n\nСлово «Реклама» бот допишет сам."),
-    "clvk": ("🔑 Ключ VK нужен, чтобы брать посты из VK. Бесплатно: vk.com/apps?act=manage → «Создать» → "
-             "тип «Standalone» → в настройках приложения скопируй «Сервисный ключ доступа» и пришли сюда."),
     "clsay": "Пришли сообщение для клиента — отправлю его от имени его бота.",
     "cltarset": "Пришли тарифы — по одному в строке: название, сколько тем, сколько каналов в теме, цена за 30 дней "
                 "(за 90 дней будет ×2,5). Например:\nСтарт 1 5 300\nСтандарт 3 10 600\nПро 10 30 1500",
@@ -3514,26 +3512,11 @@ def apply_text(action, text, uid=None):
         if not sid or not key:
             return ("Не понял. Нужно: shopId (только цифры) и ключ, который начинается с live_ или test_, "
                     "через пробел. Пример: 123456 live_AbCd…"), "cltar"
-        GCFG["yk_shop"], GCFG["yk_key"] = sid, key
+        GCFG["yk_shop"], GCFG["yk_key"] = sid, key        # ключи из панели главнее переменных хостинга
         save_cfg()
-        if yk_env_keys() and yk_env_keys() != (sid, key):
-            return ("⚠️ Сохранил, но в переменных хостинга (YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY) задан другой "
-                    "ключ — бот берёт его: секретные ключи живут в переменных. Поменяй YOOKASSA_SECRET_KEY "
-                    "в настройках хостинга (или удали её — тогда возьму ключ из панели) и перезапусти бота.\n"
-                    + yk_seen()) + tail, "cltar"
         ok, why = yk_check()
         return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
-    if action == "clvk":
-        if not is_host(uid):
-            return "Нет доступа.", "main"
-        tok = text.strip()
-        if not re.fullmatch(r"[\w.-]{20,}", tok):
-            return "Не похоже на ключ VK. Пришли «Сервисный ключ доступа» целиком.", "clbeta"
-        GCFG["vk_token"] = tok
-        save_cfg()
-        SOCIAL_CACHE.clear()
-        return "Ключ VK сохранён ✅ Источники VK начнут читаться в течение 10 минут.", "clbeta"
     if action == "promo":
         if not HOST_MODE:
             return "Промокоды здесь не работают.", "main"
@@ -4907,15 +4890,22 @@ def handle_message(uid, chat_id, name, text, msg=None):
         else:
             send_screen(chat_id, *screen("main", uid))
         return
-    if action == "clsess":                                # 👤 файл .session для пула — только хозяин
-        PENDING.pop(uid, None)
+    if action == "clsess" or (HOST_MODE and is_host(uid) and session_atts(atts)):   # 👤 .session — в пул
+        if action == "clsess":                            # (и без «➕»: файл .session от хозяина — не в тайник)
+            PENDING.pop(uid, None)
         if not is_host(uid):
             send_screen(chat_id, *screen("main", uid))
             return
+        gone = True
         if atts:                                          # файл входа = доступ к аккаунту: из чата долой
+            gone = False
             with contextlib.suppress(Exception):
-                delete_msg(((msg or {}).get("body") or {}).get("mid"))
-        send_screen(chat_id, *session_upload(uid, atts))
+                gone = bool(delete_msg(((msg or {}).get("body") or {}).get("mid")))
+        text, rows = session_upload(uid, atts)
+        if not gone:
+            text = ("⚠️ Не смог удалить твоё сообщение с файлом из чата — удали его сам: зажми сообщение → "
+                    "«Удалить». В нём полный доступ к аккаунту.\n\n" + text)
+        send_screen(chat_id, text, rows)
         return
     if action == "clyk" and is_host(uid):                 # ключи ЮKassa: сообщение с секретом сразу удаляем из чата
         gone = False
@@ -6914,7 +6904,6 @@ def beta_screen(name, uid):
                 "Как сделать покупателя тестером: «👥 Все покупатели» → покупатель → «🧪 Бета-функции».\n\n"
                 + "\n\n".join(lines)
                 + "\n\nНажми на функцию — расскажу, что она делает и где её кнопка.")
-        rows.append([B("🔑 Ключ VK" + (" ✅" if GCFG.get("vk_token") else " (нужен для VK)"), "p:clvk")])
         return text, rows + [back]
     if kind == "clbf" and arg in BETA_FEATURES:
         r = beta_rec(arg)
@@ -6924,7 +6913,8 @@ def beta_screen(name, uid):
                 + (f" ({'держу в бете' if r.get('hold') else f'всем через {beta_left(r)} дн.'})"
                    if r["state"] == "beta" else "")
                 + "\nТестеры: " + (", ".join(names) or "пока нет")
-                + ("\n\n⚠️ Для источников VK нужен ключ VK — кнопка ниже." if arg == "social" and not GCFG.get("vk_token") else ""))
+                + ("\n\n⚠️ Для источников VK нужен ключ VK: переменная VK_TOKEN в настройках хостинга."
+                   if arg == "social" and not vk_token() else ""))
         rows = [[B("🚀 Включить всем сейчас", f"a:clbrel:{arg}")]] if r["state"] != "all" else []
         if r["state"] == "beta":
             rows.append([B("▶️ Не держать (выйдет сама)" if r.get("hold") else "⏸ Держать в бете",
@@ -6933,8 +6923,6 @@ def beta_screen(name, uid):
             rows.append([B("🧪 Вернуть в бету", f"a:clbbeta:{arg}")])
         if r["state"] != "off":
             rows.append([B("⛔ Выключить у всех", f"a:clboff:{arg}")])
-        if arg == "social":
-            rows.append([B("🔑 Ключ VK" + (" ✅" if GCFG.get("vk_token") else ""), "p:clvk")])
         return text, rows + [[B("◀️ Бета-функции", "m:clbeta")]]
     if kind == "clbt" and arg in TENANTS:
         c = TENANTS[arg]
@@ -7887,14 +7875,14 @@ def yt_channel_id(ch):
 
 
 def vk_token():
-    """Ключ VK: секрет — из переменной VK_TOKEN; ключ из панели — только если переменной нет."""
-    return (os.environ.get("VK_TOKEN") or "").strip() or GCFG.get("vk_token")
+    """Ключ VK: сохранённый в боте главнее переменной VK_TOKEN; в боте нет — из переменной."""
+    return GCFG.get("vk_token") or (os.environ.get("VK_TOKEN") or "").strip() or None
 
 
 def vk_posts(domain):
     tok = vk_token()
     if not tok:
-        raise RuntimeError("для VK нужен ключ: хозяин бота задаёт его в «🧪 Бета-функции» → «🔑 Ключ VK»")
+        raise RuntimeError("для VK нужен ключ: хозяин бота задаёт переменную VK_TOKEN в настройках хостинга")
     r = S.get("https://api.vk.com/method/wall.get", timeout=30,
               params={"domain": domain, "count": 20, "v": "5.199", "access_token": tok})
     js = r.json()
@@ -8100,7 +8088,7 @@ def pool_client(path):
 
 
 # 👤 Пул аккаунтов Telegram: файлы .session в sessions/, закрепление каналов — в pool.json
-POOL = AccountPool("sessions", "pool.json", pool_client)
+POOL = AccountPool("sessions", "pool.json", pool_client, main_session="session.session")
 POOL_TASKS = set()     # фоновые вступления аккаунтов пула в новые источники
 
 
@@ -10478,14 +10466,11 @@ def yk_env_keys():
 
 
 def yk_keys():
-    """shopId и секретный ключ ЮKassa. Секреты живут в переменных хостинга — они главнее;
-    ключи из панели бота — только если переменных нет. В коде ключей нет."""
-    env = yk_env_keys()
-    if env:
-        return env
+    """shopId и секретный ключ ЮKassa: введены в панели бота — они главнее переменных хостинга;
+    в панели нет — из переменных (YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY). В коде ключей нет."""
     if GCFG.get("yk_shop") and GCFG.get("yk_key"):
         return _yk_clean(GCFG["yk_shop"]), _yk_clean(GCFG["yk_key"])
-    return None
+    return yk_env_keys()
 
 
 YK_MSG_GONE = {}       # хозяин -> удалось ли убрать из чата его сообщение с ключом ЮKassa
@@ -10496,7 +10481,7 @@ def yk_seen():
     k = yk_keys()
     if not k:
         return "ключей нет"
-    src = "из переменных хостинга" if yk_env_keys() else "из панели бота"
+    src = "из панели бота" if GCFG.get("yk_shop") and GCFG.get("yk_key") else "из переменных хостинга"
     kind = "боевой (live_)" if k[1].startswith("live_") else "тестовый (test_)" if k[1].startswith("test_") else "неизвестного вида"
     return f"бот видит ({src}): shopId {k[0]}, ключ {kind}, {len(k[1])} символов, …{k[1][-4:]}"
 
@@ -10955,10 +10940,16 @@ def pool_screen():
     return text, rows + [[B("◀️ Кабинеты", "m:cl")]]
 
 
+def session_atts(atts):
+    """Вложения-файлы .session из сообщения."""
+    return [a for a in atts or [] if a.get("kind") == "file" and str(a.get("name") or "").lower().endswith(".session")]
+
+
 def session_upload(uid, atts):
-    """Хозяин прислал файл .session: в sessions/ и в пул. Не подошёл — понятная причина, файла не остаётся."""
-    files = [a for a in atts if a["kind"] == "file" and a.get("url")]
-    if not files or not files[0]["name"].lower().endswith(".session"):
+    """Хозяин прислал файл .session: скачать, проверить, в sessions/ и в пул. Не подошёл — понятная причина,
+    файла не остаётся."""
+    files = session_atts(atts)
+    if not files or not files[0].get("url"):
         PENDING[uid] = "clsess"
         return ("Нужен файл .session (вход Telethon) — пришли его файлом: 📎 → Файл.",
                 [[B("◀️ Аккаунты", "m:cltgacc")]])
@@ -10970,10 +10961,13 @@ def session_upload(uid, atts):
     os.makedirs("sessions", mode=0o700, exist_ok=True)
     path = os.path.join("sessions", name + ".session")
     try:
-        r = S.get(a["url"], timeout=60)
-        r.raise_for_status()
+        try:
+            r = S.get(a["url"], timeout=60)
+            r.raise_for_status()
+        except Exception as e:
+            raise SessionError(f"Не смог скачать файл из MAX ({type(e).__name__}) — пришли его ещё раз.")
         if len(r.content) > 20 * 1024 * 1024:
-            raise SessionError("Файл слишком большой для .session.")
+            raise SessionError("Файл слишком большой для .session (бывает до нескольких МБ) — это не файл входа.")
         with open(path, "wb") as f:
             f.write(r.content)
         acc = pool_run(POOL.add(path))

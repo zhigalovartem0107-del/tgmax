@@ -791,8 +791,12 @@ try:
 finally:
     bot.S.get = real_get
 assert vk == [(5, 1, "Пост Павел", ["big"], None)], vk
-press(1, 61000, "p:clvk"); msg(1, 61000, "y" * 40)
-assert bot.GCFG["vk_token"] == "y" * 40
+press(1, 61000, "m:clbeta")                                     # кнопок ключей VK/TikTok в панели нет
+assert "p:clvk" not in shown() and "Ключ VK" not in shown(), shown()
+vk_save = bot.GCFG.pop("vk_token", None)
+press(1, 61000, "m:clbf:social")
+assert "p:clvk" not in shown() and "кнопка ниже" not in OUT[-1][0] and "VK_TOKEN" in OUT[-1][0], OUT[-1][0]
+bot.GCFG["vk_token"] = vk_save
 # соцсети выключены у кабинета — источник не читается
 with bot.theme_ctx(bot.tenant_themes(k9)[0]):
     bot.CFG["channels"].append("tt~someone")
@@ -913,10 +917,9 @@ bot.handle_update({"update_type": "message_created", "message": {
     "sender": {"user_id": 1, "first_name": "U1"}, "recipient": {"chat_id": 61000, "chat_type": "dialog"},
     "body": {"mid": "mid-key", "text": "123456 test_secret"}}})
 said = " ".join(o[0] for o in OUT[-3:])
-assert "переменных хостинга" in said and "test_secret" not in said, said      # секреты — в переменных: они главнее
-assert "mid-key" in srv.deleted and bot.yk_keys() == ("123456", "wrongkey")
-os.environ["YOOKASSA_SECRET_KEY"] = ""                          # хозяин убрал старую переменную — ключ из панели
-assert bot.yk_keys() == ("123456", "test_secret")
+assert "подключена" in said and "test_secret" not in said, said
+assert "mid-key" in srv.deleted and bot.yk_keys() == ("123456", "test_secret")   # панель главнее старой переменной
+assert "из панели бота" in bot.yk_seen(), bot.yk_seen()
 buy(5001, 62000, "0:30")
 assert "yoomoney.ru/checkout" in shown(), shown()
 real_del = bot.delete_msg
@@ -926,6 +929,7 @@ assert any("удали его сам" in o[0] for o in OUT[-3:]), [o[0][:80] for
 bot.delete_msg = real_del
 press(1, 61000, "p:clyk"); msg(1, 61000, "abc")
 assert any("Не понял" in o[0] for o in OUT[-3:])
+os.environ["YOOKASSA_SECRET_KEY"] = "test_secret"
 print("h43 ok: 🔑 ключи ЮKassa — ввод в панели, сразу проверка, сообщение с ключом удаляется, видно что видит бот")
 
 # 44) TikTok через tikwm (без входа в аккаунт): видео — прямой ссылкой, карусель — фото; оба пути сломаны — понятная причина
@@ -1765,18 +1769,21 @@ with bot.theme_ctx(t65):
         bot.QUEUE[:] = []
 print("h66 ok: 🆓 бесплатный: фильтр рекламы есть, очередь до 20, проверка раз в 15 мин, без соцсетей, подсказка о платном")
 
-# 67) переменные окружения действуют: секреты (ключи ЮKassa, VK) — из переменных хостинга, панель — только
-#     если переменной нет; TG_PROXY из переменной главнее config.json; контакт продавца — что поменяли позже
-#     (панель или переменная); число с опечаткой в переменной не роняет бота
+# 67) переменные окружения: ключи, сохранённые в панели бота, главнее переменных хостинга (ЮKassa, VK);
+#     нет ключа в панели — берём переменную; TG_PROXY из переменной главнее config.json; контакт продавца —
+#     что поменяли позже; число с опечаткой в переменной не роняет бота
 os.environ["YOOKASSA_SECRET_KEY"] = "test_envkey1"
-assert bot.yk_keys() == ("123456", "test_envkey1") and "переменных хостинга" in bot.yk_seen(), bot.yk_seen()
-os.environ["YOOKASSA_SECRET_KEY"] = ""
 assert bot.yk_keys() == ("123456", "test_secret") and "панели" in bot.yk_seen(), bot.yk_seen()
+yk0 = bot.GCFG.pop("yk_shop", None), bot.GCFG.pop("yk_key", None)
+assert bot.yk_keys() == ("123456", "test_envkey1") and "переменных" in bot.yk_seen(), bot.yk_seen()
+bot.GCFG["yk_shop"], bot.GCFG["yk_key"] = yk0
+os.environ["YOOKASSA_SECRET_KEY"] = "test_secret"
 vk0 = bot.GCFG.get("vk_token")
 bot.GCFG["vk_token"], os.environ["VK_TOKEN"] = "p" * 30, "e" * 30
+assert bot.vk_token() == "p" * 30
+bot.GCFG.pop("vk_token")
 assert bot.vk_token() == "e" * 30
 os.environ.pop("VK_TOKEN")
-assert bot.vk_token() == "p" * 30
 bot.GCFG["vk_token"] = vk0
 assert bot.tg_proxy_url({"tg_proxy": "http://file:1"}, {"TG_PROXY": " http://env:2 "}) == "http://env:2"
 assert bot.tg_proxy_url({"tg_proxy": "http://file:1"}, {}) == "http://file:1"
@@ -1793,7 +1800,7 @@ assert bot.env_int("X_TEST_INT", 7) == 7
 os.environ["X_TEST_INT"] = " 12 "
 assert bot.env_int("X_TEST_INT", 7) == 12
 os.environ.pop("X_TEST_INT")
-print("h67 ok: ⚙️ переменные окружения: секреты из переменных главнее панели, прокси и контакт — как задано позже")
+print("h67 ok: ⚙️ ключи из панели главнее переменных хостинга; нет в панели — из переменной; прокси, контакт, числа")
 
 # 68) 👤 Telegram Аккаунты (пул): хозяин присылает .session файлом — бот кладёт его в sessions/ и в пул
 #     (сообщение с файлом удаляет из чата); покупатель добавил источник — аккаунт пула вступает и читает его;
@@ -1820,29 +1827,65 @@ async def _join68(client, ch):
     JOINS68.append((client.name, ch))
 bot.POOL = bot.AccountPool("sessions", "pool.json", PoolTG, join=_join68, join_gap=0)
 asyncio.run(bot.POOL.start())
-def send_file68(fname):
+def send_file68(fname, url=None):
     bot.handle_update({"update_type": "message_created", "message": {
         "sender": {"user_id": 1, "first_name": "U1"}, "recipient": {"chat_id": 61000, "chat_type": "dialog"},
         "body": {"mid": "mid-" + fname, "text": "", "attachments": [
-            {"type": "file", "filename": fname, "payload": {"url": srv.url + "/files/" + fname, "token": "t-" + fname}}]}}})
+            {"type": "file", "filename": fname,
+             "payload": {"url": url or srv.url + "/files/" + fname, "token": "t-" + fname}}]}}})
     return " ".join(o[0] for o in OUT[-3:])
 press(1, 61000, "m:cl")
 assert "m:cltgacc" in shown(), shown()
 press(1, 61000, "m:cltgacc")
 assert "Telegram Аккаунты" in OUT[-1][0] and "p:clsess" in shown(), OUT[-1][0]
-srv.blobs["acc1.session"] = b"SQLite format 3\x00" + b"\x00" * 100
+def telethon_session_bytes(key=None):
+    import sqlite3
+    tmp = tempfile.mktemp(suffix=".session")
+    con = sqlite3.connect(tmp)
+    con.execute("CREATE TABLE version (version INTEGER)")
+    con.execute("CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, "
+                "auth_key BLOB, takeout_id INTEGER)")
+    con.execute("INSERT INTO sessions VALUES (2, '149.154.167.41', 443, ?, NULL)", (key or os.urandom(256),))
+    con.commit()
+    con.close()
+    data = open(tmp, "rb").read()
+    os.remove(tmp)
+    return data
+srv.blobs["acc1.session"] = telethon_session_bytes()
 srv.deleted.clear()
 press(1, 61000, "p:clsess")
 said = send_file68("acc1.session")
 assert "добавлен" in said and "mid-acc1.session" in srv.deleted, said            # файл входа — из чата долой
 assert os.path.exists("sessions/acc1.session") and [x["name"] for x in bot.POOL.status()] == ["acc1"]
-srv.blobs["bad.session"] = b"not a session"
-press(1, 61000, "p:clsess")
-said = send_file68("bad.session")
-assert "не файл входа" in said and not os.path.exists("sessions/bad.session"), said
+assert oct(os.stat("sessions/acc1.session").st_mode & 0o777) == "0o600"
+assert "Telegram Аккаунты" in OUT[-1][0] and "m:cltgaccdel:acc1" in shown()     # сразу список аккаунтов
+srv.blobs["acc2.session"] = telethon_session_bytes()
+said = send_file68("acc2.session")                                               # без «➕» — тоже в пул, не в тайник
+assert "добавлен" in said and "тайник" not in said and "mid-acc2.session" in srv.deleted, said
+assert [x["name"] for x in bot.POOL.status()] == ["acc1", "acc2"]
+asyncio.run(bot.POOL.remove("acc2"))
+for fname, blob, why in (("bad.session", b"not a session", "не файл входа"),
+                         ("broken.session", b"SQLite format 3\x00" + b"\x00" * 100, "повреждён"),
+                         ("copy.session", open("sessions/acc1.session", "rb").read(), "уже в пуле")):
+    srv.blobs[fname] = blob
+    press(1, 61000, "p:clsess")
+    said = send_file68(fname)
+    assert "❌" in said and why in said and not os.path.exists("sessions/" + fname), (fname, said)
+    assert "mid-" + fname in srv.deleted                                         # и неподходящий файл — из чата
 press(1, 61000, "p:clsess")
 said = send_file68("photo.jpg")
 assert ".session" in said and not os.path.exists("sessions/photo.jpg"), said
+press(1, 61000, "p:clsess")
+said = send_file68("gone.session", "http://127.0.0.1:9/gone.session")             # MAX не отдал файл
+assert "Не смог скачать" in said and not os.path.exists("sessions/gone.session"), said[-300:]
+real_del68 = bot.delete_msg
+bot.delete_msg = lambda mid: False                                               # MAX не дал удалить сообщение
+srv.blobs["acc3.session"] = telethon_session_bytes()
+press(1, 61000, "p:clsess")
+said = send_file68("acc3.session")
+bot.delete_msg = real_del68
+assert "добавлен" in said and "удали его сам" in said, said
+asyncio.run(bot.POOL.remove("acc3"))
 press(5001, 62000, "m:cltgacc")
 assert "Telegram Аккаунты" not in OUT[-1][0]                                       # только хозяину
 

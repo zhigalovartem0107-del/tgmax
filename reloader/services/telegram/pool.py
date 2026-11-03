@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sqlite3
 import time
 
 ACTIVE, FLOOD, DEAD = "active", "flood", "dead"
@@ -40,6 +41,33 @@ async def telethon_join(client, ch):
     await client(JoinChannelRequest(ch))
 
 
+def read_session(path):
+    """Ключ входа из файла Telethon. Файл не подходит — SessionError с понятной причиной."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+                raise SessionError("Это не файл входа Telethon — нужен файл .session (база SQLite), "
+                                   "а пришёл файл другого вида.")
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(sessions)")}
+            row = con.execute("SELECT auth_key FROM sessions").fetchone() if "auth_key" in cols else None
+        finally:
+            con.close()
+    except sqlite3.DatabaseError:
+        raise SessionError("Файл .session повреждён (не открывается как база) — сохрани вход заново и пришли файл.")
+    except OSError:
+        raise SessionError("Файл .session не прочитать — пришли его ещё раз.")
+    if not cols:
+        raise SessionError("В файле нет данных входа Telegram — это не .session от Telethon.")
+    if "server_address" not in cols:
+        raise SessionError("Это файл входа Pyrogram, а нужен Telethon. Сохрани вход через Telethon "
+                           "(или переведи файл в формат Telethon) и пришли его.")
+    if not row or not row[0]:
+        raise SessionError("В файле нет входа (пустой ключ) — войди в аккаунт через Telethon и пришли файл заново.")
+    return bytes(row[0])
+
+
 def channel_key(ch):
     return str(ch or "").strip().lstrip("@").lower()
 
@@ -48,15 +76,16 @@ class Account:
     def __init__(self, name, path, client, per_account):
         self.name, self.path, self.client = name, path, client
         self.status, self.until, self.error = ACTIVE, 0.0, ""
-        self.full, self.title, self.last_join = False, name, 0.0
+        self.full, self.title, self.last_join, self.user_id = False, name, 0.0, None
         self.joined = set()
         self.sem = asyncio.Semaphore(per_account)
 
 
 class AccountPool:
     def __init__(self, folder, state_path, make_client, join=telethon_join, per_account=5, join_gap=20.0,
-                 clock=time.time):
+                 clock=time.time, main_session=None):
         self.folder, self.state_path, self.make_client = folder, state_path, make_client
+        self.main_session = main_session   # файл основного входа бота: его копию в пул брать нельзя
         self.join, self.per_account, self.join_gap, self.clock = join, per_account, join_gap, clock
         self._accounts = {}            # имя -> Account
         self._channels = {}            # канал (lower) -> имя аккаунта
@@ -133,6 +162,7 @@ class AccountPool:
                 self._kill(acc, "вход в этом файле не действует — войди заново и пришли новый .session")
                 return acc
             me = await acc.client.get_me()
+            acc.user_id = getattr(me, "id", None)
             first, user = getattr(me, "first_name", "") or "", getattr(me, "username", "") or ""
             acc.title = f"{first} (@{user})" if user else (first or name)
             async for d in acc.client.iter_dialogs():    # в каких каналах аккаунт уже состоит
@@ -144,25 +174,45 @@ class AccountPool:
                 self._kill(acc, f"не подключился: {type(e).__name__}")
         return acc
 
+    def _same_key(self, key, path):
+        with contextlib.suppress(SessionError):
+            return read_session(path) == key
+        return False
+
     async def add(self, path):
-        """Новый файл входа (загрузил хозяин). Не подходит — SessionError, файл удаляется."""
+        """Новый файл входа (загрузил хозяин). Не подходит — SessionError с причиной, файл удаляется.
+        Проверяем: файл Telethon с входом; не копия файла из пула и не основной вход бота (один ключ в двух
+        местах — Telegram завершает оба сеанса); вход действует; этого аккаунта Telegram в пуле ещё нет."""
         try:
-            with open(path, "rb") as f:
-                ok = f.read(len(SQLITE_HEADER)) == SQLITE_HEADER
-        except OSError:
-            ok = False
-        if not ok:
+            key = read_session(path)
+            twin = next((a.name for a in self._accounts.values() if a.path != path and self._same_key(key, a.path)),
+                        None)
+            if twin:
+                raise SessionError(f"Этот файл входа уже в пуле (аккаунт «{twin}»). Один и тот же файл в двух местах "
+                                   "Telegram не терпит — завершит оба сеанса.")
+            if self.main_session and os.path.exists(self.main_session) and self._same_key(key, self.main_session):
+                raise SessionError("Это копия файла, которым входит сам бот (основной вход), — второй раз его "
+                                   "использовать нельзя: Telegram завершит оба сеанса. Для пула войди в другой аккаунт.")
+        except SessionError:
             self._drop_file(path)
-            raise SessionError("Это не файл входа Telethon — нужен файл .session (база SQLite).")
+            raise
         os.chmod(path, 0o600)
         acc = await self._open(path)
+        why = None
         if acc.status == DEAD:
+            why = ("Вход в этом файле не действует (сеанс завершён в Telegram или аккаунт заблокирован) — "
+                   "войди в аккаунт заново и пришли новый .session.")
+        else:
+            twin = next((a.name for a in self._accounts.values()
+                         if a is not acc and acc.user_id is not None and a.user_id == acc.user_id), None)
+            if twin:
+                why = f"Этот аккаунт Telegram уже в пуле («{twin}») — второй вход того же аккаунта не нужен."
+        if why:
             self._accounts.pop(acc.name, None)
             with contextlib.suppress(Exception):
                 await acc.client.disconnect()
             self._drop_file(path)
-            raise SessionError("Вход в этом файле не действует (сеанс завершён или файл от другой программы) — "
-                               "войди в аккаунт заново и пришли новый .session.")
+            raise SessionError(why)
         self._save()
         return acc
 

@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -47,7 +49,8 @@ class FakeTG:
         return self.cfg.get("auth", True)
 
     async def get_me(self):
-        return SimpleNamespace(first_name=self.name.title(), username=f"{self.name}_bot")
+        return SimpleNamespace(id=self.cfg.get("uid", sum(map(ord, self.name))), first_name=self.name.title(),
+                               username=f"{self.name}_bot")
 
     async def iter_dialogs(self):
         for u in self.cfg.get("joined", []):
@@ -63,16 +66,33 @@ async def fake_join(client, ch):
     await client.join(ch)
 
 
-def session_file(folder, name, data=SQLITE):
+def session_file(folder, name, data=None, key=None, kind="telethon"):
+    """Файл входа как у Telethon (SQLite, таблица sessions с server_address и auth_key); data — сырые байты."""
     path = os.path.join(folder, name + ".session")
-    with open(path, "wb") as f:
-        f.write(data)
+    if data is not None:
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    con = sqlite3.connect(path)
+    if kind == "pyrogram":
+        con.execute("CREATE TABLE sessions (dc_id INTEGER, api_id INTEGER, test_mode INTEGER, auth_key BLOB, "
+                    "date INTEGER, user_id INTEGER, is_bot INTEGER)")
+        con.execute("INSERT INTO sessions VALUES (2, 1, 0, ?, 0, 1, 0)", (os.urandom(256),))
+    else:
+        con.execute("CREATE TABLE version (version INTEGER)")
+        con.execute("INSERT INTO version VALUES (7)")
+        con.execute("CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, "
+                    "auth_key BLOB, takeout_id INTEGER)")
+        con.execute("INSERT INTO sessions VALUES (2, '149.154.167.41', 443, ?, NULL)",
+                    (os.urandom(256) if key is None else key,))
+    con.commit()
+    con.close()
     return path
 
 
-def new_pool(folder, clock):
+def new_pool(folder, clock, main_session=None):
     return AccountPool(folder, os.path.join(folder, "pool.json"), FakeTG, join=fake_join,
-                       join_gap=0, clock=lambda: clock[0])
+                       join_gap=0, clock=lambda: clock[0], main_session=main_session)
 
 
 async def main():
@@ -150,13 +170,29 @@ async def main():
     assert saved["channels"]["news"] == "b" and saved["accounts"]["a"]["full"] is True, saved
     print("p6 ok: закрепление каналов и состояние аккаунтов сохраняются в pool.json")
 
-    # 7) новый файл входа: не SQLite или не вошедший — отказ и файл удалён; рабочий — в пуле, права 600
-    bad = session_file(folder, "junk", b"hello")
-    try:
-        await pool2.add(bad)
-        raise AssertionError("не файл входа — должен быть отказ")
-    except SessionError as e:
-        assert ".session" in str(e) and not os.path.exists(bad), e
+    # 7) новый файл входа: каждый неподходящий — отказ с понятной причиной, файл удалён; рабочий — в пуле, права 600
+    main_login = session_file(root, "session")                        # основной вход бота
+    pool2.main_session = main_login
+
+    async def refused(path, *words):
+        try:
+            await pool2.add(path)
+        except SessionError as e:
+            assert all(w in str(e) for w in words) and not os.path.exists(path), (words, str(e))
+            return
+        raise AssertionError(f"{path} — должен быть отказ: {words}")
+    await refused(session_file(folder, "junk", b"hello"), "не файл входа", ".session")
+    await refused(session_file(folder, "broken", SQLITE), "повреждён")
+    await refused(session_file(folder, "pyro", kind="pyrogram"), "Pyrogram", "Telethon")
+    await refused(session_file(folder, "empty", key=b""), "нет входа")
+    copy = os.path.join(folder, "copy_of_b.session")
+    shutil.copy2(os.path.join(folder, "b.session"), copy)
+    await refused(copy, "уже в пуле", "«b»")                         # тот же файл ещё раз — два сеанса на одном ключе
+    shutil.copy2(main_login, os.path.join(folder, "main_copy.session"))
+    await refused(os.path.join(folder, "main_copy.session"), "основной вход")
+    REG["twin"] = {"uid": sum(map(ord, "b"))}                         # тот же аккаунт Telegram, другой вход
+    await refused(session_file(folder, "twin"), "Этот аккаунт Telegram уже в пуле", "«b»")
+    assert "twin" not in [x["name"] for x in pool2.status()]
     REG["late"] = {"auth": False}
     late = session_file(folder, "late")
     try:
@@ -169,7 +205,8 @@ async def main():
     assert acc.name == "d" and "d" in [x["name"] for x in pool2.status()]
     assert oct(os.stat(os.path.join(folder, "d.session")).st_mode & 0o777) == "0o600"
     assert (await pool2.assign("eighth")).name == "d"                  # новый, пустой — вступает первым
-    print("p7 ok: загрузка .session: проверка файла и входа, мусор не остаётся; файл доступен только боту")
+    print("p7 ok: загрузка .session: не SQLite, повреждён, Pyrogram, пустой, копия, основной вход, тот же аккаунт, "
+          "не вошедший — понятный отказ, мусор не остаётся; рабочий — в пуле, файл доступен только боту")
 
     # 8) удалить аккаунт: файл стёрт, клиент отключён, его каналы свободны
     d_client = pool2.client_for("eighth")
