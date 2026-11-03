@@ -1709,5 +1709,60 @@ with bot.theme_ctx(t65):
         bot.QUEUE[:] = []
 print("h65 ok: 🆓 бесплатный: 1 канал и 1 источник, без ИИ, только текст, пост раз в 30 мин, без водяного знака, простое меню")
 
+# 66) 🆓 бесплатный тариф, тонкие ограничения: фильтр рекламы работает; в очереди не больше FREE_PLAN["queue_max"]
+#     (20) — старые уходят; источник проверяется раз в FREE_PLAN["check_min"] (15) минут, события не ускоряют;
+#     соцсети (TikTok, VK…) — только на платном; пост с фото/видео — раз в сутки подсказка о платном тарифе
+assert bot.FREE_PLAN["queue_max"] == 20 and bot.FREE_PLAN["check_min"] == 15
+with bot.theme_ctx(t65):
+    bot.CFG["ad_keywords"] = ["наш магазин"]
+    assert bot.clean_text("Новость дня\nЗаходи в наш магазин скинов", with_signature=False) == "Новость дня"
+    bot.CFG["ad_keywords"] = []
+    bot.CFG["channels"][:] = ["tt~artist", "realsrc", "other"]
+    assert bot.live_channels() == ["realsrc"], bot.live_channels()               # соцсеть на бесплатном не читается
+    bot.CFG["channels"][:] = ["firstsrc"]
+soc66, bot.beta_rec("social")["state"] = bot.beta_rec("social")["state"], "all"      # соцсети открыты всем…
+press(6500, 65000, "p:chadd"); msg(6500, 65000, "https://www.tiktok.com/@artist")
+bot.beta_rec("social")["state"] = soc66
+with bot.theme_ctx(t65):
+    assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]              # …но не бесплатному
+assert "на платном тарифе" in " ".join(o[0] for o in OUT[-3:]), [o[0][-120:] for o in OUT[-3:]]
+bot.LAST_POLL.clear()
+now66 = time.time()
+assert bot.poll_due(t65, "firstsrc", False, set(), now66)                       # первый раз — сразу
+assert not bot.poll_due(t65, "firstsrc", True, {"firstsrc"}, now66 + 60)         # 1 мин: ни полный круг, ни событие
+assert not bot.poll_due(t65, "firstsrc", True, set(), now66 + 14 * 60)
+assert bot.poll_due(t65, "firstsrc", False, set(), now66 + 15 * 60 + 1)         # 15 минут — читаем
+paid66 = bot.tenant_themes(ckey)[0]
+assert bot.tenant_mode(ckey) == "run"
+assert bot.poll_due(paid66, "x", True, set(), now66) and bot.poll_due(paid66, "x", True, set(), now66 + 1)
+assert bot.poll_due(paid66, "x", False, {"x"}, now66) and not bot.poll_due(paid66, "x", False, set(), now66)
+bot.FREE_HINTS.clear()
+feed["x"] = rss.replace("</channel>", """<item><title>Обзор турнира</title><link>https://site.ru/66</link>
+<description>&lt;img src="https://site.ru/66.jpg"&gt; Финал прошёл вчера вечером, победила команда Альфа</description><pubDate>Thu, 08 Oct 2026 13:00:00 +0000</pubDate></item></channel>""")
+with bot.theme_ctx(t65):
+    bot.CFG["approval_on"] = False
+    bot.CFG["channels"][:] = [rkey]
+    bot.QUEUE[:] = [{"id": f"old:{i}", "ch": rkey, "date": i, "enq": time.time() - 1000 + i, "text": f"старый {i}",
+                     "photos": [], "vids": [], "docs": [], "sent": 0, "fails": 0, "status": "ok"} for i in range(20)]
+    bot.LAST_IDS[rkey] = 1
+    bot.SOCIAL_CACHE.clear()
+    n0 = len(OUT)
+    bot.FRESH_SEC, old_fresh = 0, bot.FRESH_SEC
+    try:
+        asyncio.run(bot.process_channel(bot.src_client(None, rkey), rkey, {}))
+        assert len(bot.QUEUE) == 20 and "old:0" not in [x["id"] for x in bot.QUEUE], [x["id"] for x in bot.QUEUE]
+        assert any("победила команда Альфа" in x["text"] for x in bot.QUEUE)    # новый — в очереди, старый ушёл
+        hint = [o[0] for o in OUT[n0:] if "платном тарифе" in o[0]]
+        assert len(hint) == 1 and "фото" in hint[0], [o[0][:80] for o in OUT[n0:]]
+        bot.LAST_IDS[rkey] = 1
+        bot.QUEUE[:] = []
+        n0 = len(OUT)
+        asyncio.run(bot.process_channel(bot.src_client(None, rkey), rkey, {}))
+        assert not [o for o in OUT[n0:] if "платном тарифе" in o[0]], "подсказка — не чаще раза в сутки"
+    finally:
+        bot.FRESH_SEC = old_fresh
+        bot.QUEUE[:] = []
+print("h66 ok: 🆓 бесплатный: фильтр рекламы есть, очередь до 20, проверка раз в 15 мин, без соцсетей, подсказка о платном")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

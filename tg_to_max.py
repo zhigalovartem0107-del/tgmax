@@ -71,8 +71,9 @@ DEFAULT_TARIFFS = [{"name": "Старт", "themes": 1, "sources": 5, "price": 30
                    {"name": "Стандарт", "themes": 3, "sources": 10, "price": 600},
                    {"name": "Про", "themes": 10, "sources": 30, "price": 1500}]
 # 🆓 навсегда: срок кончился — кабинет работает так: 1 канал MAX, 1 источник, только текст, пост не чаще раза
-#    в gap_min минут, без ИИ и умных функций, в меню — только основное
-FREE_PLAN = {"name": "Бесплатный", "themes": 1, "sources": 1, "gap_min": 30}
+#    в gap_min минут, без ИИ и умных функций, в меню — только основное; в очереди до queue_max постов;
+#    источник проверяется раз в check_min минут; без соцсетей
+FREE_PLAN = {"name": "Бесплатный", "themes": 1, "sources": 1, "gap_min": 30, "queue_max": 20, "check_min": 15}
 LIMIT_THEMES = int(os.environ.get("TGMAX_LIMIT_THEMES") or 3)
 LIMIT_SOURCES = int(os.environ.get("TGMAX_LIMIT_SOURCES") or 10)
 LIMIT_ADMINS = 3
@@ -3529,6 +3530,8 @@ def apply_text(action, text, uid=None):
             if skey or why:
                 if not feature_on("social"):
                     bad.append(tok + " (соцсети пока в бете — скоро будут у всех)")
+                elif on_free():
+                    bad.append(tok + " (соцсети — на платном тарифе: «💳 Продлить доступ»)")
                 elif why:
                     bad.append(f"{tok} ({why})")
                 else:
@@ -6207,6 +6210,8 @@ async def _process_channel(client, ch, fails, fresh):
         img_paths, pids, hashes = [], [], []
         queued = False
         media = [] if on_free() else grp                 # 🆓 бесплатный тариф — только текст
+        if not media and on_free() and any(has_image(m) or video_info(m) or doc_info(m) for m in grp):
+            await asyncio.to_thread(free_media_hint)
         try:
             # фото: скачиваем сразу (они лёгкие), считаем отпечаток для дублей
             for m in media:
@@ -6298,6 +6303,10 @@ async def _process_channel(client, ch, fails, fresh):
                         "vids": [m.id for m, _ in vids], "docs": docs, "sent": 0, "fails": 0,
                         "urgent": is_urgent(body), "status": status, "raw": raw[:1500],
                         "buttons": sum(url_buttons(m) for m in grp)}
+                if on_free():                           # 🆓 до FREE_PLAN["queue_max"] в очереди: старые уходят
+                    auto = sorted((x for x in QUEUE if not x.get("manual")), key=lambda x: x["enq"])
+                    for old in auto[:max(0, len(QUEUE) + 1 - FREE_PLAN["queue_max"])]:
+                        drop_item(old)
                 QUEUE.append(item)
                 save_queue()
                 history.append(entry)               # сразу помним, чтобы ловить дубли в очереди
@@ -9288,7 +9297,39 @@ def live_channels():
     """Источники текущей темы, которые читаем: на бесплатном тарифе — первые FREE_PLAN["sources"], остальные на паузе
     (не удаляются: оплатит — снова читаются)."""
     chans = list(CFG["channels"])
-    return chans[:FREE_PLAN["sources"]] if on_free() else chans
+    if on_free():                                     # 🆓 соцсети — только на платном
+        return [c for c in chans if not is_social(c)][:FREE_PLAN["sources"]]
+    return chans
+
+
+LAST_POLL = {}         # (тема, источник) -> когда читали (бесплатный тариф: раз в FREE_PLAN["check_min"] минут)
+
+
+def poll_due(t, ch, full, woke, now=None):
+    """Пора ли читать источник: платный — на каждом круге (full) или по событию (woke);
+    бесплатный — раз в FREE_PLAN["check_min"] минут, события не ускоряют."""
+    if not on_free(t):
+        return full or ch.lower() in woke
+    now = now or time.time()
+    key = (t.id, ch.lower())
+    if now - LAST_POLL.get(key, 0) < FREE_PLAN["check_min"] * 60:
+        return False
+    LAST_POLL[key] = now
+    return True
+
+
+FREE_HINTS = {}        # тема -> когда подсказали, что фото и видео — на платном тарифе
+
+
+def free_media_hint(now=None):
+    """🆓 Пост с фото/видео вышел текстом — раз в сутки подсказываем про платный тариф."""
+    now = now or time.time()
+    t = cur()
+    if now - FREE_HINTS.get(t.id, 0) < 86400:
+        return
+    FREE_HINTS[t.id] = now
+    notify("📷 В посте источника были фото или видео — на бесплатном тарифе переношу только текст. "
+           "Фото, видео и файлы — на платном тарифе: «💳 Продлить доступ».")
 
 
 def new_cabinet_theme(key, name):
@@ -11675,7 +11716,7 @@ async def main():
                         if is_social(ch) and not feature_on("social", t.owner):
                             continue                     # соцсети выключены для этого кабинета
                         names.add(ch.lower())
-                        if ch in t.last_ids and (full or ch.lower() in woke) and not net_blocked(ch):
+                        if ch in t.last_ids and not net_blocked(ch) and poll_due(t, ch, full, woke):
                             jobs.append((t, ch))
             except Exception:
                 log_exc(f"чтение темы «{t.name}»")
