@@ -214,7 +214,8 @@ class FakeMax:
                     with outer.lock:
                         pid = f"pay-{len(outer.payments) + 1}"
                         outer.payments[pid] = {"status": "pending", "amount": body["amount"],
-                                               "metadata": body.get("metadata"), "description": body.get("description")}
+                                               "metadata": body.get("metadata"), "description": body.get("description"),
+                                               "receipt": body.get("receipt")}
                     return self._send(200, {"id": pid, "status": "pending", "confirmation": {
                         "type": "redirect", "confirmation_url": f"https://yoomoney.ru/checkout/{pid}"}})
                 m = re.fullmatch(r"/v3/payments/([\w-]+)", p)

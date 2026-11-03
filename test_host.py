@@ -51,6 +51,13 @@ def shown():
     return json.dumps(OUT[-1], ensure_ascii=False) if OUT else "[]"
 
 
+def buy(uid, chat, plan):
+    """Выбрал тариф; если бот спросил почту для чека — «Пропустить» (чек на запасную почту)."""
+    press(uid, chat, "py:" + plan)
+    if f"pe:{plan}" in shown():
+        press(uid, chat, "pe:" + plan)
+
+
 # 1) новый пользователь -> свой кабинет на бесплатном тарифе (1 канал MAX, 2 источника, навсегда) — сразу меню
 msg(100, 5100, "/start")
 assert "100" in bot.TENANTS and bot.tenant_mode("100") == "free" and len(bot.tenant_themes("100")) == 1
@@ -69,7 +76,7 @@ bot.GCFG["tariffs"] = [{"name": "Старт", "themes": 1, "sources": 5, "price"
 press(100, 5100, "m:pay")
 assert "Тариф и оплата" in OUT[-1][0] and "py:0:30" in shown() and "py:0:90" in shown(), shown()
 n0 = len(OUT)
-press(100, 5100, "py:0:30")                                  # нажал тариф — сразу ссылка ЮKassa, без лишних шагов
+buy(100, 5100, "0:30")                                  # нажал тариф — сразу ссылка ЮKassa, без лишних шагов
 assert "yoomoney.ru/checkout" in shown(), shown()
 assert any("yoomoney.ru/checkout" in json.dumps(o[1]) for o in OUT[n0:-1]), "ссылка — ещё и отдельным сообщением"
 pid = bot.TENANTS["100"].get("pay", {}).get("pid")
@@ -331,7 +338,7 @@ press(5001, 62000, "p:promo")
 msg(5001, 62000, "leto50")
 assert "скидка 50%" in OUT[-2][0], OUT[-2][0]
 assert "150 ₽" in shown() and "375 ₽" in shown() and "−50%" in shown(), shown()   # 300->150, 750->375
-press(5001, 62000, "py:0:30")                                # онлайн-платёж — со скидкой
+buy(5001, 62000, "0:30")                                # онлайн-платёж — со скидкой
 assert "150 ₽" in shown(), shown()
 pid = bot.TENANTS[ckey]["pay"]["pid"]
 assert srv.payments[pid]["amount"]["value"] == "150.00", srv.payments[pid]["amount"]
@@ -538,15 +545,15 @@ ok, why = bot.yk_check()
 assert not ok and "не подходят" in why and "live_" in why, why
 assert "019a-test-err" in why and "поддержк" in why, why          # код ошибки — для поддержки ЮKassa
 bot.TENANTS[ckey].pop("payreq", None)
-press(5001, 62000, "py:0:30")                                # онлайн не вышло — хозяина ни о чём не просим
+buy(5001, 62000, "0:30")                                # онлайн не вышло — хозяина ни о чём не просим
 assert "не открылась" in shown() and not bot.TENANTS[ckey].get("payreq"), shown()
 assert any("ЮKassa не дала ссылку" in o[0] and "401" in o[0] for o in OUT[-4:]), [o[0][:60] for o in OUT[-4:]]
 os.environ["YOOKASSA_SECRET_KEY"] = "test_secret"
 srv.need_receipt = True                                      # в магазине включены чеки (54-ФЗ)
-press(5001, 62000, "py:0:30")
+buy(5001, 62000, "0:30")
 assert "не открылась" in shown() and any("YOOKASSA_RECEIPT_EMAIL" in o[0] for o in OUT[-4:])
 os.environ["YOOKASSA_RECEIPT_EMAIL"] = "shop@example.com"
-press(5001, 62000, "py:0:30")
+buy(5001, 62000, "0:30")
 assert "yoomoney.ru/checkout" in shown(), shown()
 srv.need_receipt = False
 os.environ.pop("YOOKASSA_RECEIPT_EMAIL")
@@ -908,7 +915,7 @@ bot.handle_update({"update_type": "message_created", "message": {
 said = " ".join(o[0] for o in OUT[-3:])
 assert "подключена" in said and "test_secret" not in said, said
 assert "mid-key" in srv.deleted and bot.yk_keys() == ("123456", "test_secret")
-press(5001, 62000, "py:0:30")
+buy(5001, 62000, "0:30")
 assert "yoomoney.ru/checkout" in shown(), shown()
 real_del = bot.delete_msg
 bot.delete_msg = lambda mid: False                              # MAX не дал удалить сообщение с ключом
@@ -1343,7 +1350,7 @@ bot.publish_item = real_pub53
 print("h56 ok: ⚡ срочные посты — без паузы расписания, но по одному (минута между постами), не пачкой")
 
 # 58) бесплатный тариф: подписка (или пробный срок) кончилась — кабинет не закрывается, а работает бесплатно:
-#     1 канал MAX и 2 источника; остальное на паузе (не удаляется); оплатил — всё снова работает; выключенный — молчит.
+#     1 канал MAX и 1 источник; остальное на паузе (не удаляется); оплатил — всё снова работает; выключенный — молчит.
 #     Лимит источников соблюдается на любом тарифе (раньше в host-режиме не проверялся вовсе)
 msg(5800, 58000, "/start")
 k58 = bot.tenant_by_chat(58000)
@@ -1372,7 +1379,7 @@ with bot.theme_ctx(t58a):
     for ch in ("a1", "a2", "a3", "a4"):
         bot.LAST_IDS.pop(ch, None)
     asyncio.run(bot.sync_channels(_Src()))
-    assert sorted(asked) == ["a1", "a2"], asked                       # читаются только 2 источника
+    assert sorted(asked) == ["a1"], asked                             # читается только 1 источник
     assert bot.CFG["channels"] == ["a1", "a2", "a3", "a4"]            # остальные на паузе, не удалены
 pub58 = []
 async def _pub58(client, chat_id, it):
@@ -1409,7 +1416,7 @@ bot.TENANTS[k58]["enabled"] = False                                  # хозя�
 bot.TENANTS[k58]["until"] = 0
 assert bot.tenant_mode(k58) == "off" and not bot.theme_live(t58a)
 bot.TENANTS[k58]["enabled"] = True
-print("h58 ok: 🆓 бесплатный тариф: срок кончился — работает 1 канал и 2 источника, остальное на паузе; оплатил — всё снова")
+print("h58 ok: 🆓 бесплатный тариф: срок кончился — работает 1 канал и 1 источник, остальное на паузе; оплатил — всё снова")
 
 # 59) 📢 рекламная рассылка хозяина: пост (текст + картинка) с маркировкой «Реклама … erid» — бесплатным пользователям
 #     в чат с ботом; платные и выключенные не получают; без erid не уходит; покупатель запустить не может
@@ -1536,7 +1543,7 @@ good_key = bot.GCFG.get("yk_key")
 bot.TENANTS[ckey].pop("pay", None); bot.TENANTS[ckey].pop("payreq", None)
 bot.GCFG["yk_key"] = "wrongkey"                                       # ЮKassa отвечает 401
 n0 = len(OUT)
-press(5001, 62000, "py:0:30")
+buy(5001, 62000, "0:30")
 assert "не открылась" in shown() and "2200 0000 0000 0000" in shown() and "pd:0:30" in shown(), shown()
 assert not bot.TENANTS[ckey].get("payreq")                            # хозяина не дёргаем, пока покупатель не оплатил
 assert any("ЮKassa не дала ссылку" in o[0] and "401" in o[0] for o in OUT[n0:]), [o[0][:60] for o in OUT[n0:]]
@@ -1556,11 +1563,11 @@ def _net_down62(url, *a, **kw):
     return real_post(url, *a, **kw)
 bot.S.post = _net_down62
 try:
-    press(5001, 62000, "py:0:30")
+    buy(5001, 62000, "0:30")
 finally:
     bot.S.post = real_post
 assert "не открылась" in shown() and "pd:0:30" in shown(), shown()
-press(5001, 62000, "py:0:30")                                         # (б) ссылка + «Проверить оплату»
+buy(5001, 62000, "0:30")                                         # (б) ссылка + «Проверить оплату»
 assert "yoomoney.ru/checkout" in shown() and "pc:check" in shown(), shown()
 pid62 = bot.TENANTS[ckey]["pay"]["pid"]
 press(5001, 62000, "pc:check")
@@ -1570,7 +1577,7 @@ until1 = bot.TENANTS[ckey]["until"]
 press(5001, 62000, "pc:check")
 assert "Оплата получена" in " ".join(o[0] for o in OUT[-3:]) and bot.TENANTS[ckey]["until"] > until1
 assert "pay" not in bot.TENANTS[ckey]
-press(5001, 62000, "py:0:30")                                         # (в) статус не проверить: ключ сломался
+buy(5001, 62000, "0:30")                                         # (в) статус не проверить: ключ сломался
 bot.GCFG["yk_key"] = "wrongkey"
 n0 = len(OUT)
 bot.host_pay_poll()
@@ -1601,6 +1608,106 @@ for same in ("**смотри https://x.com/b** и **ещё**", "**ссылка h
     assert fm(same) == same, (same, fm(same))                   # голая ссылка не «съедает» закрывающую разметку
 assert fm("__курсив https://x.com/a__ и всё") == "_курсив https://x.com/a_ и всё"
 print("h55 ok: ✍️ разметка Telegram -> MAX: курсив/жирный как в MAX, ссылки и код не портятся")
+
+# 63) 📧 чек — на почту покупателя: перед ссылкой ЮKassa бот спрашивает email; верный — в чек (receipt);
+#     неверный или «Пропустить» — запасная почта YOOKASSA_RECEIPT_EMAIL
+EMAIL_ASK = "Напишите email (почта) для отправки чека."
+os.environ["YOOKASSA_RECEIPT_EMAIL"] = "shop@example.com"
+bot.GCFG["yk_key"] = "test_secret"
+bot.TENANTS[ckey].pop("pay", None)
+def receipt_of_last():
+    pid = bot.TENANTS[ckey]["pay"]["pid"]
+    return (srv.payments[pid].get("receipt") or {}).get("customer", {}).get("email")
+press(5001, 62000, "py:0:30")
+assert EMAIL_ASK in shown() and "pe:0:30" in shown(), shown()           # сначала почта, ссылки ещё нет
+msg(5001, 62000, " Buyer@Mail.RU ")
+assert "yoomoney.ru/checkout" in shown() and receipt_of_last() == "buyer@mail.ru", (shown(), receipt_of_last())
+bot.TENANTS[ckey].pop("pay", None)
+press(5001, 62000, "py:0:30"); msg(5001, 62000, "это не почта")
+assert "yoomoney.ru/checkout" in shown() and receipt_of_last() == "shop@example.com", receipt_of_last()
+bot.TENANTS[ckey].pop("pay", None)
+press(5001, 62000, "py:0:30"); press(5001, 62000, "pe:0:30")           # «Пропустить»
+assert "yoomoney.ru/checkout" in shown() and receipt_of_last() == "shop@example.com", receipt_of_last()
+bot.TENANTS[ckey].pop("pay", None)
+os.environ.pop("YOOKASSA_RECEIPT_EMAIL")
+print("h63 ok: 📧 почта для чека: верная — в чек покупателю; неверная или «Пропустить» — запасная почта продавца")
+
+# 64) ✍️ разметка и ссылки: убранное @упоминание в жирном не оставляет «****»; соседний жирный сливается;
+#     непарные ** убираются; жирный из одних пробелов не склеивает слова; @ внутри ссылок и почты не вырезается
+ct = lambda s_: bot.clean_text(s_, with_signature=False)
+assert ct("Новый пост **@coolchannel**\nТекст") == "Новый пост\nТекст", ct("Новый пост **@coolchannel**\nТекст")
+assert ct("**Важно:****новость** дня") == "**Важно:новость** дня"
+assert ct("Заголовок** **конец") == "Заголовок конец"
+assert ct("**Жирный без конца\nследующая строка") == "Жирный без конца\nследующая строка"
+assert ct("~~~~зачёркнуто пусто") == "зачёркнуто пусто"
+assert ct("Видео: https://www.youtube.com/@MrBeast/videos") == "Видео: https://www.youtube.com/@MrBeast/videos"
+assert ct("Мой [тикток](https://www.tiktok.com/@artist/video/1)") == "Мой [тикток](https://www.tiktok.com/@artist/video/1)"
+assert ct("Пишите: support@game.ru") == "Пишите: support@game.ru"
+assert ct("Привет @news и пока") == "Привет и пока"
+assert ct("**Скачать: https://site.ru/file**") == "**Скачать: https://site.ru/file**"
+print("h64 ok: ✍️ без «****» и непарных звёздочек; ссылки и почта с @ целы; упоминания убираются аккуратно")
+
+# 65) 🆓 бесплатный тариф: 1 канал MAX и 1 источник; без ИИ (пересказ, хэштеги, умное время); только текст
+#     (фото/видео/файлы не качаются); не чаще поста в FREE_PLAN["gap_min"] минут; без водяного знака;
+#     в меню — только основное
+assert bot.FREE_PLAN["sources"] == 1 and bot.FREE_PLAN["gap_min"] == 30
+msg(6500, 65000, "/start")
+k65 = bot.tenant_by_chat(65000)
+t65 = bot.tenant_themes(k65)[0]
+t65.chat_id = 65100
+assert bot.tenant_mode(k65) == "free"
+with bot.theme_ctx(t65):
+    bot.CFG["channels"][:] = ["firstsrc"]
+    bot.CFG["ai_edit"] = bot.CFG["smart_tags"] = bot.CFG["smart_time"] = True
+    assert not bot.ai_on() and bot.smart_tags("Новый скин в Roblox", "src") == ""
+    assert not bot.smart_hold(time.time(), [], 3600)
+    bot.CFG["signature_text"] = ""
+    body = bot.compose_text("Просто пост", "src")
+    assert "Reloader" not in body and "max.ru" not in body, body                     # без водяного знака
+press(6500, 65000, "p:chadd"); bot.record_consent(6500); press(6500, 65000, "p:chadd"); msg(6500, 65000, "@secondsource")
+with bot.theme_ctx(t65):
+    assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]
+press(6500, 65000, "m:main")
+for adv in ("m:sh", "m:pinset", "m:anl"):
+    assert adv not in shown(), (adv, shown())                                      # продвинутое — у платных
+assert "m:ch" in shown() and "m:pay" in shown()
+feed["x"] = rss.replace("</channel>", """<item><title>Пост с картинкой</title><link>https://site.ru/65</link>
+<description>&lt;img src="https://site.ru/65.jpg"&gt; Текст поста</description><pubDate>Thu, 08 Oct 2026 12:00:00 +0000</pubDate></item></channel>""")
+got65 = []
+bot._download_url = lambda url, dest: (got65.append(url), open(dest, "wb").write(b"img"), dest)[2]
+bot.SOCIAL_CACHE.clear()
+with bot.theme_ctx(t65):
+    bot.CFG["approval_on"] = False
+    bot.CFG["channels"][:] = [rkey]
+    bot.LAST_IDS[rkey] = 1
+    bot.FRESH_SEC, old_fresh = 0, bot.FRESH_SEC
+    try:
+        asyncio.run(bot.process_channel(bot.src_client(None, rkey), rkey, {}))
+    finally:
+        bot.FRESH_SEC = old_fresh
+    q65 = [x for x in bot.QUEUE if x["ch"] == rkey]
+    assert q65 and all(not x["photos"] and not x["vids"] and not x["docs"] for x in q65), q65
+    assert not got65, "у бесплатного картинки даже не качаются"
+    pub65 = []
+    async def _pub65(client, chat_id, it):
+        pub65.append(it["id"]); return "ok"
+    real65, bot.publish_item = bot.publish_item, _pub65
+    try:
+        bot.QUEUE[:] = [dict(q65[0], id=f"z:{i}", urgent=True) for i in range(3)]
+        bot.CFG["queue_on"], bot.CFG["gap_min"] = False, 0
+        bot.PUB["last_pub"] = 0
+        asyncio.run(bot.publish_due(None, t65.chat_id))
+        assert len(pub65) == 1, pub65                                                # одна, без «срочных» обходов
+        bot.PUB["last_pub"] = time.time() - 10 * 60
+        asyncio.run(bot.publish_due(None, t65.chat_id))
+        assert len(pub65) == 1, pub65                                                # 10 минут — рано
+        bot.PUB["last_pub"] = time.time() - 31 * 60
+        asyncio.run(bot.publish_due(None, t65.chat_id))
+        assert len(pub65) == 2, pub65                                                # 30 минут — следующий
+    finally:
+        bot.publish_item = real65
+        bot.QUEUE[:] = []
+print("h65 ok: 🆓 бесплатный: 1 канал и 1 источник, без ИИ, только текст, пост раз в 30 мин, без водяного знака, простое меню")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

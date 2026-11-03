@@ -70,7 +70,9 @@ PRICE_30, PRICE_90 = 300, 750                         # если тарифов 
 DEFAULT_TARIFFS = [{"name": "Старт", "themes": 1, "sources": 5, "price": 300},
                    {"name": "Стандарт", "themes": 3, "sources": 10, "price": 600},
                    {"name": "Про", "themes": 10, "sources": 30, "price": 1500}]
-FREE_PLAN = {"name": "Бесплатный", "themes": 1, "sources": 2}   # 🆓 навсегда: срок кончился — кабинет работает так
+# 🆓 навсегда: срок кончился — кабинет работает так: 1 канал MAX, 1 источник, только текст, пост не чаще раза
+#    в gap_min минут, без ИИ и умных функций, в меню — только основное
+FREE_PLAN = {"name": "Бесплатный", "themes": 1, "sources": 1, "gap_min": 30}
 LIMIT_THEMES = int(os.environ.get("TGMAX_LIMIT_THEMES") or 3)
 LIMIT_SOURCES = int(os.environ.get("TGMAX_LIMIT_SOURCES") or 10)
 LIMIT_ADMINS = 3
@@ -821,18 +823,25 @@ def fix_markdown(text: str) -> str:
     text = MD_KEEP.sub(hide, text)
     text = re.sub(r"\|\|(.+?)\|\|", r"\1", text, flags=re.S)       # спойлеры -> обычный текст
 
-    def wrap(marker, out_marker):
+    text = re.sub(r"\*\*\*\*|~~~~", "", text)    # пустая пара (жирный без текста): «**@канал**» без канала, «**а:****б**»
+
+    def wrap(marker, token):
         pat = re.compile(re.escape(marker) + r"(\s*)(.+?)(\s*)" + re.escape(marker), re.S)
 
         def repl(m):
             parts = [p.strip() for p in m.group(2).split("\n") if p.strip()]
-            inner = "\n".join(out_marker + p + out_marker for p in parts)
+            if not parts:                              # «** **» — оставляем пробел, слова не склеиваются
+                return m.group(1) + m.group(2) + m.group(3)
+            inner = "\n".join(token + p + token for p in parts)
             return m.group(1) + inner + m.group(3)
         return pat.sub(repl, text)
 
-    text = wrap("**", "**")
-    text = wrap("~~", "~~")
-    text = wrap("__", "_")
+    # парные метки — во временные знаки; что осталось от ** и ~~ — непарное, в MAX оно видно звёздочками: убираем
+    text = wrap("**", "\ue000")
+    text = wrap("~~", "\ue001")
+    text = wrap("__", "\ue002")
+    text = text.replace("**", "").replace("~~", "")
+    text = text.replace("\ue000", "**").replace("\ue001", "~~").replace("\ue002", "_")
     return re.sub(r"\x00(\d+)\x00", lambda m: keep[int(m.group(1))], text)
 
 
@@ -1114,7 +1123,7 @@ def hot_hours():
 
 def smart_hold(now, ready, limit):
     """🧠 Умное время: сейчас «холодный» час — придержим посты, но не дольше 60% срока хранения и не срочные."""
-    if not CFG.get("smart_time"):
+    if not CFG.get("smart_time") or on_free():
         return False
     hot = hot_hours()
     if hot is None or time.localtime(now).tm_hour in hot:
@@ -1139,7 +1148,7 @@ TAG_RULES = [(("роблокс", "roblox", "робукс", "robux"), ["#roblox",
 
 def smart_tags(raw, ch=""):
     """🧠 2-3 хэштега по теме поста. Если в тексте уже есть хэштеги — не трогаем."""
-    if not CFG.get("smart_tags") or not raw or "#" in raw:
+    if not CFG.get("smart_tags") or not raw or "#" in raw or on_free():
         return ""
     low = raw.lower()
     tags = []
@@ -1190,6 +1199,22 @@ def sig_norm(s):
     return " ".join(re.findall(r"[0-9a-zа-я]+", s))
 
 
+# @упоминание — отдельное слово (вместе с пробелом после) или приклеенное к знакам: «(@x)», «**@x**»;
+# @ в адресе (youtube.com/@x), в почте (a@b.ru), в тексте ссылки «[@x](…)» — не трогаем
+MENTION_WORD_RE = re.compile(r"(?:^|(?<=[ \t]))@\w+(?:[ \t]+|$)", re.M)
+MENTION_RE = re.compile(r"(?<![\w/.@=\[-])@\w+")
+
+
+def drop_mentions(body: str) -> str:
+    return MENTION_RE.sub("", MENTION_WORD_RE.sub("", body))
+
+
+def tidy_spaces(body: str) -> str:
+    """Без пробелов в конце строк и лишних пустых строк."""
+    body = re.sub(r"[ \t]+\n", "\n", body)
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
 def clean_text(text: str, with_signature: bool = True) -> str:
     """Убирает чужие подписи, футеры, рекламу, @упоминания и t.me-ссылки."""
     body = ""
@@ -1217,11 +1242,10 @@ def clean_text(text: str, with_signature: bool = True) -> str:
         body = "\n".join(lines)
         body = re.sub(r"\[([^\]]*)\]\(https?://t\.me/[^)]*\)", r"\1", body)
         body = re.sub(r"https?://t\.me/\S+", "", body)   # голые ссылки t.me
-        body = re.sub(r"@\w+", "", body)                   # @упоминания
-        body = re.sub(r"[ \t]+\n", "\n", body)
-        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        body = drop_mentions(body)                         # @упоминания (не @ внутри ссылок и почты)
+        body = tidy_spaces(body)
         body = apply_replacements(body)
-    body = fix_markdown(body)
+    body = tidy_spaces(fix_markdown(body))
     if not with_signature:
         return body
     return (body + "\n\n" + signature()).strip()
@@ -3977,7 +4001,7 @@ def handle_callback(cb):
     if HOST_MODE and not is_host(uid):
         key = tenant_by_chat(cb.get("_chat")) or tenant_key(uid)
         if key and not tenant_live(key) and payload not in ("m:pay", "p:promo") \
-                and not payload.startswith(("py:", "pk:", "pd:", "pc:")):
+                and not payload.startswith(("py:", "pk:", "pd:", "pc:", "pe:")):
             api_answer(cid, *host_lock_screen(uid))
             return
     if kind == "m":
@@ -4009,6 +4033,9 @@ def handle_callback(cb):
         text, rows = pay_choice(rest, uid)
     elif kind == "pd" and (CLIENT_MODE or HOST_MODE):      # «Я оплатил» / заявка
         text, rows = host_pay_manual(rest, uid) if HOST_MODE else pay_done(rest, uid)
+    elif kind == "pe" and HOST_MODE:                       # «⏭ Пропустить» почту для чека — запасная почта
+        PENDING.pop(uid, None)
+        text, rows = host_pay_online(rest, uid)
     elif kind == "pc" and HOST_MODE:                       # «🔄 Проверить оплату» (ЮKassa)
         text, rows = host_pay_check(uid)
     elif kind == "pk" and (CLIENT_MODE or HOST_MODE):      # «Оплатить онлайн» (ЮKassa)
@@ -4369,6 +4396,8 @@ def client_main(uid=None):
     has_ch = bool(CFG["channels"])
     soc = feature_on("social")
     src = "каналов Telegram" + (" и соцсетей" if soc else "")
+    free = on_free(t)                                # 🆓 тайник, закреп и аналитика — у платных тарифов
+    adv_stats = feature_on("stats") and not free
     if t.chat_id and has_ch:
         state = ("⏸ на паузе — посты не выходят, нажми «▶️ Продолжить»" if CFG["paused"] else
                  "▶️ работает — новые посты выходят сами")
@@ -4397,9 +4426,10 @@ def client_main(uid=None):
              "⏳ Расписание — пауза между постами, чтобы не выходили пачкой\n"
              "✋ Проверка постов — показывать тебе пост перед выходом или нет\n"
              "✍️ Подпись — твой текст под каждым постом\n"
-             "🗃 Тайник — запасные посты: выходят, когда новых нет\n"
-             "📌 Закреп и автоудаление — закреплять новый пост, удалять старые через N часов\n"
-             + ("📊 Аналитика — в какие дни и часы у канала больше просмотров\n" if feature_on("stats") else "")
+             + ("" if free else
+                "🗃 Тайник — запасные посты: выходят, когда новых нет\n"
+                "📌 Закреп и автоудаление — закреплять новый пост, удалять старые через N часов\n")
+             + ("📊 Аналитика — в какие дни и часы у канала больше просмотров\n" if adv_stats else "")
              + "⚙️ Ещё настройки — фильтр рекламы, видео, повторы, отчёт, темы\n"
              + ("💳 Продлить доступ — добавить дни подписки\n" if HOST_MODE else "💳 Тариф и оплата — продлить или сменить тариф\n")
              + "⏸ Пауза — остановить выход постов (всё сохранится)\n"
@@ -4411,9 +4441,9 @@ def client_main(uid=None):
             [B("📡 Откуда брать посты" + (" (Telegram, соцсети)" if soc else " (Telegram)"), "m:ch")],
             [B("📢 Куда выкладывать (канал MAX)", "m:thm" if t.chat_id else "m:chpick")],
             [B("⏳ Расписание", "m:q"), B("✋ Проверка постов", "m:ap")],
-            [B("✍️ Подпись", "m:sg"), B("🗃 Тайник", "m:sh")],
-            [B("📌 Закреп и автоудаление", "m:pinset")],
-            *([[B("📊 Аналитика: когда смотрят", "m:anl")]] if feature_on("stats") else []),
+            [B("✍️ Подпись", "m:sg")] + ([] if free else [B("🗃 Тайник", "m:sh")]),
+            *([] if free else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
+            *([[B("📊 Аналитика: когда смотрят", "m:anl")]] if adv_stats else []),
             [B("⚙️ Ещё настройки", "m:more")] + pay_btn,
             [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")]]
     if me:
@@ -4812,6 +4842,15 @@ def handle_message(uid, chat_id, name, text, msg=None):
     if action and action.startswith("tg_") and t:          # подключение Telegram: ключи, номер, код
         answer, rows = tg_text(uid, action, t, ((msg or {}).get("body") or {}).get("mid"))
         api_send(chat_id, answer, rows)
+        return
+    if action and action.startswith("payemail:"):         # 📧 почта для чека ЮKassa
+        PENDING.pop(uid, None)
+        email = t.strip().lower()
+        ok = bool(EMAIL_RE.match(email)) and len(email) <= 254
+        text, rows = host_pay_online(action.split(":", 1)[1], uid, email if ok else None)
+        if not ok:
+            text = "Это не похоже на email — чек придёт на почту продавца.\n\n" + text
+        send_screen(chat_id, text, rows)
         return
     if action in ("cladpost", "cladmark"):                # 📢 рекламная рассылка — только хозяин
         PENDING.pop(uid, None)
@@ -5827,7 +5866,8 @@ async def publish_due(client, chat_id):
     if stale:
         save_queue()
         resolve_cards(item_refs(stale))
-    force = now < FORCE["until"]
+    free = on_free()
+    force = now < FORCE["until"] and not free
     ready = [x for x in QUEUE if x.get("status", "ok") in ("ok", "stuck")     # stuck — ждёт файл, пробует сам
              and x.get("retry_at", 0) <= now and x.get("at", 0) <= now]
 
@@ -5855,7 +5895,7 @@ async def publish_due(client, chat_id):
 
     # 2) срочные посты — без паузы расписания (но не больше N в час) и не пачкой: по одному, минута между постами
     PUB["urgent_times"] = [t for t in PUB.get("urgent_times", []) if now - t < 3600]
-    if CFG["urgent_on"] and not force:
+    if CFG["urgent_on"] and not force and not free:
         for x in sorted([x for x in ready if x.get("urgent")], key=lambda x: x["date"]):
             if len(PUB["urgent_times"]) >= CFG["urgent_max_h"] or now - PUB["last_pub"] < MIN_GAP_SEC:
                 break
@@ -5877,18 +5917,21 @@ async def publish_due(client, chat_id):
             await maybe_stash(chat_id, now)
         return
     gap = max(CFG["gap_min"] * 60 if CFG["queue_on"] else 0, MIN_GAP_SEC)   # даже без расписания — не пачкой
+    if free:
+        gap = max(gap, FREE_PLAN["gap_min"] * 60)
     new_series = True
     if force or gap == 0:
         due = sorted(ready, key=prio_key)
     else:
         due = []
-        if CFG["auto_series"]:
+        if CFG["auto_series"] and not free:
             for x in sorted(ready, key=lambda x: x["date"]):
                 if is_followup(x):                   # серия: сразу, не ждём паузу
                     due, new_series = [x], False
                     break
         if not due and now - last_slot() >= gap:
-            due = [x for x in batch_for_head(min(ready, key=prio_key)) if x in ready]
+            head = min(ready, key=prio_key)
+            due = [head] if free else [x for x in batch_for_head(head) if x in ready]
     seen = set()
     for it in due:
         res = await publish_item(client, chat_id, it)
@@ -6163,9 +6206,10 @@ async def _process_channel(client, ch, fails, fresh):
         body = clean_text(raw, with_signature=False)
         img_paths, pids, hashes = [], [], []
         queued = False
+        media = [] if on_free() else grp                 # 🆓 бесплатный тариф — только текст
         try:
             # фото: скачиваем сразу (они лёгкие), считаем отпечаток для дублей
-            for m in grp:
+            for m in media:
                 if has_image(m):
                     dest = f"{MEDIA_DIR}/{t.fs}{ch}_{m.id}{photo_ext(m)}"
                     try:
@@ -6181,14 +6225,14 @@ async def _process_channel(client, ch, fails, fresh):
             # видео/GIF: пока только данные о файле — качать будем при публикации
             vids = []
             if CFG["video_on"]:
-                for m in grp:
+                for m in media:
                     vi = video_info(m)
                     if vi:
                         vids.append((m, vi))
                         hashes.append(f"v{vi[0]}-{vi[1]}")
             # файлы (PDF, архивы, музыка, голосовые): качаем при публикации
             docs, lost = [], []
-            for m in grp:
+            for m in media:
                 di = doc_info(m)
                 if not di:
                     continue
@@ -8045,7 +8089,7 @@ def ai_edit(text):
 
 
 def ai_on():
-    return bool(CFG.get("ai_edit")) and feature_on("ai")
+    return bool(CFG.get("ai_edit")) and feature_on("ai") and not on_free()
 
 
 # ---------- 🧩 СВОЙ ТАРИФ (бета): покупатель сам выбирает темы и источники ----------
@@ -9234,14 +9278,17 @@ def theme_live(t):
     return mode == "free" and t in tenant_themes(t.owner)[:FREE_PLAN["themes"]]
 
 
+def on_free(t=None):
+    """Тема — кабинет покупателя на бесплатном тарифе (не оплачен): действуют ограничения FREE_PLAN."""
+    t = t or cur()
+    return bool(HOST_MODE and getattr(t, "owner", "") and tenant_mode(t.owner) == "free")
+
+
 def live_channels():
     """Источники текущей темы, которые читаем: на бесплатном тарифе — первые FREE_PLAN["sources"], остальные на паузе
     (не удаляются: оплатит — снова читаются)."""
     chans = list(CFG["channels"])
-    t = cur()
-    if HOST_MODE and getattr(t, "owner", "") and tenant_mode(t.owner) == "free":
-        return chans[:FREE_PLAN["sources"]]
-    return chans
+    return chans[:FREE_PLAN["sources"]] if on_free() else chans
 
 
 def new_cabinet_theme(key, name):
@@ -9838,7 +9885,7 @@ def host_free_paid(key, t, days):
     return (f"🎁 По промокоду «{t['name']}» на {days} дней — бесплатно. Доступ открыт ✅"), [[B("◀️ В меню", "m:main")]]
 
 
-def host_pay_online(rest, uid):
+def host_pay_online(rest, uid, email=None):
     i, days = rest.split(":")[:2]
     days = int(days)
     key = tenant_key(uid) or cur().owner
@@ -9850,7 +9897,7 @@ def host_pay_online(rest, uid):
         return host_pay_manual(rest, uid)
     try:
         pid, url = yk_create(price, f"Доступ к боту TG→MAX: «{t['name']}», {days} дней",
-                             {"key": key, "plan": t["name"], "days": days}, "https://max.ru")
+                             {"key": key, "plan": t["name"], "days": days}, "https://max.ru", email=email)
     except Exception as e:
         log_exc("ЮKassa (host)")
         ok, why = yk_check()
@@ -10018,8 +10065,9 @@ def my_prices():
 
 
 def free_plan_text():
-    return (f"работает {FREE_PLAN['themes']} канал MAX и до {FREE_PLAN['sources']} "
-            f"{n_word(FREE_PLAN['sources'], 'источника', 'источников', 'источников')}")
+    n = FREE_PLAN["sources"]
+    return (f"работает {FREE_PLAN['themes']} канал MAX и {n} {n_word(n, 'источник', 'источника', 'источников')}, "
+            f"только текст (без фото и видео), пост не чаще раза в {FREE_PLAN['gap_min']} минут, без ИИ")
 
 
 def tariff_line(t):
@@ -10044,8 +10092,10 @@ def pay_screen():
             if req.get("status") in ("new", "sent") else
             f"\n\n⏳ Жду оплату «{req['plan']}» ({req['days']} дн.) по ссылке выше." if req.get("status") == "link"
             else "")
-    free_line = ([f"• {FREE_PLAN['name']} — {FREE_PLAN['themes']} тема, до {FREE_PLAN['sources']} каналов в теме: "
-                  "0 ₽, навсегда (бот иногда присылает рекламу)" + (" — сейчас у тебя" if free else "")]
+    free_line = ([f"• {FREE_PLAN['name']} — {FREE_PLAN['themes']} канал MAX, {FREE_PLAN['sources']} "
+                  f"{n_word(FREE_PLAN['sources'], 'источник', 'источника', 'источников')}, только текст, "
+                  f"пост раз в {FREE_PLAN['gap_min']} мин: 0 ₽, навсегда (бот иногда присылает рекламу)"
+                  + (" — сейчас у тебя" if free else "")]
                  if HOST_MODE else [])
     text = ("💳 Тариф и оплата\n\n" + now + wait + "\n\nТарифы:\n"
             + "\n".join(free_line + [tariff_line(t) for t in tariffs()])
@@ -10064,6 +10114,9 @@ def pay_screen():
     return text, rows + [[B("◀️ В меню", "m:main")]]
 
 
+PAY_EMAIL_ASK = "Напишите email (почта) для отправки чека."
+
+
 def pay_choice(rest, uid=None):
     """Выбрал тариф и срок: как оплатить и кнопка «Я оплатил»."""
     i, days = rest.split(":")[:2]
@@ -10074,8 +10127,11 @@ def pay_choice(rest, uid=None):
     if HOST_MODE and price <= 0:                          # промокод 100% — платить нечего
         return (f"🎁 «{t['name']}» на {days} дней — бесплатно по промокоду.",
                 [[B("✅ Получить бесплатно", f"pk:{i}:{days}")], [B("◀️ Тарифы", "m:pay")]])
-    if HOST_MODE and yk_keys():                           # ЮKassa подключена — сразу ссылка на оплату, без лишних шагов
-        return host_pay_online(rest, uid)
+    if HOST_MODE and yk_keys():                           # ЮKassa: сначала почта для чека, потом ссылка
+        PENDING[uid] = f"payemail:{i}:{days}"
+        return (f"💳 «{t['name']}» на {days} дней — {price} ₽\n\n{PAY_EMAIL_ASK}\n"
+                "Чек об оплате придёт на эту почту (так требует закон, 54-ФЗ)."), \
+            [[B("⏭ Пропустить", f"pe:{i}:{days}")], [B("◀️ Тарифы", "m:pay")]]
     if sub_info().get("online"):
         text = (f"💳 «{t['name']}» на {days} дней — {price} ₽\n\nОплата картой или по СБП через ЮKassa — чек придёт "
                 "автоматически. Нажми «💳 Оплатить онлайн»: пришлю ссылку, а после оплаты бот продлится сам.")
@@ -10323,28 +10379,31 @@ def yk_check():
     return False, f"ЮKassa ответила {r.status_code}: {r.text[:150]}"
 
 
-def yk_create(amount, description, metadata, return_url):
-    """Платёж в ЮKassa. Возвращает (id платежа, ссылка на оплату)."""
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
+
+
+def receipt_email():
+    """Запасная почта для чека (54-ФЗ), если покупатель свою не дал: YOOKASSA_RECEIPT_EMAIL."""
+    return _yk_clean(os.environ.get("YOOKASSA_RECEIPT_EMAIL") or CONFIG.get("yookassa_receipt_email")) or None
+
+
+def yk_create(amount, description, metadata, return_url, email=None):
+    """Платёж в ЮKassa. Чек (54-ФЗ) — на почту покупателя, а если её нет — на запасную почту продавца.
+    Возвращает (id платежа, ссылка на оплату)."""
     import uuid
+    money = {"value": f"{amount:.2f}", "currency": "RUB"}
+    body = {"amount": money, "capture": True, "confirmation": {"type": "redirect", "return_url": return_url},
+            "description": description[:128], "metadata": metadata}
+    customer = email or receipt_email()
+    if customer:
+        body["receipt"] = {"customer": {"email": customer}, "items": [{
+            "description": description[:128], "quantity": "1.00", "vat_code": 1, "amount": money,
+            "payment_subject": "service", "payment_mode": "full_payment"}]}
     r = S.post(f"{YK_API}/v3/payments", auth=yk_keys(), timeout=30,
-               headers={"Idempotence-Key": str(uuid.uuid4())},
-               json={"amount": {"value": f"{amount:.2f}", "currency": "RUB"}, "capture": True,
-                     "confirmation": {"type": "redirect", "return_url": return_url},
-                     "description": description[:128], "metadata": metadata})
-    if r.status_code == 400 and "receipt" in r.text.lower():   # в магазине включены чеки (54-ФЗ) — нужен чек
-        mail = _yk_clean(os.environ.get("YOOKASSA_RECEIPT_EMAIL") or CONFIG.get("yookassa_receipt_email"))
-        if not mail:
-            raise RuntimeError("в магазине ЮKassa включены чеки — добавь в Bothost переменную YOOKASSA_RECEIPT_EMAIL "
-                               "(твоя почта для чеков) или выключи чеки в ЮKassa")
-        r = S.post(f"{YK_API}/v3/payments", auth=yk_keys(), timeout=30,
-                   headers={"Idempotence-Key": str(uuid.uuid4())},
-                   json={"amount": {"value": f"{amount:.2f}", "currency": "RUB"}, "capture": True,
-                         "confirmation": {"type": "redirect", "return_url": return_url},
-                         "description": description[:128], "metadata": metadata,
-                         "receipt": {"customer": {"email": mail}, "items": [{
-                             "description": description[:128], "quantity": "1.00", "vat_code": 1,
-                             "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-                             "payment_subject": "service", "payment_mode": "full_payment"}]}})
+               headers={"Idempotence-Key": str(uuid.uuid4())}, json=body)
+    if r.status_code == 400 and "receipt" in r.text.lower() and not customer:
+        raise RuntimeError("в магазине ЮKassa включены чеки — добавь в Bothost переменную YOOKASSA_RECEIPT_EMAIL "
+                           "(твоя почта для чеков) или выключи чеки в ЮKassa")
     if r.status_code >= 300:
         raise RuntimeError(f"ЮKassa {r.status_code}: {r.text[:1500]}")   # ответ целиком — в bot.log
     j = r.json()
