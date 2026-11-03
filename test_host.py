@@ -913,8 +913,10 @@ bot.handle_update({"update_type": "message_created", "message": {
     "sender": {"user_id": 1, "first_name": "U1"}, "recipient": {"chat_id": 61000, "chat_type": "dialog"},
     "body": {"mid": "mid-key", "text": "123456 test_secret"}}})
 said = " ".join(o[0] for o in OUT[-3:])
-assert "подключена" in said and "test_secret" not in said, said
-assert "mid-key" in srv.deleted and bot.yk_keys() == ("123456", "test_secret")
+assert "переменных хостинга" in said and "test_secret" not in said, said      # секреты — в переменных: они главнее
+assert "mid-key" in srv.deleted and bot.yk_keys() == ("123456", "wrongkey")
+os.environ["YOOKASSA_SECRET_KEY"] = ""                          # хозяин убрал старую переменную — ключ из панели
+assert bot.yk_keys() == ("123456", "test_secret")
 buy(5001, 62000, "0:30")
 assert "yoomoney.ru/checkout" in shown(), shown()
 real_del = bot.delete_msg
@@ -924,7 +926,6 @@ assert any("удали его сам" in o[0] for o in OUT[-3:]), [o[0][:80] for
 bot.delete_msg = real_del
 press(1, 61000, "p:clyk"); msg(1, 61000, "abc")
 assert any("Не понял" in o[0] for o in OUT[-3:])
-os.environ["YOOKASSA_SECRET_KEY"] = "test_secret"
 print("h43 ok: 🔑 ключи ЮKassa — ввод в панели, сразу проверка, сообщение с ключом удаляется, видно что видит бот")
 
 # 44) TikTok через tikwm (без входа в аккаунт): видео — прямой ссылкой, карусель — фото; оба пути сломаны — понятная причина
@@ -1763,6 +1764,36 @@ with bot.theme_ctx(t65):
         bot.FRESH_SEC = old_fresh
         bot.QUEUE[:] = []
 print("h66 ok: 🆓 бесплатный: фильтр рекламы есть, очередь до 20, проверка раз в 15 мин, без соцсетей, подсказка о платном")
+
+# 67) переменные окружения действуют: секреты (ключи ЮKassa, VK) — из переменных хостинга, панель — только
+#     если переменной нет; TG_PROXY из переменной главнее config.json; контакт продавца — что поменяли позже
+#     (панель или переменная); число с опечаткой в переменной не роняет бота
+os.environ["YOOKASSA_SECRET_KEY"] = "test_envkey1"
+assert bot.yk_keys() == ("123456", "test_envkey1") and "переменных хостинга" in bot.yk_seen(), bot.yk_seen()
+os.environ["YOOKASSA_SECRET_KEY"] = ""
+assert bot.yk_keys() == ("123456", "test_secret") and "панели" in bot.yk_seen(), bot.yk_seen()
+vk0 = bot.GCFG.get("vk_token")
+bot.GCFG["vk_token"], os.environ["VK_TOKEN"] = "p" * 30, "e" * 30
+assert bot.vk_token() == "e" * 30
+os.environ.pop("VK_TOKEN")
+assert bot.vk_token() == "p" * 30
+bot.GCFG["vk_token"] = vk0
+assert bot.tg_proxy_url({"tg_proxy": "http://file:1"}, {"TG_PROXY": " http://env:2 "}) == "http://env:2"
+assert bot.tg_proxy_url({"tg_proxy": "http://file:1"}, {}) == "http://file:1"
+sc0 = bot.GCFG.get("seller_contact")
+bot.panel_set("seller_contact", "@panel_nick", "@old_env")
+assert bot.pick_setting("seller_contact", "@old_env") == "@panel_nick"      # переменная не менялась — из панели
+assert bot.pick_setting("seller_contact", "@new_env") == "@new_env"         # переменную поменяли позже — она
+bot.GCFG["env_seen"].pop("seller_contact")                                   # старые настройки: отпечатка нет
+assert bot.pick_setting("seller_contact", "@new_env") == "@new_env"
+assert bot.pick_setting("seller_contact", "") == "@panel_nick"
+bot.GCFG["seller_contact"] = sc0
+os.environ["X_TEST_INT"] = "abc"
+assert bot.env_int("X_TEST_INT", 7) == 7
+os.environ["X_TEST_INT"] = " 12 "
+assert bot.env_int("X_TEST_INT", 7) == 12
+os.environ.pop("X_TEST_INT")
+print("h67 ok: ⚙️ переменные окружения: секреты из переменных главнее панели, прокси и контакт — как задано позже")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

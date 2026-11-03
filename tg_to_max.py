@@ -74,8 +74,18 @@ DEFAULT_TARIFFS = [{"name": "Старт", "themes": 1, "sources": 5, "price": 30
 #    в gap_min минут, без ИИ и умных функций, в меню — только основное; в очереди до queue_max постов;
 #    источник проверяется раз в check_min минут; без соцсетей
 FREE_PLAN = {"name": "Бесплатный", "themes": 1, "sources": 1, "gap_min": 30, "queue_max": 20, "check_min": 15}
-LIMIT_THEMES = int(os.environ.get("TGMAX_LIMIT_THEMES") or 3)
-LIMIT_SOURCES = int(os.environ.get("TGMAX_LIMIT_SOURCES") or 10)
+def env_int(name, default):
+    """Число из переменной окружения; пусто или опечатка — значение по умолчанию (бот не падает)."""
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        print(f"⚠️ Переменная {name}={raw!r} — не число, беру {default}")
+        return default
+
+
+LIMIT_THEMES = env_int("TGMAX_LIMIT_THEMES", 3)
+LIMIT_SOURCES = env_int("TGMAX_LIMIT_SOURCES", 10)
 LIMIT_ADMINS = 3
 for _stream in (sys.stdout, sys.stderr):              # логи хостинга видны сразу, а не когда наберётся буфер
     with contextlib.suppress(Exception):
@@ -401,7 +411,12 @@ S.mount("http://", _adapter)
 
 # t.me читаем отдельной сессией: быстро сдаёмся, если сайт недоступен (в РФ Telegram блокируют),
 # и можно пустить только его через прокси (TG_PROXY=http://user:pass@host:port) — MAX идёт напрямую.
-TG_PROXY = (CONFIG.get("tg_proxy") or os.environ.get("TG_PROXY") or "").strip()
+def tg_proxy_url(config, env):
+    """Прокси для t.me: переменная TG_PROXY главнее config.json (как и остальные настройки)."""
+    return (env.get("TG_PROXY") or config.get("tg_proxy") or "").strip()
+
+
+TG_PROXY = tg_proxy_url(CONFIG, os.environ)
 WS = requests.Session()
 WS.trust_env = False
 if TG_PROXY:
@@ -436,10 +451,32 @@ def contact_ok(s):
     return len(re.sub(r"[^\w]", "", str(s or ""))) >= 3
 
 
+def _env_fp(value):
+    return hashlib.sha256(str(value or "").strip().encode()).hexdigest()[:16]
+
+
+def panel_set(key, value, env_value):
+    """Настройку задали в панели: запоминаем и отпечаток переменной окружения на этот момент."""
+    GCFG[key] = value
+    GCFG.setdefault("env_seen", {})[key] = _env_fp(env_value)
+
+
+def pick_setting(key, env_value):
+    """Обычная (не секретная) настройка: из панели или из переменной — что поменяли ПОЗЖЕ.
+    Переменную изменили после ввода в панели (или отпечатка нет — старые настройки) — берём переменную."""
+    env_value = str(env_value or "").strip()
+    panel = GCFG.get(key)
+    if not panel:
+        return env_value or None
+    if env_value and (GCFG.get("env_seen") or {}).get(key) != _env_fp(env_value):
+        return env_value
+    return panel
+
+
 if not contact_ok(GCFG.get("seller_contact")):
     GCFG.pop("seller_contact", None)                    # «.» и прочий мусор — забываем, хозяину покажем «задай контакт»
-if not CLIENT_MODE and GCFG.get("seller_contact"):       # контакт, заданный в панели, важнее переменной/плейсхолдера
-    SELLER_CONTACT = GCFG["seller_contact"]
+if not CLIENT_MODE and GCFG.get("seller_contact"):       # контакт: из панели или переменной — что поменяли позже
+    SELLER_CONTACT = pick_setting("seller_contact", os.environ.get("SELLER_CONTACT")) or SELLER_CONTACT
 elif CLIENT_MODE:
     _sc = load_json("subscription.json", {}).get("contact")
     if _sc:
@@ -3476,6 +3513,11 @@ def apply_text(action, text, uid=None):
                     "через пробел. Пример: 123456 live_AbCd…"), "cltar"
         GCFG["yk_shop"], GCFG["yk_key"] = sid, key
         save_cfg()
+        if yk_env_keys() and yk_env_keys() != (sid, key):
+            return ("⚠️ Сохранил, но в переменных хостинга (YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY) задан другой "
+                    "ключ — бот берёт его: секретные ключи живут в переменных. Поменяй YOOKASSA_SECRET_KEY "
+                    "в настройках хостинга (или удали её — тогда возьму ключ из панели) и перезапусти бота.\n"
+                    + yk_seen()) + tail, "cltar"
         ok, why = yk_check()
         return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
@@ -7823,8 +7865,13 @@ def yt_channel_id(ch):
     return m.group(1)
 
 
+def vk_token():
+    """Ключ VK: секрет — из переменной VK_TOKEN; ключ из панели — только если переменной нет."""
+    return (os.environ.get("VK_TOKEN") or "").strip() or GCFG.get("vk_token")
+
+
 def vk_posts(domain):
-    tok = GCFG.get("vk_token") or os.environ.get("VK_TOKEN")
+    tok = vk_token()
     if not tok:
         raise RuntimeError("для VK нужен ключ: хозяин бота задаёт его в «🧪 Бета-функции» → «🔑 Ключ VK»")
     r = S.get("https://api.vk.com/method/wall.get", timeout=30,
@@ -10361,13 +10408,22 @@ def _yk_clean(v):
     return re.sub(r"[\s\"'«»`\u200b-\u200f\ufeff]", "", str(v or ""))
 
 
-def yk_keys():
-    """shopId и секретный ключ ЮKassa — только из переменных хостинга или config.json, не из кода."""
-    if GCFG.get("yk_shop") and GCFG.get("yk_key"):        # введены в панели бота — главнее переменных Bothost
-        return _yk_clean(GCFG["yk_shop"]), _yk_clean(GCFG["yk_key"])
+def yk_env_keys():
+    """Ключи ЮKassa из переменных хостинга (или config.json); нет пары — None."""
     sid = _yk_clean(os.environ.get("YOOKASSA_SHOP_ID") or CONFIG.get("yookassa_shop_id"))
     key = _yk_clean(os.environ.get("YOOKASSA_SECRET_KEY") or CONFIG.get("yookassa_secret_key"))
     return (sid, key) if sid and key else None
+
+
+def yk_keys():
+    """shopId и секретный ключ ЮKassa. Секреты живут в переменных хостинга — они главнее;
+    ключи из панели бота — только если переменных нет. В коде ключей нет."""
+    env = yk_env_keys()
+    if env:
+        return env
+    if GCFG.get("yk_shop") and GCFG.get("yk_key"):
+        return _yk_clean(GCFG["yk_shop"]), _yk_clean(GCFG["yk_key"])
+    return None
 
 
 YK_MSG_GONE = {}       # хозяин -> удалось ли убрать из чата его сообщение с ключом ЮKassa
@@ -10378,7 +10434,7 @@ def yk_seen():
     k = yk_keys()
     if not k:
         return "ключей нет"
-    src = "из панели бота" if GCFG.get("yk_shop") and GCFG.get("yk_key") else "из переменных Bothost"
+    src = "из переменных хостинга" if yk_env_keys() else "из панели бота"
     kind = "боевой (live_)" if k[1].startswith("live_") else "тестовый (test_)" if k[1].startswith("test_") else "неизвестного вида"
     return f"бот видит ({src}): shopId {k[0]}, ключ {kind}, {len(k[1])} символов, …{k[1][-4:]}"
 
@@ -11342,7 +11398,7 @@ def clients_text(action, text, uid):
             return ("Это не похоже на контакт. Пришли ник (например @ivan), ссылку https://max.ru/… "
                     "или телефон — покупатели будут писать туда."), "cltar"
         SELLER_CONTACT = text.strip()[:80]
-        GCFG["seller_contact"] = SELLER_CONTACT
+        panel_set("seller_contact", SELLER_CONTACT, os.environ.get("SELLER_CONTACT"))
         save_cfg()
         for cid in list(CLIENTS):
             with contextlib.suppress(Exception):
