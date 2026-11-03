@@ -791,12 +791,12 @@ try:
 finally:
     bot.S.get = real_get
 assert vk == [(5, 1, "Пост Павел", ["big"], None)], vk
-press(1, 61000, "m:clbeta")                                     # кнопок ключей VK/TikTok в панели нет
-assert "p:clvk" not in shown() and "Ключ VK" not in shown(), shown()
-vk_save = bot.GCFG.pop("vk_token", None)
+press(1, 61000, "m:clbeta")                                     # кнопка «🔑 Ключ VK» — на месте
+assert "p:clvk" in shown(), shown()
 press(1, 61000, "m:clbf:social")
-assert "p:clvk" not in shown() and "кнопка ниже" not in OUT[-1][0] and "VK_TOKEN" in OUT[-1][0], OUT[-1][0]
-bot.GCFG["vk_token"] = vk_save
+assert "p:clvk" in shown(), shown()
+press(1, 61000, "p:clvk"); msg(1, 61000, "y" * 40)
+assert bot.GCFG["vk_token"] == "y" * 40
 # соцсети выключены у кабинета — источник не читается
 with bot.theme_ctx(bot.tenant_themes(k9)[0]):
     bot.CFG["channels"].append("tt~someone")
@@ -1921,6 +1921,73 @@ assert "Удалить" in OUT[-1][0] and "a:cltgaccrm:acc1" in shown(), OUT[-1]
 press(1, 61000, "a:cltgaccrm:acc1")
 assert not os.path.exists("sessions/acc1.session") and bot.POOL.status() == [] and "удалён" in OUT[-1][0], OUT[-1][0]
 print("h68 ok: 👤 Telegram Аккаунты: .session файлом в пул, вступает и читает новый источник, FloodWait, удаление")
+
+# 69) 🔑 Ключи и доступы: хозяин сам задаёт в боте ключ VK и cookies TikTok — кнопкой, ключ присылает в чат
+#     (сообщение с ним бот удаляет, в ответах — только хвост «…abcd»); ключ из панели главнее переменной Bothost;
+#     «🗑 Убрать» — снова из переменной; настройки с ключами — в settings.json, доступном только боту
+def send_secret69(text, mid):
+    bot.handle_update({"update_type": "message_created", "message": {
+        "sender": {"user_id": 1, "first_name": "U1"}, "recipient": {"chat_id": 61000, "chat_type": "dialog"},
+        "body": {"mid": mid, "text": text}}})
+    return " ".join(o[0] for o in OUT[-3:])
+press(1, 61000, "m:cl")
+assert "m:clkeys" in shown(), shown()
+press(1, 61000, "m:clkeys")
+keys_text = OUT[-1][0]
+assert "Ключи и доступы" in keys_text and "ЮKassa" in keys_text and "VK" in keys_text and "TikTok" in keys_text
+assert all(p_ in shown() for p_ in ("p:clyk", "p:clvk", "p:cltt")), shown()
+assert "test_secret" not in keys_text and "y" * 40 not in keys_text, keys_text                # секреты не видны
+os.environ["VK_TOKEN"], os.environ["TIKTOK_COOKIES"] = "e" * 30, "sessionid=fromenv"
+srv.deleted.clear()
+press(1, 61000, "p:clvk")
+said = send_secret69("vk1." + "A" * 60 + "wxyz", "mid-vk")
+assert "сохранён" in said and "A" * 60 not in said and "…wxyz" in said and "mid-vk" in srv.deleted, said
+assert bot.vk_token() == "vk1." + "A" * 60 + "wxyz"                                       # панель главнее VK_TOKEN
+press(1, 61000, "p:cltt")
+said = send_secret69("sessionid=abc123secret; tt_csrf_token=zz9; msToken=mm", "mid-tt")
+assert "сохранены" in said and "abc123secret" not in said and "3" in said and "mid-tt" in srv.deleted, said
+assert bot.tiktok_cookies() == "sessionid=abc123secret; tt_csrf_token=zz9; msToken=mm"     # панель главнее переменной
+press(1, 61000, "p:cltt")                                                                 # экспорт Cookie-Editor (JSON)
+said = send_secret69('[{"name": "sessionid", "value": "q1"}, {"name": "tt_webid", "value": "w2"}]', "mid-tt2")
+assert bot.tiktok_cookies() == "sessionid=q1; tt_webid=w2", bot.tiktok_cookies()
+press(1, 61000, "p:cltt")
+said = send_secret69("просто текст", "mid-tt3")
+assert "Не похоже на cookies" in said and bot.tiktok_cookies() == "sessionid=q1; tt_webid=w2", said
+press(1, 61000, "m:clkeys")
+assert "…wxyz" in OUT[-1][0] and "из бота" in OUT[-1][0] and "q1" not in OUT[-1][0], OUT[-1][0]
+assert "a:clkeyrm:vk" in shown() and "a:clkeyrm:tt" in shown(), shown()
+assert oct(os.stat(bot.SETTINGS_FILE).st_mode & 0o777) == "0o600"                          # файл с ключами — только боту
+press(1, 61000, "a:clkeyrm:tt")
+assert bot.tiktok_cookies() == "sessionid=fromenv" and "переменной" in OUT[-1][0], OUT[-1][0]   # снова из Bothost
+press(1, 61000, "a:clkeyrm:vk")
+assert bot.vk_token() == "e" * 30
+press(5001, 62000, "m:clkeys")
+assert "Ключи и доступы" not in OUT[-1][0]                                                # только хозяину
+# cookies TikTok в работе: без входа TikTok не отдаёт — читаем страницу профиля с cookies хозяина
+bot.GCFG["tt_cookies"] = "sessionid=live1"
+item69 = {"id": "7400000000000000001", "desc": "Клип с cookies", "createTime": 1761000000,
+          "video": {"cover": "https://p16/c1.jpg", "playAddr": "https://v16/1.mp4"}}
+page69 = ('<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
+          + json.dumps({"__DEFAULT_SCOPE__": {"webapp.user-detail": {"itemList": [item69]}}}) + "</script>")
+seen69 = []
+real_get69, real_embed69 = bot.S.get, bot.tt_embed_posts
+def _get69(url, **kw):
+    if "tiktok.com/@artist" in url:
+        seen69.append((kw.get("headers") or {}).get("Cookie"))
+        return types.SimpleNamespace(status_code=200, text=page69)
+    raise AssertionError("без cookies TikTok не открывается: " + url)
+def _embed_fail(user):
+    raise RuntimeError("просит вход")
+bot.S.get, bot.tt_embed_posts = _get69, _embed_fail
+try:
+    with bot.theme_ctx(paid66):
+        got69 = bot.tiktok_msgs("tt~artist", "artist")
+finally:
+    bot.S.get, bot.tt_embed_posts = real_get69, real_embed69
+assert seen69 == ["sessionid=live1"] and got69 and "Клип с cookies" in (got69[0].text or ""), (seen69, got69)
+bot.GCFG.pop("tt_cookies")
+os.environ.pop("VK_TOKEN"); os.environ.pop("TIKTOK_COOKIES")
+print("h69 ok: 🔑 ключ VK и cookies TikTok — кнопкой в боте, сообщение удаляется, панель главнее Bothost, TikTok с cookies")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

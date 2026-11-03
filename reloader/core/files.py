@@ -1,5 +1,6 @@
 """Файлы данных бота: чтение и атомарная запись JSON, поиск входов в Telegram на устройстве."""
 import json
+from contextlib import suppress
 import os
 import threading
 import time
@@ -16,11 +17,15 @@ def load_json(path, default):
 _WRITE_LOCK = threading.Lock()
 
 
-def save_json(path, data):
-    """Атомарная запись: если процесс убили посередине, файл не повреждается."""
+def save_json(path, data, private=False):
+    """Атомарная запись: если процесс убили посередине, файл не повреждается.
+    private — файл с ключами: читать и писать может только бот (права 600)."""
     with _WRITE_LOCK:
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with suppress(FileNotFoundError):
+            os.remove(tmp)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+        with open(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, path)
 

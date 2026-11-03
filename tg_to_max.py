@@ -759,7 +759,7 @@ CARDS_LOCK = threading.Lock()
 
 
 def save_cfg():
-    save_json(SETTINGS_FILE, GCFG)
+    save_json(SETTINGS_FILE, GCFG, private=True)       # тут и ключи из панели: файл читает только бот
     save_json(THEMES_FILE, {"themes": [t.to_json() for t in THEMES], "active": META["active"],
                             "last_report": META["last_report"]})
 
@@ -3450,6 +3450,13 @@ PROMPTS = {
                  "Пришли рекламный пост: текст и/или одну картинку."),
     "cladmark": ("Теперь маркировка по закону о рекламе. Пришли одной строкой рекламодателя и erid (токен из ОРД), "
                  "например:\nООО «Ромашка», ИНН 7700000000, erid: 2VtzqwXXXX\n\nСлово «Реклама» бот допишет сам."),
+    "clvk": ("🔑 Ключ VK нужен, чтобы брать посты из VK. Бесплатно: vk.com/apps?act=manage → «Создать» → "
+             "тип «Standalone» → в настройках приложения скопируй «Сервисный ключ доступа» и пришли сюда. "
+             "Сообщение с ключом удалю из чата; ключ из бота главнее переменной VK_TOKEN в Bothost."),
+    "cltt": ("🎵 Cookies TikTok — когда TikTok не отдаёт ролики без входа, бот читает профиль как ты. "
+             "Войди в TikTok в браузере (лучше запасным аккаунтом) → расширение Cookie-Editor → «Export» "
+             "(JSON или Header string) → пришли сюда. Нужен хотя бы sessionid. Сообщение удалю из чата; "
+             "cookies из бота главнее переменной TIKTOK_COOKIES в Bothost."),
     "clsay": "Пришли сообщение для клиента — отправлю его от имени его бота.",
     "cltarset": "Пришли тарифы — по одному в строке: название, сколько тем, сколько каналов в теме, цена за 30 дней "
                 "(за 90 дней будет ×2,5). Например:\nСтарт 1 5 300\nСтандарт 3 10 600\nПро 10 30 1500",
@@ -3503,9 +3510,7 @@ def apply_text(action, text, uid=None):
     if action == "clyk":
         if not is_host(uid):
             return "Нет доступа.", "main"
-        tail = ("" if YK_MSG_GONE.pop(uid, True) else
-                "\n\n⚠️ Твоё сообщение с ключом удалить не смог (MAX не даёт боту удалять чужие сообщения) — "
-                "удали его сам: зажми сообщение → «Удалить».")
+        tail = secret_tail(uid)
         parts = [x for x in re.split(r"[\s,;:]+", text.strip()) if x]
         sid = next((x for x in parts if x.isdigit()), "")
         key = next((_yk_clean(x) for x in parts if x.startswith(("live_", "test_"))), "")
@@ -3517,6 +3522,28 @@ def apply_text(action, text, uid=None):
         ok, why = yk_check()
         return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
+    if action in ("clvk", "cltt"):                        # 🔑 ключ VK / 🎵 cookies TikTok — только хозяин
+        if not is_host(uid):
+            return "Нет доступа.", "main"
+        tail = secret_tail(uid)
+        if action == "clvk":
+            tok = text.strip()
+            if not re.fullmatch(r"[\w.-]{20,}", tok):
+                return "Не похоже на ключ VK. Пришли «Сервисный ключ доступа» целиком." + tail, "clkeys"
+            GCFG["vk_token"] = tok
+            what = f"Ключ VK сохранён ✅ (…{tok[-4:]}). Источники VK начнут читаться в течение 10 минут."
+        else:
+            cookies = parse_cookies(text)
+            if not cookies:
+                return ("Не похоже на cookies. Пришли экспорт из Cookie-Editor (JSON) или строку вида "
+                        "«sessionid=…; tt_csrf_token=…»." + tail), "clkeys"
+            GCFG["tt_cookies"] = cookies
+            n = cookies.count("=")
+            what = (f"Cookies TikTok сохранены ✅ ({n} шт." + (", есть sessionid" if "sessionid=" in cookies else
+                    ", ⚠️ без sessionid — TikTok может не пустить") + "). Ролики начнут читаться в течение 10 минут.")
+        save_cfg()
+        SOCIAL_CACHE.clear()
+        return what + tail, "clkeys"
     if action == "promo":
         if not HOST_MODE:
             return "Промокоды здесь не работают.", "main"
@@ -4907,7 +4934,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
                     "«Удалить». В нём полный доступ к аккаунту.\n\n" + text)
         send_screen(chat_id, text, rows)
         return
-    if action == "clyk" and is_host(uid):                 # ключи ЮKassa: сообщение с секретом сразу удаляем из чата
+    if action in ("clyk", "clvk", "cltt") and is_host(uid):   # ключи: сообщение с секретом сразу удаляем из чата
         gone = False
         with contextlib.suppress(Exception):
             gone = delete_msg(((msg or {}).get("body") or {}).get("mid"))
@@ -6904,6 +6931,7 @@ def beta_screen(name, uid):
                 "Как сделать покупателя тестером: «👥 Все покупатели» → покупатель → «🧪 Бета-функции».\n\n"
                 + "\n\n".join(lines)
                 + "\n\nНажми на функцию — расскажу, что она делает и где её кнопка.")
+        rows.append([B("🔑 Ключ VK" + (" ✅" if vk_token() else " (нужен для VK)"), "p:clvk")])
         return text, rows + [back]
     if kind == "clbf" and arg in BETA_FEATURES:
         r = beta_rec(arg)
@@ -6913,8 +6941,7 @@ def beta_screen(name, uid):
                 + (f" ({'держу в бете' if r.get('hold') else f'всем через {beta_left(r)} дн.'})"
                    if r["state"] == "beta" else "")
                 + "\nТестеры: " + (", ".join(names) or "пока нет")
-                + ("\n\n⚠️ Для источников VK нужен ключ VK: переменная VK_TOKEN в настройках хостинга."
-                   if arg == "social" and not vk_token() else ""))
+                + ("\n\n⚠️ Для источников VK нужен ключ VK — кнопка ниже." if arg == "social" and not vk_token() else ""))
         rows = [[B("🚀 Включить всем сейчас", f"a:clbrel:{arg}")]] if r["state"] != "all" else []
         if r["state"] == "beta":
             rows.append([B("▶️ Не держать (выйдет сама)" if r.get("hold") else "⏸ Держать в бете",
@@ -6923,6 +6950,9 @@ def beta_screen(name, uid):
             rows.append([B("🧪 Вернуть в бету", f"a:clbbeta:{arg}")])
         if r["state"] != "off":
             rows.append([B("⛔ Выключить у всех", f"a:clboff:{arg}")])
+        if arg == "social":
+            rows += [[B("🔑 Ключ VK" + (" ✅" if vk_token() else ""), "p:clvk")],
+                     [B("🎵 Cookies TikTok" + (" ✅" if tiktok_cookies() else ""), "p:cltt")]]
         return text, rows + [[B("◀️ Бета-функции", "m:clbeta")]]
     if kind == "clbt" and arg in TENANTS:
         c = TENANTS[arg]
@@ -7879,10 +7909,59 @@ def vk_token():
     return GCFG.get("vk_token") or (os.environ.get("VK_TOKEN") or "").strip() or None
 
 
+def tiktok_cookies():
+    """Cookies TikTok: сохранённые в боте главнее переменной TIKTOK_COOKIES; в боте нет — из переменной."""
+    return GCFG.get("tt_cookies") or (os.environ.get("TIKTOK_COOKIES") or "").strip() or None
+
+
+def parse_cookies(text):
+    """Cookies из чата: экспорт Cookie-Editor (JSON-список) или строка «a=1; b=2» -> «a=1; b=2». Не похоже — ""."""
+    text = (text or "").strip()
+    pairs = []
+    if text.startswith("["):
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            pairs = [(str(c["name"]).strip(), str(c["value"]).strip()) for c in json.loads(text)
+                     if isinstance(c, dict) and c.get("name")]
+    else:
+        for part in re.split(r";\s*|\n", text.removeprefix("Cookie:").strip()):
+            name, eq, value = part.partition("=")
+            if eq and re.fullmatch(r"[\w.-]+", name.strip()):
+                pairs.append((name.strip(), value.strip()))
+    return "; ".join(f"{n}={v}" for n, v in pairs if n and v)
+
+
+def tt_web_posts(user, cookies):
+    """Ролики со страницы профиля TikTok, открытой с cookies хозяина (когда без входа TikTok не отдаёт):
+    [(id, время, текст, обложка, ссылка на ролик)]. Понимает оба формата данных TikTok."""
+    r = S.get(f"https://www.tiktok.com/@{user.lstrip('@')}", headers=dict(WEB_UA, Cookie=cookies), timeout=(8, 30))
+    if r.status_code != 200:
+        raise RuntimeError(f"ответил {r.status_code}")
+    items = []
+    for sid in ("SIGI_STATE", "__UNIVERSAL_DATA_FOR_REHYDRATION__"):
+        m = re.search(rf'<script id="{sid}"[^>]*>(.*?)</script>', r.text, re.S)
+        if not m:
+            continue
+        data = json.loads(m.group(1))
+        items = (list((data.get("ItemModule") or {}).values()) if sid == "SIGI_STATE" else
+                 ((data.get("__DEFAULT_SCOPE__") or {}).get("webapp.user-detail") or {}).get("itemList") or [])
+        if items:
+            break
+    out = []
+    for it in sorted(items, key=lambda i: -int(i.get("createTime") or 0)):
+        vid, ts = str(it.get("id") or ""), int(it.get("createTime") or 0)
+        if vid.isdigit() and ts:
+            out.append((ts, ts, (it.get("desc") or "").strip(), (it.get("video") or {}).get("cover"),
+                        f"https://www.tiktok.com/@{user.lstrip('@')}/video/{vid}"))
+    if not out:
+        raise RuntimeError("роликов нет на странице — cookies устарели? Обнови их в «🔑 Ключи и доступы»")
+    return out
+
+
 def vk_posts(domain):
     tok = vk_token()
     if not tok:
-        raise RuntimeError("для VK нужен ключ: хозяин бота задаёт переменную VK_TOKEN в настройках хостинга")
+        raise RuntimeError("для VK нужен ключ: хозяин бота задаёт его в панели «🔑 Ключи и доступы» → «🔑 Ключ VK» "
+                           "(или переменной VK_TOKEN в Bothost)")
     r = S.get("https://api.vk.com/method/wall.get", timeout=30,
               params={"domain": domain, "count": 20, "v": "5.199", "access_token": tok})
     js = r.json()
@@ -8033,7 +8112,15 @@ def tiktok_msgs(ch, user):
         return msgs
     except Exception as e:
         errs.append(f"виджет TikTok — {str(e)[:150]}")
-    try:                                               # 2) открытый сервис tikwm
+    if tiktok_cookies():                               # 2) профиль с cookies хозяина (вход в TikTok)
+        try:
+            msgs = []
+            for mid, ts, text, cover, link in tt_web_posts(user, tiktok_cookies()):
+                msgs += _soc_msg(ch, mid, ts, text, [] if video_on and link else [cover], link if video_on else None)
+            return msgs
+        except Exception as e:
+            errs.append(f"профиль с cookies — {str(e)[:150]}")
+    try:                                               # 3) открытый сервис tikwm
         msgs = []
         for mid, ts, text, imgs, play, cover in tikwm_posts(user):
             if imgs:
@@ -8045,7 +8132,7 @@ def tiktok_msgs(ch, user):
         return msgs
     except Exception as e:
         errs.append(f"tikwm — {str(e)[:150]}")
-    try:                                               # 3) yt-dlp
+    try:                                               # 4) yt-dlp
         ensure_cffi()
         msgs = []
         for mid, ts, text, thumbs, link in ytdl_list(f"https://www.tiktok.com/@{user}"):
@@ -8055,7 +8142,8 @@ def tiktok_msgs(ch, user):
         errs.append(f"yt-dlp — {str(e)[:150]}")
     print(f"TikTok @{user}: " + "; ".join(errs))
     raise RuntimeError("TikTok не отдаёт ролики этого аккаунта серверу (просит вход в аккаунт). "
-                       "Проверь, что аккаунт открытый")
+                       "Проверь, что аккаунт открытый" + ("" if tiktok_cookies() else
+                       ", или добавь cookies TikTok: панель «🔑 Ключи и доступы»"))
 
 
 class SocialClient(WebClient):
@@ -10473,7 +10561,14 @@ def yk_keys():
     return yk_env_keys()
 
 
-YK_MSG_GONE = {}       # хозяин -> удалось ли убрать из чата его сообщение с ключом ЮKassa
+YK_MSG_GONE = {}       # хозяин -> удалось ли убрать из чата его сообщение с ключом (ЮKassa, VK, TikTok)
+
+
+def secret_tail(uid):
+    """Приписка к ответу, если сообщение с ключом из чата убрать не вышло."""
+    return ("" if YK_MSG_GONE.pop(uid, True) else
+            "\n\n⚠️ Твоё сообщение с ключом удалить не смог (MAX не даёт боту удалять чужие сообщения) — "
+            "удали его сам: зажми сообщение → «Удалить».")
 
 
 def yk_seen():
@@ -10913,6 +11008,30 @@ def host_open_cabinet(uid, chat_id, t, msg):
     return True
 
 
+def key_state(panel, env_name, shown):
+    """Откуда ключ и его хвост — без самого секрета."""
+    if panel:
+        return f"✅ из бота ({shown(panel)}) — главнее переменной {env_name}"
+    env = (os.environ.get(env_name) or "").strip()
+    return f"✅ из переменной {env_name} в Bothost ({shown(env)})" if env else "— не задан"
+
+
+def keys_screen():
+    """🔑 Ключи и доступы: что задано, откуда (бот или Bothost) — хвостом, без секретов; кнопки ввода прямо в чат."""
+    tail4 = lambda v: "…" + v[-4:]
+    n_cookies = lambda v: f"{v.count('=')} cookies" + (", есть sessionid" if "sessionid=" in v else "")
+    text = ("🔑 Ключи и доступы\n\nНажми кнопку и пришли ключ сюда, в чат: сообщение с ним удалю. Ключ из бота "
+            "главнее переменной в Bothost; «🗑 Убрать» — снова из переменной.\n\n"
+            f"💳 ЮKassa: {yk_seen()}\n"
+            f"🔑 VK: {key_state(GCFG.get('vk_token'), 'VK_TOKEN', tail4)}\n"
+            f"🎵 TikTok cookies: {key_state(GCFG.get('tt_cookies'), 'TIKTOK_COOKIES', n_cookies)}")
+    rows = [[B("💳 Ключи ЮKassa", "p:clyk")],
+            [B("🔑 Ключ VK", "p:clvk")] + ([B("🗑 Убрать", "a:clkeyrm:vk")] if GCFG.get("vk_token") else []),
+            [B("🎵 Cookies TikTok", "p:cltt")] + ([B("🗑 Убрать", "a:clkeyrm:tt")] if GCFG.get("tt_cookies") else []),
+            [B("◀️ Кабинеты", "m:cl")]]
+    return text, rows
+
+
 POOL_STATUS = {"active": "✅ Активен", "flood": "⏳ FloodWait", "dead": "⛔ Не работает"}
 
 
@@ -11006,8 +11125,11 @@ def host_screen(name, uid):
                  [B("📞 Изменить мой контакт", "p:clcontact")],
                  [B("📣 Написать всем", "p:clmsg"), B("📢 Сделать рассылку", "p:cladpost")],
                  [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")],
-                 [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")]]
+                 [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
+                 [B("🔑 Ключи и доступы", "m:clkeys")]]
         return text, rows
+    if name == "clkeys":                                  # 🔑 ключи: ЮKassa, VK, TikTok — вводятся прямо в чат
+        return keys_screen()
     if name == "cltgacc":                                 # 👤 пул аккаунтов Telegram
         return pool_screen()
     if name.startswith("cltgaccdel:"):
@@ -11188,6 +11310,15 @@ def host_action(p, uid):
         threading.Thread(target=ad_broadcast, args=(d,), daemon=True).start()
         FLASH[uid] = f"📢 Рассылаю рекламу: получателей {len(ad_targets())}. Итог пришлю сюда."
         return "cl"
+    if p[0] == "clkeyrm" and len(p) > 1:                    # 🔑 убрать ключ из бота — снова из переменной Bothost
+        field, env_name, what = {"vk": ("vk_token", "VK_TOKEN", "Ключ VK"),
+                                 "tt": ("tt_cookies", "TIKTOK_COOKIES", "Cookies TikTok")}[p[1]]
+        GCFG.pop(field, None)
+        save_cfg()
+        SOCIAL_CACHE.clear()
+        FLASH[uid] = (f"🗑 {what} убран из бота — " + ("теперь из переменной " + env_name if os.environ.get(env_name)
+                                                         else f"переменной {env_name} в Bothost тоже нет"))
+        return "clkeys"
     if p[0] == "cltgaccrm" and len(p) > 1:                  # 👤 удалить аккаунт из пула
         FLASH[uid] = (f"🗑 Аккаунт «{p[1]}» удалён из пула." if pool_run(POOL.remove(p[1]))
                       else "Этого аккаунта уже нет в пуле.")
