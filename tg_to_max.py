@@ -99,6 +99,7 @@ from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_s
 from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
+from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
 
 # Ключи официального Telegram Desktop: вход без my.telegram.org. Владелец выбрал это сам, на свой риск —
 # Telegram может ограничить аккаунт за чужие ключи. Свои ключи — кнопка «🔧 Свои ключи».
@@ -3441,6 +3442,8 @@ SOCIAL_HINT = ("\n\n🌐 Бета: можно прислать ссылку на
 PROMPTS = {
     "clnew": "Пришли токен бота MAX клиента (длинная строка из настроек его бота на платформе MAX).",
     "clmsg": "Пришли текст — разошлю его всем клиентам (админам их ботов).",
+    "clsess": ("👤 Пришли файл .session (вход Telethon) прямо сюда: 📎 → Файл. Бот проверит вход, положит файл "
+               "в sessions/ и добавит аккаунт в пул. Сообщение с файлом удалю из чата."),
     "clfsadd": ("Пришли ссылку на канал MAX (например https://max.ru/mychannel) или его ID.\n"
                 "Важно: бот должен быть администратором этого канала — иначе MAX не даст проверить подписчиков."),
     "cladpost": ("📢 Рекламная рассылка — пользователям бесплатного тарифа, в их чат с ботом (платные её не получают).\n\n"
@@ -4903,6 +4906,16 @@ def handle_message(uid, chat_id, name, text, msg=None):
             ad_input(uid, chat_id, action, content, atts)
         else:
             send_screen(chat_id, *screen("main", uid))
+        return
+    if action == "clsess":                                # 👤 файл .session для пула — только хозяин
+        PENDING.pop(uid, None)
+        if not is_host(uid):
+            send_screen(chat_id, *screen("main", uid))
+            return
+        if atts:                                          # файл входа = доступ к аккаунту: из чата долой
+            with contextlib.suppress(Exception):
+                delete_msg(((msg or {}).get("body") or {}).get("mid"))
+        send_screen(chat_id, *session_upload(uid, atts))
         return
     if action == "clyk" and is_host(uid):                 # ключи ЮKassa: сообщение с секретом сразу удаляем из чата
         gone = False
@@ -6408,9 +6421,14 @@ async def sync_channels(client):
             continue
         if is_social(ch) and not feature_on("social"):
             continue
+        pool_spawn(ch)
+        src = src_client(client, ch)
         try:
-            latest = await asyncio.wait_for(src_client(client, ch).get_messages(ch, limit=1), 60)
+            latest = await asyncio.wait_for(src.get_messages(ch, limit=1), 60)
         except Exception as e:
+            if POOL.note_error(src, e):                # аккаунт пула отдыхает или выбыл — читаем другим
+                journal(f"👤 [{ch}] аккаунт пула: {type(e).__name__} — прочитаю другим на следующем круге")
+                continue
             if is_social(ch):                          # соцсеть: не трогаем Telegram, повтор через 10 минут
                 first = down_first(ch)
                 BAD[ch] = time.time() + 600
@@ -6571,13 +6589,16 @@ PUBLISH_TIMEOUT = 2700    # сек на один пост (большое вид
 
 async def poll(client, t, ch, fails, sem):
     CUR.set(t)
-    async with sem:
+    src = src_client(client, ch)
+    async with POOL.sem_for(src) or sem:                # аккаунты пула читают параллельно, каждый — до 5 каналов
         t0 = time.monotonic()
         try:
-            await asyncio.wait_for(process_channel(src_client(client, ch), ch, fails), POLL_TIMEOUT)
+            await asyncio.wait_for(process_channel(src, ch, fails), POLL_TIMEOUT)
             note_net(ch)
         except Exception as e:
-            if isinstance(e, asyncio.TimeoutError) and time.monotonic() - t0 >= POLL_TIMEOUT * 0.99:
+            if POOL.note_error(src, e):
+                journal(f"👤 [{ch}] аккаунт пула: {type(e).__name__} — следующий круг читает другой")
+            elif isinstance(e, asyncio.TimeoutError) and time.monotonic() - t0 >= POLL_TIMEOUT * 0.99:
                 journal(f"⏱ [{ch}] чтение канала зависло (больше {POLL_TIMEOUT // 60} мин) — прервал, "
                         "остальные каналы читаются дальше, этот попробую на следующем круге")
             elif is_social(ch):
@@ -8070,9 +8091,50 @@ class SocialClient(WebClient):
 SOCIAL_CLIENT = SocialClient()
 
 
+def pool_client(path):
+    """Клиент Telethon для файла входа из пула — с теми же ключами, что и основной вход."""
+    keys = (API_ID, API_HASH) if field_ok("api_id", API_ID) and field_ok("api_hash", API_HASH) else builtin_keys()
+    if not keys:
+        raise SessionError("нет ключей Telegram (api_id/api_hash) для входа")
+    return tg_client(path[:-len(".session")], *keys)
+
+
+# 👤 Пул аккаунтов Telegram: файлы .session в sessions/, закрепление каналов — в pool.json
+POOL = AccountPool("sessions", "pool.json", pool_client)
+POOL_TASKS = set()     # фоновые вступления аккаунтов пула в новые источники
+
+
+def pool_run(coro, timeout=60):
+    """Действие с пулом из меню (меню MAX работает в своём потоке, пул — в главном цикле бота)."""
+    if MAIN_LOOP is not None and MAIN_LOOP.is_running():
+        return asyncio.run_coroutine_threadsafe(coro, MAIN_LOOP).result(timeout)
+    return asyncio.run(coro)
+
+
+async def pool_assign(ch):
+    try:
+        acc = await POOL.assign(ch)
+        journal(f"👤 [{ch}] читает аккаунт пула «{acc.name}»")
+    except PoolBusy as e:
+        journal(f"👤 [{ch}] {e} — пока читаю свободным аккаунтом или основным входом")
+    except Exception as e:
+        journal(f"👤 [{ch}] аккаунт пула не вступил в канал: {type(e).__name__}: {e}")
+
+
+def pool_spawn(ch):
+    """Новый источник: аккаунт пула вступает в фоне — чтение не ждёт (публичный канал читается и так)."""
+    if is_social(ch) or not POOL.usable() or POOL.owner(ch):
+        return
+    task = asyncio.get_running_loop().create_task(pool_assign(ch))
+    POOL_TASKS.add(task)
+    task.add_done_callback(POOL_TASKS.discard)
+
+
 def src_client(client, ch):
-    """Чем читать источник: соцсеть — своим клиентом, Telegram — обычным."""
-    return SOCIAL_CLIENT if is_social(ch) else client
+    """Чем читать источник: соцсеть — своим клиентом; Telegram — аккаунтом пула (если есть), иначе основным."""
+    if is_social(ch):
+        return SOCIAL_CLIENT
+    return POOL.client_for(ch) or client
 
 
 # ---------- 🪄 ИИ-РЕДАКТОР (бета, бесплатно, без ключей): пересказ поста другими словами ----------
@@ -10866,6 +10928,67 @@ def host_open_cabinet(uid, chat_id, t, msg):
     return True
 
 
+POOL_STATUS = {"active": "✅ Активен", "flood": "⏳ FloodWait", "dead": "⛔ Не работает"}
+
+
+def pool_screen():
+    """👤 Telegram Аккаунты: кто читает источники, состояние и сколько каналов на каждом."""
+    accs = POOL.status()
+    lines = []
+    for a in accs:
+        st = POOL_STATUS.get(a["status"], a["status"])
+        if a["status"] == "flood":
+            st += " до " + time.strftime("%H:%M", time.localtime(a["until"]))
+        elif a["status"] == "dead" and a["error"]:
+            st += f" ({a['error']})"
+        elif a["full"]:
+            st += " (в лимите каналов Telegram — новых не берёт)"
+        lines.append(f"• {a['title']} [{a['name']}] — {st} · каналов: {a['channels']}")
+    text = ("👤 Telegram Аккаунты\n\nАккаунты читают источники вместе и одновременно. Новый источник читает "
+            "аккаунт, который уже в нём состоит, иначе — самый свободный (вступает в канал сам). FloodWait — "
+            "аккаунт отдыхает, читают другие.\n\n"
+            + ("\n".join(lines) if lines else "Аккаунтов пока нет — источники читает основной вход бота.")
+            + "\n\n➕ Новый аккаунт: нажми кнопку и пришли файл .session (Telethon) прямо в чат. Файл даёт "
+              "полный доступ к аккаунту: бот хранит его только у себя, а твоё сообщение с ним удаляет.")
+    rows = [[B("➕ Добавить аккаунт (.session)", "p:clsess")]]
+    rows += [[B(f"🗑 Удалить {a['name']}"[:60], f"m:cltgaccdel:{a['name']}")] for a in accs]
+    return text, rows + [[B("◀️ Кабинеты", "m:cl")]]
+
+
+def session_upload(uid, atts):
+    """Хозяин прислал файл .session: в sessions/ и в пул. Не подошёл — понятная причина, файла не остаётся."""
+    files = [a for a in atts if a["kind"] == "file" and a.get("url")]
+    if not files or not files[0]["name"].lower().endswith(".session"):
+        PENDING[uid] = "clsess"
+        return ("Нужен файл .session (вход Telethon) — пришли его файлом: 📎 → Файл.",
+                [[B("◀️ Аккаунты", "m:cltgacc")]])
+    a = files[0]
+    stem = re.sub(r"[^\w-]", "_", a["name"][:-len(".session")])[:40] or "acc"
+    name, n = stem, 2
+    while os.path.exists(os.path.join("sessions", name + ".session")):
+        name, n = f"{stem}_{n}", n + 1
+    os.makedirs("sessions", mode=0o700, exist_ok=True)
+    path = os.path.join("sessions", name + ".session")
+    try:
+        r = S.get(a["url"], timeout=60)
+        r.raise_for_status()
+        if len(r.content) > 20 * 1024 * 1024:
+            raise SessionError("Файл слишком большой для .session.")
+        with open(path, "wb") as f:
+            f.write(r.content)
+        acc = pool_run(POOL.add(path))
+        text = f"✅ Аккаунт «{acc.title}» добавлен в пул. Аккаунтов: {len(POOL.status())}."
+    except SessionError as e:
+        text = "❌ " + str(e)
+    except Exception as e:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        text = f"❌ Не получилось добавить аккаунт: {type(e).__name__}"
+    journal("👤 Пул: " + text)
+    screen_text, rows = pool_screen()
+    return text + "\n\n" + screen_text, rows
+
+
 def host_screen(name, uid):
     """Панель хозяина бота: все кабинеты. None — это не экран панели."""
     if not is_host(uid):
@@ -10888,8 +11011,17 @@ def host_screen(name, uid):
                  [B("🧪 Бета-функции", "m:clbeta"), B("📊 Аналитика", "m:anl")],
                  [B("📞 Изменить мой контакт", "p:clcontact")],
                  [B("📣 Написать всем", "p:clmsg"), B("📢 Сделать рассылку", "p:cladpost")],
-                 [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")]]
+                 [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")],
+                 [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")]]
         return text, rows
+    if name == "cltgacc":                                 # 👤 пул аккаунтов Telegram
+        return pool_screen()
+    if name.startswith("cltgaccdel:"):
+        acc = name.split(":", 1)[1]
+        n = next((a["channels"] for a in POOL.status() if a["name"] == acc), 0)
+        return (f"🗑 Удалить аккаунт «{acc}» из пула?\n\nФайл входа сотрётся. Его каналов: {n} — их будут "
+                "читать другие аккаунты (или основной вход бота)."), \
+            [[B("🗑 Да, удалить", f"a:cltgaccrm:{acc}")], [B("◀️ Аккаунты", "m:cltgacc")]]
     if name == "clfs":                                    # 📌 обязательная подписка
         subs = force_subs()
         text = ("📌 Обязательная подписка\n\nПокупатели пользуются ботом, только если подписаны на эти каналы MAX. "
@@ -11062,6 +11194,10 @@ def host_action(p, uid):
         threading.Thread(target=ad_broadcast, args=(d,), daemon=True).start()
         FLASH[uid] = f"📢 Рассылаю рекламу: получателей {len(ad_targets())}. Итог пришлю сюда."
         return "cl"
+    if p[0] == "cltgaccrm" and len(p) > 1:                  # 👤 удалить аккаунт из пула
+        FLASH[uid] = (f"🗑 Аккаунт «{p[1]}» удалён из пула." if pool_run(POOL.remove(p[1]))
+                      else "Этого аккаунта уже нет в пуле.")
+        return "cltgacc"
     if p[0] == "clfsdel" and len(p) > 1:                    # 📌 убрать канал из обязательной подписки
         subs, i = force_subs(), int(p[1])
         if 0 <= i < len(subs):
@@ -11680,6 +11816,12 @@ async def main():
     print("Telegram: читаю каналы без входа (t.me)" if isinstance(client, WebClient) else "Telegram: вход выполнен")
     client = ClientBox(client)
     TG_CLIENT, MAIN_LOOP = client, asyncio.get_running_loop()
+    try:
+        await POOL.start()                               # 👤 аккаунты пула из sessions/
+        if POOL.status():
+            print(f"👤 Пул Telegram: аккаунтов {len(POOL.status())}, работают {len(POOL.usable())}")
+    except Exception:
+        log_exc("пул аккаунтов Telegram")
     if not is_web_client(client) and not CLIENT_MODE:
         asyncio.create_task(cdn_check_report(client))   # CDN с этого сервера: не работает — хозяин узнает сразу
     MAIN_LOOP.set_exception_handler(lambda loop, ctx: _log_line(

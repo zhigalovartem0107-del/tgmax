@@ -28,6 +28,7 @@ class FakeMax:
         self.answers, self.deleted, self.requests = [], [], []
         self.uploads = {"image": 0, "video": 0, "file": 0}
         self.files = {}                    # токен файла -> (имя, байты), как их получил MAX
+        self.blobs = {}                    # /files/<имя> -> байты (файл, который пользователь прислал боту)
         self.file_mimes = {}               # токен файла -> MIME-тип, с которым его загрузили
         self.not_ready = 0                 # столько раз ответить «attachment.not.ready» на отправку с видео
         self.drop_attachments = False      # имитация: MAX принял сообщение, но потерял вложения
@@ -82,6 +83,14 @@ class FakeMax:
                 if not self._auth():
                     return
                 p = u.path
+                if method == "GET" and p.startswith("/files/") and p[len("/files/"):] in outer.blobs:
+                    data = outer.blobs[p[len("/files/"):]]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if method == "GET" and p.startswith("/files/"):
                     data = b"\xff\xd8\xff\xe0fakejpegdata" * 20
                     self.send_response(200)

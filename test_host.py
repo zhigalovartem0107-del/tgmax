@@ -1795,5 +1795,89 @@ assert bot.env_int("X_TEST_INT", 7) == 12
 os.environ.pop("X_TEST_INT")
 print("h67 ok: ⚙️ переменные окружения: секреты из переменных главнее панели, прокси и контакт — как задано позже")
 
+# 68) 👤 Telegram Аккаунты (пул): хозяин присылает .session файлом — бот кладёт его в sessions/ и в пул
+#     (сообщение с файлом удаляет из чата); покупатель добавил источник — аккаунт пула вступает и читает его;
+#     FloodWait аккаунта — читает основной вход; в панели — статус и число каналов; удалить — кнопкой
+class PoolTG:
+    def __init__(self, path):
+        self.name, self.reads, self.connected = os.path.basename(path)[:-len(".session")], [], False
+    async def connect(self):
+        self.connected = True
+    async def disconnect(self):
+        self.connected = False
+    async def is_user_authorized(self):
+        return True
+    async def get_me(self):
+        return types.SimpleNamespace(first_name="Акк", username=self.name)
+    async def iter_dialogs(self):
+        return
+        yield
+    async def get_messages(self, ch, limit=1, **kw):
+        self.reads.append(ch)
+        return []
+JOINS68 = []
+async def _join68(client, ch):
+    JOINS68.append((client.name, ch))
+bot.POOL = bot.AccountPool("sessions", "pool.json", PoolTG, join=_join68, join_gap=0)
+asyncio.run(bot.POOL.start())
+def send_file68(fname):
+    bot.handle_update({"update_type": "message_created", "message": {
+        "sender": {"user_id": 1, "first_name": "U1"}, "recipient": {"chat_id": 61000, "chat_type": "dialog"},
+        "body": {"mid": "mid-" + fname, "text": "", "attachments": [
+            {"type": "file", "filename": fname, "payload": {"url": srv.url + "/files/" + fname, "token": "t-" + fname}}]}}})
+    return " ".join(o[0] for o in OUT[-3:])
+press(1, 61000, "m:cl")
+assert "m:cltgacc" in shown(), shown()
+press(1, 61000, "m:cltgacc")
+assert "Telegram Аккаунты" in OUT[-1][0] and "p:clsess" in shown(), OUT[-1][0]
+srv.blobs["acc1.session"] = b"SQLite format 3\x00" + b"\x00" * 100
+srv.deleted.clear()
+press(1, 61000, "p:clsess")
+said = send_file68("acc1.session")
+assert "добавлен" in said and "mid-acc1.session" in srv.deleted, said            # файл входа — из чата долой
+assert os.path.exists("sessions/acc1.session") and [x["name"] for x in bot.POOL.status()] == ["acc1"]
+srv.blobs["bad.session"] = b"not a session"
+press(1, 61000, "p:clsess")
+said = send_file68("bad.session")
+assert "не файл входа" in said and not os.path.exists("sessions/bad.session"), said
+press(1, 61000, "p:clsess")
+said = send_file68("photo.jpg")
+assert ".session" in said and not os.path.exists("sessions/photo.jpg"), said
+press(5001, 62000, "m:cltgacc")
+assert "Telegram Аккаунты" not in OUT[-1][0]                                       # только хозяину
+
+class MainTG:
+    reads = []
+    async def get_messages(self, ch, limit=1, **kw):
+        MainTG.reads.append(ch)
+        return []
+main68 = MainTG()
+with bot.theme_ctx(paid66):
+    ch0 = list(bot.CFG["channels"])
+    bot.CFG["channels"][:] = ["poolsrc"]
+    bot.LAST_IDS.pop("poolsrc", None)
+    async def _sync68():
+        await bot.sync_channels(main68)
+        await asyncio.gather(*bot.POOL_TASKS)
+    asyncio.run(_sync68())
+    assert JOINS68 == [("acc1", "poolsrc")] and bot.POOL.owner("poolsrc") == "acc1", JOINS68
+    c68 = bot.src_client(main68, "poolsrc")
+    assert isinstance(c68, PoolTG) and "poolsrc" in c68.reads and "poolsrc" not in MainTG.reads
+    class FloodWaitError(Exception):
+        seconds = 600
+    async def _flood(ch, **kw):
+        raise FloodWaitError("A wait of 600 seconds is required")
+    c68.get_messages = _flood
+    asyncio.run(bot.poll(main68, paid66, "poolsrc", {}, asyncio.Semaphore(5)))
+    assert bot.POOL.status()[0]["status"] == "flood" and bot.src_client(main68, "poolsrc") is main68
+    bot.CFG["channels"][:] = ch0
+press(1, 61000, "m:cltgacc")
+assert "FloodWait" in OUT[-1][0] and "каналов: 1" in OUT[-1][0] and "m:cltgaccdel:acc1" in shown(), OUT[-1][0]
+press(1, 61000, "m:cltgaccdel:acc1")
+assert "Удалить" in OUT[-1][0] and "a:cltgaccrm:acc1" in shown(), OUT[-1][0]
+press(1, 61000, "a:cltgaccrm:acc1")
+assert not os.path.exists("sessions/acc1.session") and bot.POOL.status() == [] and "удалён" in OUT[-1][0], OUT[-1][0]
+print("h68 ok: 👤 Telegram Аккаунты: .session файлом в пул, вступает и читает новый источник, FloodWait, удаление")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
