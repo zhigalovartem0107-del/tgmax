@@ -8,3 +8,6 @@ config.json
 bot.log
 sessions/
 pool.json
+codes.json
+codes.json.tmp
+exports/

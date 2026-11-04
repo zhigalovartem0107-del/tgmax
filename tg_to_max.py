@@ -16,6 +16,7 @@ import json
 import math
 import os
 import random
+import secrets
 import re
 import unicodedata
 import socket
@@ -100,6 +101,9 @@ from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
 from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
+from reloader.services.codes.store import CodeStore, INVALID as CODE_INVALID  # noqa: E402
+from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
+from reloader.services.billing.catalog import over_limit  # noqa: E402
 
 # Ключи официального Telegram Desktop: вход без my.telegram.org. Владелец выбрал это сам, на свой риск —
 # Telegram может ограничить аккаунт за чужие ключи. Свои ключи — кнопка «🔧 Свои ключи».
@@ -2969,6 +2973,9 @@ def screen(name, uid=None):
 
 def _screen(name, uid=None):
     back = [B("◀️ В меню", "m:main")]
+    got = buyer_admin_screen(name, uid)
+    if got is not None:
+        return got
     if HOST_MODE and is_host(uid) and name == "main":
         name = "cl"                                     # у хозяина бота главное меню — панель кабинетов
     if HOST_MODE and is_host(uid) and name == "home":   # «Мои каналы» хозяина: заводим кабинет с темой, если его ещё нет
@@ -3440,6 +3447,10 @@ def _screen(name, uid=None):
 SOCIAL_HINT = ("\n\n🌐 Бета: можно прислать ссылку на аккаунт соцсети — tiktok.com/@имя, vk.com/имя, "
                "youtube.com/@имя, rutube.ru/channel/…, или сайт/блог с RSS. Буду брать оттуда новые посты.")
 PROMPTS = {
+    "codeentry": "Пришли код активации из Playerok (вид RL-XXXX-XXXX). Код работает один раз.",
+    "buysearch": "Пришли id покупателя или его @username — найду карточку.",
+    "codegen": "Сколько кодов сделать? Пришли число от 1 до 50. Каждый код — на 30 дней выбранного тарифа.",
+    "coderevoke": "Пришли код, который нужно отозвать. Отозвать можно только код, который ещё не использовали.",
     "clnew": "Пришли токен бота MAX клиента (длинная строка из настроек его бота на платформе MAX).",
     "clmsg": "Пришли текст — разошлю его всем клиентам (админам их ботов).",
     "clsess": ("👤 Пришли файл .session (вход Telethon) прямо сюда: 📎 → Файл. Бот проверит вход, положит файл "
@@ -3507,6 +3518,28 @@ def split_words(text):
 
 def apply_text(action, text, uid=None):
     """Применяет присланный текст. Возвращает (ответ, экран)."""
+    if action in ("codeentry", "buysearch", "coderevoke") or (action or "").startswith("codegen:"):
+        if action == "codeentry":
+            return activate_code(uid, text)
+        if not is_host(uid) and action != "codeentry":
+            return "Нет доступа.", "main"
+        if action == "buysearch":
+            q = text.strip()[:40]
+            return f"🔎 Ищу «{q}»", f"buyersq:{q}"
+        if action == "coderevoke":
+            ok = CODES.revoke(text)
+            return ("🗑 Код отозван — его больше нельзя ввести." if ok else
+                    "Такого свободного кода нет: либо опечатка, либо его уже использовали."), "codes"
+        n = text.strip()
+        try:
+            t = tariffs()[int(action.partition(":")[2])]
+        except (ValueError, IndexError):
+            return "Тариф не найден — начни заново из «🎟 Коды».", "codes"
+        if not n.isdigit() or not 1 <= int(n) <= 50:
+            return "Нужно число от 1 до 50.", "codes"
+        codes, path = codes_generate(int(n), t["name"], 30)
+        CODE_EXPORT[uid] = path
+        return f"🎟 Сделал {len(codes)} кодов на «{t['name']}» (30 дн.). Файл с кодами — следом.", "codes"
     if action == "clyk":
         if not is_host(uid):
             return "Нет доступа.", "main"
@@ -4098,7 +4131,7 @@ def handle_callback(cb):
     kind, _, rest = payload.partition(":")
     if HOST_MODE and not is_host(uid):
         key = tenant_by_chat(cb.get("_chat")) or tenant_key(uid)
-        if key and not tenant_live(key) and payload not in ("m:pay", "p:promo") \
+        if key and not tenant_live(key) and payload not in ("m:pay", "p:promo", "p:codeentry") \
                 and not payload.startswith(("py:", "pk:", "pd:", "pc:", "pe:")):
             api_answer(cid, *host_lock_screen(uid))
             return
@@ -4552,6 +4585,8 @@ def client_main(uid=None):
             [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")]]
     if me:
         rows.append([LB("💬 Написать мне лично", me)])
+    if HOST_MODE and not is_host(uid):
+        rows.append([B("👤 Мой профиль", "m:mprof")])
     return text, rows
 
 
@@ -4999,6 +5034,9 @@ def handle_message(uid, chat_id, name, text, msg=None):
                      + [[B("⏭ Пропустить", "m:thm")]])
             return
         api_send(chat_id, answer)
+        if uid in CODE_EXPORT:                              # 🎟 файл с кодами — только хозяину, приватный
+            send_max(chat_id, "🎟 Коды одним файлом, по одному в строке. Не пересылай его покупателям.", [],
+                     file_path=CODE_EXPORT.pop(uid))
         m, rows = screen(scr, uid)
         send_screen(chat_id, m, rows)
     elif atts:                                             # просто скинул фото/видео — в тайник
@@ -10123,11 +10161,11 @@ def promo_apply(key, code, uid=None):
             "Выбери тариф — цены уже со скидкой.")
 
 
-def log_purchase(key, plan, days, price, how):
-    """Покупка подписки — в журнал (для статистики в панели)."""
+def log_purchase(key, plan, days, price, how, code=""):
+    """Покупка подписки — в журнал (для статистики в панели и карточки покупателя). code — только хвост кода."""
     log = GCFG.setdefault("pay_log", [])
     log.append({"t": time.time(), "key": key, "name": (TENANTS.get(key) or {}).get("name") or "", "plan": plan,
-                "days": int(days), "price": int(price or 0), "how": how})
+                "days": int(days), "price": int(price or 0), "how": how, "code": code})
     del log[:-3000]
     save_cfg()
 
@@ -10148,6 +10186,154 @@ def host_apply_paid(key, plan, days, price=0, how=""):
         save_tenants()
     tenant_send(key, f"✅ Оплата получена, спасибо! Тариф «{c.get('plan') or plan}», подписка до {fmt_date(c['until'])}.\n\n"
                      "Теперь настрой свой канал: меню → «📢 Куда выкладывать».")
+
+
+# ---------- 👥 карточка покупателя · 🎟 коды активации (Playerok) ----------
+CODES = CodeStore("codes.json")           # одноразовые коды тарифов: см. reloader/services/codes
+CODE_EXPORT = {}                          # хозяин -> файл с кодами, который отправлю следом
+
+
+def playerok_url():
+    """Ссылка на товар в Playerok: в панели (GCFG) или переменной PLAYEROK_URL. Нет — None."""
+    return (GCFG.get("playerok_url") or os.environ.get("PLAYEROK_URL") or "").strip() or None
+
+
+def check_min_for(key):
+    """Как часто читаем источники: бесплатному — 15 мин (как в тарифе), платному — как обычно (минута)."""
+    if tenant_mode(key) == "free":
+        return FREE_PLAN["check_min"]
+    return max(1, round(GCFG.get("interval", 60) / 60))
+
+
+def buyer_profile(key, now=None):
+    key = str(key or "")
+    rec = dict(TENANTS.get(key) or {})
+    themes = []
+    if key:
+        for t in tenant_themes(key):
+            themes.append({"name": t.name, "chat_id": t.chat_id, "link": t.link,
+                           "sources": list(t.own.get("channels") or []), "published": t.stats.get("published", 0),
+                           "last_pub": t.pub.get("last_pub", 0)})
+        if tenant_mode(key) == "free":                    # на бесплатном лимиты — бесплатного тарифа
+            rec.update(lim_themes=FREE_PLAN["themes"], lim_sources=FREE_PLAN["sources"])
+    return build_profile(key, rec, themes, GCFG.get("pay_log", []), now or time.time(), check_min_for(key), fmt_date)
+
+
+def buyer_screen(key, admin=True):
+    p = buyer_profile(key)
+    text = render_profile(p, admin=admin)
+    if not admin:
+        return text, [[B("◀️ Назад", "m:main")]]
+    _, url = contact_info(p)
+    rows = [[LB("✉️ Написать лично", url)]] if url else []
+    return text, rows + [[B("◀️ Назад", "m:buyers")]]
+
+
+def buyer_status(key):
+    mode = tenant_mode(key)
+    if mode == "run":
+        return f"✅ до {fmt_date(TENANTS[key].get('until'))}"
+    return {"off": "⛔ выключен", "free": "🆓 бесплатный"}.get(mode, "—")
+
+
+def buyers_screen(page=0, query=""):
+    hk = host_id()
+    keys = [k for k, c in TENANTS.items() if k != hk and c.get("plan") != "Хозяин" and match_buyer(k, c, query)]
+    keys.sort(key=lambda k: -(TENANTS[k].get("until") or 0))
+    shown, page, pages = paginate(keys, page)
+    lines = [f"{i}. {TENANTS[k].get('name') or k} · {buyer_status(k)}" for i, k in enumerate(shown, page * 8 + 1)]
+    text = (f"👥 Покупатели" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
+            + ("\n".join(lines) if lines else "Никого не нашёл." if query else "Пока никого нет."))
+    rows = [[B(f"{TENANTS[k].get('name') or k}"[:40], f"m:buyer:{k}")] for k in shown]
+    nav = ([B("⬅️ Раньше", f"m:buyers:{page - 1}")] if page > 0 else []) \
+        + ([B("Дальше ➡️", f"m:buyers:{page + 1}")] if page + 1 < pages else [])
+    if nav:
+        rows.append(nav)
+    return text, rows + [[B("🔎 Найти по id или @username", "p:buysearch")], [B("◀️ Назад", "m:cl")]]
+
+
+def codes_screen(state=None):
+    c = CODES.counts()
+    text = ("🎟 Коды активации (Playerok)\n\n"
+            f"Свободны: {c['free']} · использованы: {c['used']} · просрочены: {c['expired']} · отозваны: {c['revoked']}"
+            "\n\nПокупатель после оплаты на Playerok вводит код в «💳 Тарифы» → «🔑 Ввести код». Код работает один раз.")
+    if state:
+        listed = CODES.listing(state)[:20]
+        text += f"\n\nКоды ({state}):\n" + ("\n".join(
+            f"{code} · {e['tariff']} · {e['days']} дн." + (f" · у {e['used_by']}" if e["used_by"] else "")
+            for code, e, _ in listed) or "— пусто")
+    rows = [[B(f"🎟 Сделать коды: {t['name']}"[:60], f"p:codegen:{i}")] for i, t in enumerate(tariffs())]
+    rows += [[B("🗑 Отозвать код", "p:coderevoke")],
+             [B("📋 Свободные", "m:codes:free"), B("✅ Использованные", "m:codes:used")],
+             [B("◀️ Назад", "m:cl")]]
+    return text, rows
+
+
+def buyer_admin_screen(name, uid):
+    """Экраны «👥 Покупатели», карточка, «👤 Мой профиль», «🎟 Коды». None — не наши экраны."""
+    if not HOST_MODE:
+        return None
+    if name == "mprof" and not is_host(uid):
+        return buyer_screen(tenant_key(uid) or "", admin=False)
+    if not is_host(uid):
+        return None
+    if name.startswith("buyer:"):
+        return buyer_screen(name.partition(":")[2], admin=True)
+    if name == "buyers" or name.startswith("buyers:"):
+        page = name.partition(":")[2]
+        return buyers_screen(int(page) if page.isdigit() else 0)
+    if name.startswith("buyersq:"):
+        return buyers_screen(0, name.partition(":")[2])
+    if name == "codes" or name.startswith("codes:"):
+        return codes_screen(name.partition(":")[2] or None)
+    return None
+
+
+def host_activate_plan(key, t, days, how, code=""):
+    """Тариф по коду: как оплата — лимиты тарифа и срок (продлевает с текущего срока, если он ещё идёт)."""
+    log_purchase(key, t["name"], days, 0, how, code)
+    host_set_plan(key, next(i for i, x in enumerate(tariffs()) if x["name"] == t["name"]))
+    host_extend(key, days)
+
+
+def codes_generate(count, tariff_name, days, now=None):
+    """Партия кодов + файл для Playerok: один код в строке. Файл приватный (права 600)."""
+    codes = CODES.generate(count, tariff_name, days, now=now)
+    os.makedirs("exports", mode=0o700, exist_ok=True)
+    path = os.path.join("exports", f"codes_{secrets.token_hex(4)}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(CodeStore.export_text(codes))
+    os.chmod(path, 0o600)
+    journal(f"🎟 Сделано кодов: {len(codes)} на «{tariff_name}» ({days} дн.)")
+    return codes, path
+
+
+def activate_code(uid, raw):
+    """Покупатель ввёл код: погашаем (один раз), применяем тариф. Ошибки — одинаково «Код недействителен»."""
+    key = tenant_key(uid)
+    if not key or key not in TENANTS:
+        return "Код вводится в твоём кабинете — сначала напиши боту /start.", "main"
+    status, entry, why = CODES.redeem(raw, buyer=key)
+    if status != "ok":
+        return f"❌ {why}. Проверь код: он выглядит как RL-XXXX-XXXX.", "pay"
+    t = tariff_by_name(entry["tariff"])
+    if t is None:
+        CODES.release(entry["code"], key)
+        return "❌ Тариф этого кода больше не продаётся. Напиши продавцу.", "pay"
+    try:
+        host_activate_plan(key, t, entry["days"], "Playerok (код)", code="…" + entry["code"][-4:])
+    except Exception:
+        CODES.release(entry["code"], key)
+        raise
+    c = TENANTS[key]
+    themes = tenant_themes(key)
+    warn = over_limit(len(themes), [(th.name, len(th.own.get("channels") or [])) for th in themes],
+                      {"max_channels": t["themes"], "max_sources": t["sources"]})
+    text = f"✅ Код принят: тариф «{t['name']}» на {entry['days']} дн. Доступ до {fmt_date(c['until'])}."
+    if warn:
+        text += ("\n\n⚠️ Сейчас у тебя больше, чем в тарифе («" + "; ".join(warn) + "»). Ничего не удалено: "
+                 "всё работает, но добавить новые каналы и источники можно, когда станет в пределах тарифа.")
+    return text, "pay"
 
 
 def host_free_paid(key, t, days):
@@ -10383,6 +10569,12 @@ def pay_screen():
         rows.append([B("🧩 Собрать свой тариф", "m:myt")])
     if HOST_MODE:
         rows.append([B("🎟 Ввести промокод", "p:promo")])
+        pl = playerok_url()
+        text += ("\n\n🛒 Купить на Playerok: " + (pl if pl else "ссылку пришлёт продавец") + ".\n"
+                 "После оплаты ты получишь одноразовый код. Нажми «🔑 Ввести код» и пришли его сюда.")
+        rows.append([LB("🛒 Купить на Playerok", pl)] if pl else [])
+        rows.append([B("🔑 Ввести код", "p:codeentry")])
+        rows = [r for r in rows if r]
     return text, rows + [[B("◀️ В меню", "m:main")]]
 
 
@@ -11172,7 +11364,8 @@ def host_screen(name, uid):
                  [B("📣 Написать всем", "p:clmsg"), B("📢 Сделать рассылку", "p:cladpost")],
                  [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")],
                  [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
-                 [B("🔑 Ключи и доступы", "m:clkeys")]]
+                 [B("🔑 Ключи и доступы", "m:clkeys")],
+                 [B("👥 Покупатели", "m:buyers"), B("🎟 Коды", "m:codes")]]
         return text, rows
     if name == "clkeys":                                  # 🔑 ключи: ЮKassa, VK, TikTok — вводятся прямо в чат
         return keys_screen()

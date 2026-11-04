@@ -2085,5 +2085,176 @@ bot.GCFG["all_mode"][str(7000)] = False
 PENDING_CLEAR = [bot.PENDING.pop(u_, None) for u_ in (1, 7000)]
 print("h71 ok: 🌐 ввод — всегда «◀️ Назад» и «❌ Отмена», предупреждение «для всех тем»; ни одного экрана-тупика")
 
+# ---------- 👥 карточка покупателя, 💳 тарифы с одноразовыми кодами (Playerok) ----------
+from reloader.services.codes.store import CodeStore, CODE_RE
+import re as _re
+from concurrent.futures import ThreadPoolExecutor
+
+# 72) 👤 профиль покупателя: данные собраны из уже существующих записей; пустой покупатель — не падает, «—»
+msg(7200, 72000, "/start")
+k72 = bot.tenant_by_chat(72000)
+bot.record_consent(7200)
+bot.host_apply_paid(k72, "Про", 30, 1500, "ЮKassa")
+bot.TENANTS[k72].setdefault("usernames", {})["7200"] = "buyer72"
+A72 = bot.tenant_themes(k72)[0]
+B72 = bot.new_cabinet_theme(k72, "Второй канал")
+A72.chat_id, A72.link = 72100, "https://max.ru/mychan72"
+B72.chat_id, B72.link = 72200, "https://max.ru/second72"
+with bot.theme_ctx(A72):
+    bot.CFG["channels"][:] = ["srcA1", "srcA2"]
+with bot.theme_ctx(B72):
+    bot.CFG["channels"][:] = ["srcB1"]
+p72 = bot.buyer_profile(k72)
+assert p72["id"] == "7200" and p72["username"] == "buyer72" and p72["name"], p72
+assert p72["plan"] == "Про" and p72["until"] > time.time() + 29 * 86400, p72
+assert p72["limits"] == {"channels": 10, "sources": 30, "check_min": 1}, p72["limits"]
+assert p72["theme_names"] == ["Мой канал", "Второй канал"], p72["theme_names"]
+assert p72["mx_channels"] == [{"title": "Мой канал", "link": "https://max.ru/mychan72"},
+                              {"title": "Второй канал", "link": "https://max.ru/second72"}], p72["mx_channels"]
+assert p72["tg_sources"] == {"Мой канал": ["srcA1", "srcA2"], "Второй канал": ["srcB1"]}, p72["tg_sources"]
+pay72 = p72["payments"][-1]
+assert pay72["amount"] == 1500 and pay72["provider"] == "ЮKassa" and pay72["tariff"] == "Про"
+assert pay72["code"] == "—" and pay72["date"], pay72
+assert "published" in p72 and "last_activity" in p72
+bot.TENANTS["7299"] = {"name": "Пустой"}                                   # неполная запись — ни одного поля нет
+p0 = bot.buyer_profile("7299")
+assert p0["username"] == "—" and p0["plan"] == "—" and p0["payments"] == [] and p0["mx_channels"] == []
+assert p0["until"] == "—" and p0["last_activity"] == "—", p0
+assert bot.buyer_profile("no-such-buyer")["name"] == "—"                  # нет записи — тоже не падает
+t0, r0 = bot.buyer_screen("7299", admin=True)
+assert "—" in t0 and "Пустой" in t0, t0
+print("h72 ok: 👤 профиль покупателя: тариф, лимиты, каналы MAX и источники, оплаты; пустые поля — «—», без падения")
+
+# 73) ✉️ связаться лично: у MAX-покупателя — ссылка на его профиль в MAX и @username; без @username — id и подсказка.
+#     (tg:// не используем: id покупателя — это id в MAX, а tg://user?id= открыл бы чужой аккаунт Telegram)
+text73, rows73 = bot.buyer_screen(k72, admin=True)
+assert "@buyer72" in text73 and "https://max.ru/buyer72" in text73, text73
+assert "✉️ Написать лично" in json.dumps(rows73, ensure_ascii=False)
+assert "tg://" not in text73 and "tg://" not in json.dumps(rows73)
+text73b, rows73b = bot.buyer_screen("7299", admin=True)
+assert "7299" in text73b and "нет @username" in text73b and "https://max.ru/" not in json.dumps(rows73b)
+assert "tg://" not in text73b
+print("h73 ok: ✉️ связь лично: MAX-ссылка и @username; без @username — id с подсказкой; tg:// не выводим")
+
+# 74) 🎟 коды: партия нужного размера, формат RL-XXXX-XXXX, уникальные, без путаных символов; файл — по одному в строке
+st74 = CodeStore(os.path.join(tempfile.mkdtemp(), "codes.json"))
+codes74 = st74.generate(25, "Старт", 30, now=time.time())
+assert len(codes74) == 25 and len(set(codes74)) == 25, codes74
+assert all(CODE_RE.fullmatch(c) for c in codes74), codes74[:3]
+assert not any(ch in "01IO" for c in codes74 for ch in c[3:] if ch != "-"), codes74[:3]
+assert st74.export_text(codes74).strip().split("\n") == codes74
+assert any(a["action"] == "generate" and a["count"] == 25 for a in st74.audit)
+assert CodeStore(st74.path).get(codes74[0])["tariff"] == "Старт"          # сохранилось на диске
+codes_b, path_b = bot.codes_generate(3, "Старт", 30)
+assert open(path_b, encoding="utf-8").read().strip().split("\n") == codes_b and len(codes_b) == 3
+SENT74 = []
+real_send74 = bot.send_max
+bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: SENT74.append((text, file_path))
+try:
+    press(1, 61000, "p:codegen:0"); msg(1, 61000, "4")                   # 🎟 через меню: число → файл в чат
+finally:
+    bot.send_max = real_send74
+assert SENT74 and os.path.exists(SENT74[0][1]), SENT74
+assert len(open(SENT74[0][1], encoding="utf-8").read().strip().split("\n")) == 4
+assert "Старт" in " ".join(o[0] for o in OUT[-3:]) or "кодов" in " ".join(o[0] for o in OUT[-3:])
+print("h74 ok: 🎟 генерация кодов: размер, формат, уникальность, экспорт по одному в строке, журнал")
+
+# 75) 🔑 погашение: регистр, пробелы и дефисы — не важны; код одноразовый; просроченный, неизвестный, отозванный
+# — «Код недействителен» (без подсказок); два нажатия подряд — активация ровно одна
+now75 = time.time()
+st75 = CodeStore(os.path.join(tempfile.mkdtemp(), "codes.json"))
+c75 = st75.generate(6, "Старт", 30, now=now75)
+status, entry, m_ = st75.redeem(c75[0], buyer="7500", now=now75)
+assert status == "ok" and entry["tariff"] == "Старт" and entry["days"] == 30 and m_ == "", (status, m_)
+status, _, m_ = st75.redeem(c75[0], buyer="7501", now=now75)
+assert status == "used" and m_ == "Код недействителен", (status, m_)
+messy = "  " + c75[1].lower().replace("-", " - ") + "  "
+assert st75.redeem(messy, buyer="7502", now=now75)[0] == "ok"
+expired = st75.generate(1, "Старт", 30, now=now75 - 100, expires_at=now75 - 10)[0]
+status, _, m_ = st75.redeem(expired, buyer="7503", now=now75)
+assert status == "expired" and m_ == "Срок действия кода истёк", (status, m_)
+assert st75.redeem("RL-ZZZZ-ZZZZ", buyer="7504", now=now75)[2] == "Код недействителен"
+assert st75.redeem("привет", buyer="7504", now=now75)[2] == "Код недействителен"
+assert st75.revoke(c75[2], now=now75) is True
+assert st75.redeem(c75[2], buyer="7505", now=now75)[2] == "Код недействителен"
+assert CodeStore(st75.path).get(c75[0])["used_by"] == "7500"               # на диске: кто и когда
+race = st75.generate(1, "Старт", 30, now=now75)[0]
+with ThreadPoolExecutor(max_workers=10) as ex:
+    results = list(ex.map(lambda i: st75.redeem(race, buyer=str(7600 + i), now=now75)[0], range(10)))
+assert results.count("ok") == 1 and results.count("used") == 9, results
+print("h75 ok: 🔑 погашение кода: нормализация, одноразовость, просрочка, отзыв, двойное нажатие — одна активация")
+
+# 76) 🧾 активация: продлевает с текущего срока (или с сегодня, если кончился); лимиты тарифа сразу; при превышении
+#     ничего не удаляем, а новые источники не добавляются, и бот предупреждает
+msg(7600, 76000, "/start")
+k76 = bot.tenant_by_chat(76000)
+bot.record_consent(7600)
+bot.host_apply_paid(k76, "Про", 10, 1500, "ЮKassa")                        # 10 дней впереди, лимит 30 источников
+bot.new_cabinet_theme(k76, "Второй канал")                              # две темы: тариф «Старт» одну даёт
+until76 = bot.TENANTS[k76]["until"]
+with bot.theme_ctx(bot.tenant_themes(k76)[0]):
+    bot.CFG["channels"][:] = [f"big{i}" for i in range(6)]
+code76 = bot.codes_generate(1, "Старт", 30)[0][0]
+press(7600, 76000, "p:codeentry")
+assert "Пришли код" in shown() and "❌ Отмена" in shown(), shown()
+msg(7600, 76000, " " + code76.lower())
+assert bot.TENANTS[k76]["plan"] == "Старт" and bot.TENANTS[k76]["lim_sources"] == 5, bot.TENANTS[k76]
+assert abs(bot.TENANTS[k76]["until"] - (until76 + 30 * 86400)) < 120, "продлили с текущего срока"
+assert len(bot.tenant_themes(k76)) == 2, "тема не удалена"
+with bot.theme_ctx(bot.tenant_themes(k76)[0]):
+    assert len(bot.CFG["channels"]) == 6, "источники не удалены"
+    news = " ".join(o[0] for o in OUT[-2:])
+    assert "больше" in news or "до 5" in news, news                         # предупредили про превышение
+press(7600, 76000, "p:chadd"); msg(7600, 76000, "@onemore76")
+with bot.theme_ctx(bot.tenant_themes(k76)[0]):
+    assert "onemore76" not in bot.CFG["channels"] and len(bot.CFG["channels"]) == 6
+    assert "до 5" in OUT[-1][0] or "в тарифе" in OUT[-1][0], OUT[-1][0]
+press(7600, 76000, "p:codeentry"); msg(7600, 76000, code76)               # двойное нажатие / повтор
+assert "недействителен" in " ".join(o[0] for o in OUT[-2:]) and abs(bot.TENANTS[k76]["until"] - (until76 + 30 * 86400)) < 120
+k76b = bot.tenant_by_chat(76000)
+bot.TENANTS[k76]["until"] = time.time() - 5 * 86400                         # срок кончился — с сегодня
+code76b = bot.codes_generate(1, "Старт", 30)[0][0]
+press(7600, 76000, "p:codeentry"); msg(7600, 76000, code76b)
+assert abs(bot.TENANTS[k76]["until"] - (time.time() + 30 * 86400)) < 120, "после окончания — с сегодня"
+print("h76 ok: 🧾 код продлевает с текущего срока (или с сегодня), лимиты сразу; ничего не удаляем, новые не добавить")
+
+# 77) ◀️ навигация: у каждого нового экрана есть «◀️ Назад» на родительский экран; обход меню — без тупиков
+press(1, 61000, "m:cl")
+press(1, 61000, "m:buyers")
+assert "◀️ Назад" in json.dumps(OUT[-1][1], ensure_ascii=False) and "m:cl" in json.dumps(OUT[-1][1], ensure_ascii=False), OUT[-1][1]
+press(1, 61000, f"m:buyer:{k72}")
+assert "m:buyers" in json.dumps(OUT[-1][1], ensure_ascii=False) and "◀️ Назад" in json.dumps(OUT[-1][1], ensure_ascii=False), OUT[-1][1]
+press(1, 61000, "m:codes")
+assert "m:cl" in json.dumps(OUT[-1][1], ensure_ascii=False) and "◀️ Назад" in json.dumps(OUT[-1][1], ensure_ascii=False), OUT[-1][1]
+press(1, 61000, "p:codegen:0")
+assert "❌ Отмена" in shown() and "◀️ Назад" in shown() and '"m:codes"' in shown(), shown()
+press(7600, 76000, "m:mprof")
+assert "◀️ Назад" in shown() and "buyer:" not in shown() and "m:codes" not in shown(), shown()
+press(7600, 76000, "m:pay")
+assert "p:codeentry" in shown() and "🔑 Ввести код" in shown() and "Playerok" in OUT[-1][0] \
+    and "одноразов" in OUT[-1][0], OUT[-1][0]
+assert "◀️ В меню" in shown(), shown()
+press(7600, 76000, "p:codeentry")
+assert "m:pay" in shown() and "◀️ Назад" in shown(), shown()                # ввод кода — назад к тарифам
+def crawl77(uid, chat, start):
+    seen, todo, bad = set(), list(start), []
+    while todo:
+        pl = todo.pop()
+        if pl in seen or len(seen) > 500:
+            continue
+        seen.add(pl)
+        press(uid, chat, pl)
+        text, rows = OUT[-1]
+        pays = [b_.get("payload") or b_.get("url") or "" for r in rows for b_ in r]
+        if not [x for x in pays if x.startswith(("m:", "tg:", "http"))]:
+            bad.append((pl, text[:80]))
+        todo += [x for x in pays if x.startswith(("m:", "p:")) and x not in seen]
+    return seen, bad
+seen77, bad77 = crawl77(1, 61000, ["m:cl", "m:buyers", "m:codes"])
+seen77b, bad77b = crawl77(7600, 76000, ["m:main", "m:mprof", "m:pay"])
+assert not bad77 and not bad77b, (bad77, bad77b)
+assert any(x.startswith("m:buyer:") for x in seen77) and "p:codegen:0" in seen77 | {"p:codegen:0"}
+print("h77 ok: ◀️ навигация: каждый новый экран ведёт назад, обход меню хозяина и покупателя — без тупиков")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
