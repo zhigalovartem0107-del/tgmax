@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110351            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110401            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
