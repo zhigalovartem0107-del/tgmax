@@ -2932,8 +2932,8 @@ def record_consent(uid):
     journal(f"Права на контент подтверждены: {data[str(uid)]['name'] or uid} (ID {uid}), условия v{TERMS_VER}")
 
 
-def rights_rows():
-    return [[B("✅ Подтверждаю", "rk:ok")], [B("📄 Условия", "m:terms")], [B("❌ Отмена", "m:main")]]
+def rights_rows(uid=None):
+    return [[B("✅ Подтверждаю", "rk:ok")], [B("📄 Условия", "m:terms")]] + prompt_nav(uid)
 
 
 def stash_fill_rows():
@@ -3381,7 +3381,7 @@ def _screen(name, uid=None):
     elif name == "terms":
         text, rows = terms_text(), [[B("📡 Каналы-источники", "m:ch")], back]
     elif name == "rights":
-        text, rows = RIGHTS_TEXT, rights_rows()
+        text, rows = RIGHTS_TEXT, rights_rows(uid)
     elif name == "more" and simple_menu(uid):
         text = ("⚙️ Ещё настройки\n\n"
                 "🎬 Видео — выкладывать ли видео и до какого размера\n"
@@ -4028,8 +4028,37 @@ def all_mode(uid):
     return len(THEMES) > 1 and bool(GCFG.get("all_mode", {}).get(str(uid)))
 
 
+# списки слов: «для всех тем» переносит само изменение (добавили/убрали), свои слова каждой темы остаются
+SPREAD_MERGE = {"ad_keywords", "old_signatures", "stop_words", "replacements", "trusted_sites", "urgent_words"}
+# своё у каждой темы: меняется только у тем, где было то же, что у этой (общая подпись), — чужая не затирается
+SPREAD_OWN = {"signature_text"}
+SPREAD_LABELS = {"ad_keywords": "рекламные слова", "old_signatures": "подписи доноров", "stop_words": "стоп-слова",
+                 "replacements": "автозамены", "trusted_sites": "надёжные сайты", "urgent_words": "слова срочных",
+                 "signature_text": "текст подписи", "signature_on": "подпись вкл/выкл", "gap_min": "пауза между постами",
+                 "queue_on": "расписание", "video_on": "видео", "approval_on": "проверка постов",
+                 "night_on": "ночной режим", "stash_on": "тайник", "dedupe_on": "повторы", "ads_skip": "фильтр рекламы"}
+
+
+LAST_SCREEN = {}       # админ -> экран меню, с которого он пришёл (туда ведёт «◀️ Назад» из ввода)
+SPREAD_QUIET = {"chadd", "chdel", "thlink", "themenew", "thname", "stashadd"}   # своё у темы — «для всех» не про них
+
+
+def prompt_nav(uid):
+    """Кнопки под вводом: всегда «◀️ Назад» (откуда пришёл) и «❌ Отмена» (в меню) — без тупиков."""
+    return [[B("◀️ Назад", "m:" + (LAST_SCREEN.get(uid) or "main")), B("❌ Отмена", "m:main")]]
+
+
+def spread_value(mine_before, mine_after, theirs):
+    """Список слов: в чужой теме убираем то, что убрали здесь, и добавляем то, что добавили; её слова — целы."""
+    gone = [x for x in mine_before if x not in mine_after]
+    new = [x for x in mine_after if x not in mine_before]
+    kept = [x for x in theirs if x not in gone]
+    return kept + [x for x in new if x not in kept]
+
+
 def spread_to_all(uid, fn):
-    """Режим «🌐 для всех тем»: что поменялось в настройках текущей темы — так же меняем во всех остальных."""
+    """Режим «🌐 для всех тем»: в остальных темах этого же владельца меняем ТОЛЬКО то, что поменяли здесь.
+    Остальные настройки каждой темы (свои слова, своя подпись, каналы) не трогаются."""
     if not all_mode(uid):
         return fn()
     here = cur()
@@ -4040,14 +4069,25 @@ def spread_to_all(uid, fn):
         return res
     changed = {k: copy.deepcopy(CFG[k]) for k in keys if CFG[k] != before[k]}
     if changed:
-        scope = tenant_themes(here.owner) if HOST_MODE and here.owner else THEMES
+        scope = [t for t in THEMES if t.owner == here.owner]     # только темы этого владельца, не чужие кабинеты
         for t in scope:
-            if t is not here:
-                with theme_ctx(t):
-                    for k, v in changed.items():
+            if t is here:
+                continue
+            with theme_ctx(t):
+                for k, v in changed.items():
+                    if k in SPREAD_MERGE and isinstance(v, list) and isinstance(CFG[k], list):
+                        CFG[k] = spread_value(before[k], v, CFG[k])
+                    elif k in SPREAD_OWN:
+                        if CFG[k] == before[k]:
+                            CFG[k] = copy.deepcopy(v)
+                    else:
                         CFG[k] = copy.deepcopy(v)
         save_cfg()
-        journal(f"🌐 Настройка применена ко всем темам ({len(scope)})")
+        what = ", ".join(dict.fromkeys(SPREAD_LABELS.get(k, k) for k in changed))
+        journal(f"🌐 Для всех тем ({len(scope)}): изменено только — {what}")
+        note = (f"🌐 Применил ко всем темам ({len(scope)}): изменил только {what}, остальное у каждой темы — своё."
+                + (" Текст подписи — только у тем с той же подписью." if SPREAD_OWN & set(changed) else ""))
+        FLASH[uid] = (FLASH[uid] + "\n" + note) if FLASH.get(uid) else note
     return res
 
 
@@ -4064,6 +4104,7 @@ def handle_callback(cb):
             return
     if kind == "m":
         PENDING.pop(uid, None)
+        LAST_SCREEN[uid] = rest
         text, rows = screen(rest, uid)
     elif kind == "a":
         try:
@@ -4072,6 +4113,8 @@ def handle_callback(cb):
             _log_line(time.strftime("%H:%M:%S") + f" Меню: устаревшая кнопка {payload}")
             scr = {"addel": "fl", "chdel": "ch", "prio": "pr", "shdel": "shl", "qdel": "ql",
                    "thsw": "th"}.get(rest.split(":")[0], "main")
+        if isinstance(scr, str):
+            LAST_SCREEN[uid] = scr
         text, rows = screen(scr, uid)
     elif kind == "ap":
         text, rows = approve(rest, uid, cb.get("_chat"))
@@ -4101,19 +4144,22 @@ def handle_callback(cb):
     elif kind == "rk":                                     # подтвердил права на контент — сразу к добавлению
         record_consent(uid)
         PENDING[uid] = "chadd"
-        text, rows = "Спасибо, подтверждение сохранено ✅\n\n" + PROMPTS["chadd"], [[B("❌ Отмена", "m:main")]]
+        text, rows = "Спасибо, подтверждение сохранено ✅\n\n" + PROMPTS["chadd"], prompt_nav(uid)
         if feature_on("social"):
             text += SOCIAL_HINT
     elif kind == "p" and rest == "chadd" and need_rights(uid):
         PENDING.pop(uid, None)
-        text, rows = RIGHTS_TEXT, rights_rows()
+        text, rows = RIGHTS_TEXT, rights_rows(uid)
     elif kind == "p":
         PENDING[uid] = rest
-        cancel = [[B("✅ Готово", "m:sh")]] if rest == "stashadd" else [[B("❌ Отмена", "m:main")]]
+        cancel = ([[B("✅ Готово", "m:sh")]] if rest == "stashadd" else []) + prompt_nav(uid)
         if rest == "thlink":
             cancel = [[B("📋 Выбрать канал из списка", "m:chpick")]] + cancel
         text, rows = (stash_prompt() if rest == "stashadd" else
                       PROMPTS.get(rest, PROMPTS.get(rest.split(":")[0], "Пришли текст."))), cancel
+        if all_mode(uid) and rest not in SPREAD_QUIET and not rest.startswith("cl"):
+            text += ("\n\n🌐 Режим «для всех тем»: изменится только эта настройка — во всех твоих темах; "
+                     "свои слова и подписи других тем останутся.")
         if rest == "chadd" and feature_on("social"):
             text += SOCIAL_HINT
     else:
@@ -4944,7 +4990,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
         answer, scr = spread_to_all(uid, lambda: apply_text(action, t, uid))
         if scr == "ask:chadd" and need_rights(uid):        # сначала подтверждение прав на контент
             api_send(chat_id, answer)
-            api_send(chat_id, RIGHTS_TEXT, rights_rows())
+            api_send(chat_id, RIGHTS_TEXT, rights_rows(uid))
             return
         if scr.startswith("ask:"):                         # цепочка ввода: следующий вопрос
             PENDING[uid] = scr[4:]

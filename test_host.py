@@ -1989,5 +1989,101 @@ bot.GCFG.pop("tt_cookies")
 os.environ.pop("VK_TOKEN"); os.environ.pop("TIKTOK_COOKIES")
 print("h69 ok: 🔑 ключ VK и cookies TikTok — кнопкой в боте, сообщение удаляется, панель главнее Bothost, TikTok с cookies")
 
+# 70) 🌐 «Для всех тем» не затирает чужие настройки: меняется ТОЛЬКО то, что поменяли. Слова фильтров —
+#     добавляются/убираются, а свои слова каждой темы остаются; своя подпись темы не затирается (меняется только
+#     у тем с той же подписью); число (пауза) — как задали; каналы — свои; другие кабинеты не трогаются вовсе
+msg(7000, 70000, "/start")
+k70 = bot.tenant_by_chat(70000)
+bot.record_consent(7000)
+bot.host_apply_paid(k70, "Про", 30, 1500, "тест")
+A70 = bot.tenant_themes(k70)[0]
+B70 = bot.new_cabinet_theme(k70, "Второй")
+C70 = bot.new_cabinet_theme(k70, "Третий")
+msg(7100, 71000, "/start")
+k71 = bot.tenant_by_chat(71000)
+D70 = bot.tenant_themes(k71)[0]                                     # чужой кабинет
+FIELDS70 = ("signature_text", "signature_on", "ad_keywords", "old_signatures", "stop_words", "replacements",
+            "gap_min", "channels", "video_on")
+def setup70():
+    for t_, sig, ad, donor, gap, ch_ in ((A70, "Подпись A", "рекламаA", "донорA", 10, "srcA"),
+                                         (B70, "Подпись B", "рекламаB", "донорB", 45, "srcB"),
+                                         (C70, "Подпись A", "рекламаC", "донорC", 20, "srcC"),
+                                         (D70, "Подпись D", "рекламаD", "донорD", 5, "srcD")):
+        with bot.theme_ctx(t_):
+            bot.CFG["signature_text"], bot.CFG["signature_on"] = sig, True
+            bot.CFG["ad_keywords"] = [ad, "общее"]
+            bot.CFG["old_signatures"] = [donor]
+            bot.CFG["stop_words"] = ["стоп" + sig[-1]]
+            bot.CFG["replacements"] = [["было" + sig[-1], "стало"]]
+            bot.CFG["gap_min"], bot.CFG["video_on"] = gap, True
+            bot.CFG["channels"][:] = [ch_]
+def snap70(t_):
+    with bot.theme_ctx(t_):
+        return {f: json.loads(json.dumps(bot.CFG[f])) for f in FIELDS70}
+setup70()
+bot.META["active"][str(7000)] = A70.id
+bot.GCFG.setdefault("all_mode", {})[str(7000)] = True
+assert bot.all_mode(7000)
+b0, c0, d0 = snap70(B70), snap70(C70), snap70(D70)
+press(7000, 70000, "p:adda"); msg(7000, 70000, "новоеслово")            # ➕ рекламное слово во всех темах
+b1 = snap70(B70)
+assert b1["ad_keywords"] == ["рекламаB", "общее", "новоеслово"], b1["ad_keywords"]        # своё слово B — на месте
+assert {f: b1[f] for f in FIELDS70 if f != "ad_keywords"} == {f: b0[f] for f in FIELDS70 if f != "ad_keywords"}
+assert snap70(D70) == d0, "чужой кабинет не трогаем"
+assert "🌐" in " ".join(o[0] for o in OUT[-3:]) and "рекламные слова" in " ".join(o[0] for o in OUT[-3:])
+press(7000, 70000, "p:dela"); msg(7000, 70000, "общее")                 # ➖ общее слово — уходит у всех
+assert snap70(B70)["ad_keywords"] == ["рекламаB", "новоеслово"] and snap70(C70)["ad_keywords"] == ["рекламаC", "новоеслово"]
+press(7000, 70000, "p:addo"); msg(7000, 70000, "донорНовый")
+assert snap70(B70)["old_signatures"] == ["донорB", "донорновый"], snap70(B70)["old_signatures"]
+with bot.theme_ctx(A70):                                               # любое действие меню — тот же путь
+    bot.spread_to_all(7000, lambda: bot.CFG["replacements"].append(["x", "y"]))
+assert snap70(B70)["replacements"] == [["былоB", "стало"], ["x", "y"]], snap70(B70)["replacements"]
+with bot.theme_ctx(A70):                                               # число — во всех темах как задали
+    bot.spread_to_all(7000, lambda: bot.CFG.__setitem__("gap_min", 30))
+assert snap70(B70)["gap_min"] == snap70(C70)["gap_min"] == 30 and snap70(B70)["signature_text"] == "Подпись B"
+press(7000, 70000, "p:sgtext"); msg(7000, 70000, "Новая подпись")          # подпись: у A и C была одна — у C
+assert snap70(A70)["signature_text"] == "Новая подпись" and snap70(C70)["signature_text"] == "Новая подпись"
+assert snap70(B70)["signature_text"] == "Подпись B", "своя подпись темы B не затирается"
+press(7000, 70000, "a:sg")                                               # выключить подпись — у всех, текст свой
+assert not snap70(B70)["signature_on"] and snap70(B70)["signature_text"] == "Подпись B"
+assert snap70(B70)["channels"] == ["srcB"] and snap70(D70) == d0
+bot.GCFG["all_mode"][str(7000)] = False
+press(7000, 70000, "p:adda"); msg(7000, 70000, "толькоэта")             # режим выкл — только эта тема
+assert "толькоэта" in snap70(A70)["ad_keywords"] and "толькоэта" not in snap70(B70)["ad_keywords"]
+print("h70 ok: 🌐 «для всех тем» меняет только изменённое: свои слова и подписи тем целы, чужие кабинеты не трогает")
+
+# 71) 🌐 кнопки: ввод (➕ слово, подпись…) — всегда «◀️ Назад» (на экран, откуда пришёл) и «❌ Отмена»; в режиме
+#     «для всех тем» — предупреждение при вводе; ни один экран меню не остаётся без кнопок, чтобы уйти дальше
+bot.GCFG["all_mode"][str(7000)] = True
+press(7000, 70000, "m:fl")
+press(7000, 70000, "p:adda")
+assert "m:fl" in shown() and "◀️ Назад" in shown() and "❌ Отмена" in shown(), shown()
+assert "🌐" in OUT[-1][0], OUT[-1][0]
+press(7000, 70000, "m:sg")
+press(7000, 70000, "p:sgtext")
+assert "m:sg" in shown() and "❌ Отмена" in shown(), shown()
+def crawl71(uid, chat, start):
+    seen, todo, bad = set(), list(start), []
+    while todo:
+        pl = todo.pop()
+        if pl in seen or len(seen) > 400:
+            continue
+        seen.add(pl)
+        press(uid, chat, pl)
+        text, rows = OUT[-1]
+        pays = [b_.get("payload") or b_.get("url") or "" for r in rows for b_ in r]
+        if not [x for x in pays if x.startswith(("m:", "tg:", "http"))]:
+            bad.append((pl, text[:80]))
+        if pl.startswith("p:") and not ("◀️ Назад" in json.dumps(rows, ensure_ascii=False) or "✅ Готово" in json.dumps(rows, ensure_ascii=False)):
+            bad.append((pl, "ввод без «◀️ Назад»"))
+        todo += [x for x in pays if x.startswith(("m:", "p:")) and x not in seen]
+    return seen, bad
+for uid_, chat_ in ((7000, 70000), (1, 61000)):
+    seen71, bad71 = crawl71(uid_, chat_, ["m:main", "m:th", "m:more", "m:fl"])
+    assert len(seen71) > 30 and not bad71, bad71
+bot.GCFG["all_mode"][str(7000)] = False
+PENDING_CLEAR = [bot.PENDING.pop(u_, None) for u_ in (1, 7000)]
+print("h71 ok: 🌐 ввод — всегда «◀️ Назад» и «❌ Отмена», предупреждение «для всех тем»; ни одного экрана-тупика")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
