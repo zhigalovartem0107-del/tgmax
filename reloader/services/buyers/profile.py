@@ -47,17 +47,18 @@ def build_profile(key, rec, themes, pay_log, now, check_min, fmt_date):
     }
 
 
-def contact_info(profile):
-    """Связь лично — из аккаунта продавца в MAX. Бот сам первым писать покупателю не может."""
+def contact_info(profile, has_contact=False):
+    """Связь лично из MAX: есть @username — ссылка (в боте); контакт покупателя; иначе — запрос контакта."""
     user = profile["username"]
     if user != DASH:
-        url = f"https://max.ru/{user}"
-        return f"✉️ Личный чат: @{user} — {url}\nНапиши от своего аккаунта MAX: бот первым писать не может.", url
-    return (f"✉️ Личный чат: нет @username. Найди покупателя в MAX по id {profile['id']} "
-            "и напиши от своего аккаунта."), None
+        return f"✉️ Связь: @{user}. Открой ссылку ниже и напиши от своего аккаунта MAX.", True
+    if has_contact:
+        return "✉️ Связь: нет @username. Покупатель поделился контактом — нажми «📇 Контакт покупателя».", False
+    return ("✉️ Связь: нет @username. Нажми «📇 Попросить контакт» — покупателю уйдёт кнопка «Поделиться контактом». "
+            f"Или напиши по id {profile['id']} из своего MAX."), False
 
 
-def render_profile(p, admin=True):
+def render_profile(p, admin=True, has_contact=False):
     lim = p["limits"]
     lines = ["👤 Профиль покупателя" if admin else "👤 Мой профиль", ""]
     if admin:
@@ -79,7 +80,7 @@ def render_profile(p, admin=True):
     for pay in p["payments"]:
         lines.append(f"• {pay['date']} · {pay['amount']} ₽ · {pay['provider']} · {pay['tariff']} · код: {pay['code']}")
     if admin:
-        lines += ["", contact_info(p)[0]]
+        lines += ["", contact_info(p, has_contact)[0]]
     return "\n".join(lines)
 
 

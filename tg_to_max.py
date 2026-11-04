@@ -101,7 +101,7 @@ from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
 from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
-from reloader.services.codes.store import CodeStore, INVALID as CODE_INVALID  # noqa: E402
+from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
 from reloader.services.billing.catalog import over_limit  # noqa: E402
 
@@ -3447,10 +3447,12 @@ def _screen(name, uid=None):
 SOCIAL_HINT = ("\n\n🌐 Бета: можно прислать ссылку на аккаунт соцсети — tiktok.com/@имя, vk.com/имя, "
                "youtube.com/@имя, rutube.ru/channel/…, или сайт/блог с RSS. Буду брать оттуда новые посты.")
 PROMPTS = {
-    "codeentry": "Пришли код активации из Playerok (вид RL-XXXX-XXXX). Код работает один раз.",
+    "codeentry": "Отправь код активации сообщением в этот чат.",
+    "buyerreq": "📇 Продавец просит поделиться контактом — нажми кнопку ниже. Так он сможет написать тебе лично в MAX.",
     "buysearch": "Пришли id покупателя или его @username — найду карточку.",
-    "codegen": "Сколько кодов сделать? Пришли число от 1 до 50. Каждый код — на 30 дней выбранного тарифа.",
-    "coderevoke": "Пришли код, который нужно отозвать. Отозвать можно только код, который ещё не использовали.",
+    "codegen": ("Сколько кодов сделать? Пришли число от 1 до 50 — каждый код на 30 дней. "
+                "Или пришли свой код: 10–12 символов, буквы и цифры вперемешку."),
+    "coderevoke": "Пришли код, который нужно удалить. Удалённый код больше не сработает.",
     "clnew": "Пришли токен бота MAX клиента (длинная строка из настроек его бота на платформе MAX).",
     "clmsg": "Пришли текст — разошлю его всем клиентам (админам их ботов).",
     "clsess": ("👤 Пришли файл .session (вход Telethon) прямо сюда: 📎 → Файл. Бот проверит вход, положит файл "
@@ -3518,28 +3520,32 @@ def split_words(text):
 
 def apply_text(action, text, uid=None):
     """Применяет присланный текст. Возвращает (ответ, экран)."""
-    if action in ("codeentry", "buysearch", "coderevoke") or (action or "").startswith("codegen:"):
-        if action == "codeentry":
-            return activate_code(uid, text)
-        if not is_host(uid) and action != "codeentry":
+    if action in ("buysearch", "coderevoke") or (action or "").startswith("codegen:"):
+        if not is_host(uid):
             return "Нет доступа.", "main"
         if action == "buysearch":
             q = text.strip()[:40]
             return f"🔎 Ищу «{q}»", f"buyersq:{q}"
         if action == "coderevoke":
-            ok = CODES.revoke(text)
-            return ("🗑 Код отозван — его больше нельзя ввести." if ok else
-                    "Такого свободного кода нет: либо опечатка, либо его уже использовали."), "codes"
+            ok = CODES.delete(text)
+            return ("🗑 Код удалён — его больше нельзя ввести." if ok else
+                    "Такого кода нет: либо опечатка, либо его уже ввели."), "codes"
         n = text.strip()
         try:
             t = tariffs()[int(action.partition(":")[2])]
         except (ValueError, IndexError):
             return "Тариф не найден — начни заново из «🎟 Коды».", "codes"
-        if not n.isdigit() or not 1 <= int(n) <= 50:
-            return "Нужно число от 1 до 50.", "codes"
-        codes, path = codes_generate(int(n), t["name"], 30)
-        CODE_EXPORT[uid] = path
-        return f"🎟 Сделал {len(codes)} кодов на «{t['name']}» (30 дн.). Файл с кодами — следом.", "codes"
+        if n.isdigit() and int(n) <= 50:
+            if int(n) < 1:
+                return "Нужно число от 1 до 50 или свой код.", "codes"
+            codes, path = codes_generate(int(n), t["name"], 30)
+            CODE_EXPORT[uid] = path
+            return f"🎟 Сделал {len(codes)} кодов на «{t['name']}» (30 дн.). Файл с кодами — следом.", "codes"
+        try:
+            code = CODES.add_custom(n, t["name"], 30)
+        except ValueError as e:
+            return str(e), "codes"
+        return f"✅ Добавил код {code} на «{t['name']}» (30 дн.).", "codes"
     if action == "clyk":
         if not is_host(uid):
             return "Нет доступа.", "main"
@@ -3780,6 +3786,8 @@ def do_action(act, uid=None):
     """Кнопки-действия. Возвращает экран, который показать после."""
     p = act.split(":")
     scr = "main"
+    if p[0] in ("buyerask", "buyercard", "codesexp") and HOST_MODE and is_host(uid):   # 👥 🎟 — в панели хозяина
+        return host_action(p, uid) or "cl"
     if p[0].startswith("cl"):
         if HOST_MODE:
             return host_action(p, uid) or "cl"
@@ -4131,7 +4139,7 @@ def handle_callback(cb):
     kind, _, rest = payload.partition(":")
     if HOST_MODE and not is_host(uid):
         key = tenant_by_chat(cb.get("_chat")) or tenant_key(uid)
-        if key and not tenant_live(key) and payload not in ("m:pay", "p:promo", "p:codeentry") \
+        if key and not tenant_live(key) and payload not in ("m:pay", "p:promo") \
                 and not payload.startswith(("py:", "pk:", "pd:", "pc:", "pe:")):
             api_answer(cid, *host_lock_screen(uid))
             return
@@ -4149,6 +4157,9 @@ def handle_callback(cb):
         if isinstance(scr, str):
             LAST_SCREEN[uid] = scr
         text, rows = screen(scr, uid)
+        if uid in CODE_EXPORT and cb.get("_chat"):           # 📄 экспорт кодов — файлом в чат хозяина
+            send_max(cb["_chat"], "📄 Активные коды — по одному в строке. Не пересылай их покупателям.", [],
+                     file_path=CODE_EXPORT.pop(uid))
     elif kind == "ap":
         text, rows = approve(rest, uid, cb.get("_chat"))
     elif kind == "tg" and (NO_TG or (HOST_MODE and not is_host(uid))):   # общий аккаунт Telegram — только у хозяина
@@ -4871,10 +4882,13 @@ def handle_message(uid, chat_id, name, text, msg=None):
         m, rows = screen("main", uid)
         send_screen(chat_id, m, rows)
         return
+    if HOST_MODE and not is_host(uid) and not PENDING.get(uid) and looks_like_code(t) \
+            and tenant_key(uid) is not None:
+        return activate_by_message(uid, chat_id, t)          # 🔑 код тарифа: обычным сообщением, раньше меню
     if HOST_MODE and is_host(uid) and not PENDING.get(uid) and host_open_cabinet(uid, chat_id, t, msg):
         return                                          # переслал сообщение покупателя / прислал ID — его кабинет
     if HOST_MODE and not is_host(uid) and (phone := msg_contact(msg)) is not None:
-        save_contact(uid, chat_id, name, phone)         # поделился контактом кнопкой — номер хозяину
+        save_contact(uid, chat_id, name, phone, contact_vcf(msg))   # поделился контактом кнопкой — хозяину
         return
     if HOST_MODE and not is_host(uid):                  # кабинет без активной подписки — только оплата (и промокод)
         key = tenant_by_chat(chat_id) or tenant_key(uid)
@@ -9665,6 +9679,21 @@ def seller_link():
     return f"https://max.ru/{nick}" if nick else None
 
 
+def contact_vcf(msg):
+    """vCard из контакта, которым поделились (как пришёл от MAX); "" — нет."""
+    for a in ((msg or {}).get("body") or {}).get("attachments") or []:
+        if a.get("type") == "contact":
+            return (a.get("payload") or {}).get("vcf_info") or ""
+    return ""
+
+
+def api_send_contact(chat_id, vcf, text=""):
+    """Контакт покупателя — вложением «контакт» (та же форма, что приходит от MAX)."""
+    body = {"text": text, "attachments": [{"type": "contact", "payload": {"vcf_info": vcf}}]}
+    r = S.post(f"{MAX_API}/messages", params={"chat_id": chat_id}, headers=HEADERS, json=body, timeout=30)
+    return r.status_code == 200
+
+
 def msg_contact(msg):
     """Телефон из контакта, которым поделились кнопкой («+79991234567»); "" — контакт без номера; None — не контакт."""
     for a in ((msg or {}).get("body") or {}).get("attachments") or []:
@@ -9677,13 +9706,14 @@ def msg_contact(msg):
     return None
 
 
-def save_contact(uid, chat_id, name, phone):
-    """Покупатель поделился контактом: номер — в кабинет и хозяину, чтобы тот написал лично из своего MAX."""
+def save_contact(uid, chat_id, name, phone, vcf=""):
+    """Покупатель поделился контактом: номер и карточка — в кабинет; хозяин открывает её кнопкой «📇 Контакт»."""
     key = tenant_by_chat(chat_id) or tenant_key(uid)
     if not phone or key not in TENANTS:
         api_send(chat_id, "Не вижу номера в контакте. Попробуй ещё раз кнопкой «📇 Поделиться контактом».")
         return
     TENANTS[key]["phone"] = phone
+    TENANTS[key]["contact"] = {"phone": phone, "vcf": vcf, "t": time.time()}
     save_tenants()
     api_send(chat_id, "Спасибо! Передал контакт продавцу — он сможет написать тебе лично.")
     host_alert(f"📇 Покупатель «{TENANTS[key].get('name') or name or key}» поделился контактом: {phone}\n\n"
@@ -10193,11 +10223,6 @@ CODES = CodeStore("codes.json")           # одноразовые коды та
 CODE_EXPORT = {}                          # хозяин -> файл с кодами, который отправлю следом
 
 
-def playerok_url():
-    """Ссылка на товар в Playerok: в панели (GCFG) или переменной PLAYEROK_URL. Нет — None."""
-    return (GCFG.get("playerok_url") or os.environ.get("PLAYEROK_URL") or "").strip() or None
-
-
 def check_min_for(key):
     """Как часто читаем источники: бесплатному — 15 мин (как в тарифе), платному — как обычно (минута)."""
     if tenant_mode(key) == "free":
@@ -10221,11 +10246,16 @@ def buyer_profile(key, now=None):
 
 def buyer_screen(key, admin=True):
     p = buyer_profile(key)
-    text = render_profile(p, admin=admin)
+    has_contact = bool((TENANTS.get(str(key)) or {}).get("contact"))
+    text = render_profile(p, admin=admin, has_contact=has_contact)
     if not admin:
         return text, [[B("◀️ Назад", "m:main")]]
-    _, url = contact_info(p)
-    rows = [[LB("✉️ Написать лично", url)]] if url else []
+    _, linked = contact_info(p, has_contact)
+    rows = [[LB("✉️ Написать лично", f"https://max.ru/{p['username']}")]] if linked else []
+    if not linked and has_contact:
+        rows.append([B("📇 Контакт покупателя", f"a:buyercard:{key}")])
+    if not linked and not has_contact:
+        rows.append([B("📇 Попросить контакт", f"a:buyerask:{key}")])
     return text, rows + [[B("◀️ Назад", "m:buyers")]]
 
 
@@ -10252,19 +10282,21 @@ def buyers_screen(page=0, query=""):
     return text, rows + [[B("🔎 Найти по id или @username", "p:buysearch")], [B("◀️ Назад", "m:cl")]]
 
 
-def codes_screen(state=None):
-    c = CODES.counts()
-    text = ("🎟 Коды активации (Playerok)\n\n"
-            f"Свободны: {c['free']} · использованы: {c['used']} · просрочены: {c['expired']} · отозваны: {c['revoked']}"
-            "\n\nПокупатель после оплаты на Playerok вводит код в «💳 Тарифы» → «🔑 Ввести код». Код работает один раз.")
-    if state:
-        listed = CODES.listing(state)[:20]
-        text += f"\n\nКоды ({state}):\n" + ("\n".join(
-            f"{code} · {e['tariff']} · {e['days']} дн." + (f" · у {e['used_by']}" if e["used_by"] else "")
-            for code, e, _ in listed) or "— пусто")
+def codes_screen():
+    active = CODES.listing()
+    username = (bot_me() or {}).get("username")
+    text = ("🎟 Коды активации\n\n"
+            f"Активных кодов: {len(active)}. Покупатель отправляет код сообщением в бот — тариф включается сразу, "
+            "код удаляется.\n\n"
+            f"🔗 Ссылка на бота (для описания товара): " + (f"https://max.ru/{username}" if username else "—"))
+    if active:
+        text += "\n\nКоды (новые сверху):\n" + "\n".join(
+            f"{c} · {e['tariff']} · {e['days']} дн. · создан {fmt_date(e['created'])}" for c, e, _ in active[:20])
+        if len(active) > 20:
+            text += f"\n… и ещё {len(active) - 20} — полный список в экспорте"
     rows = [[B(f"🎟 Сделать коды: {t['name']}"[:60], f"p:codegen:{i}")] for i, t in enumerate(tariffs())]
-    rows += [[B("🗑 Отозвать код", "p:coderevoke")],
-             [B("📋 Свободные", "m:codes:free"), B("✅ Использованные", "m:codes:used")],
+    rows += [[B("🗑 Удалить код", "p:coderevoke")],
+             [B("📄 Экспорт активных (.txt)", "a:codesexp")],
              [B("◀️ Назад", "m:cl")]]
     return text, rows
 
@@ -10284,8 +10316,8 @@ def buyer_admin_screen(name, uid):
         return buyers_screen(int(page) if page.isdigit() else 0)
     if name.startswith("buyersq:"):
         return buyers_screen(0, name.partition(":")[2])
-    if name == "codes" or name.startswith("codes:"):
-        return codes_screen(name.partition(":")[2] or None)
+    if name == "codes":
+        return codes_screen()
     return None
 
 
@@ -10296,16 +10328,28 @@ def host_activate_plan(key, t, days, how, code=""):
     host_extend(key, days)
 
 
-def codes_generate(count, tariff_name, days, now=None):
-    """Партия кодов + файл для Playerok: один код в строке. Файл приватный (права 600)."""
-    codes = CODES.generate(count, tariff_name, days, now=now)
+def write_codes_file(codes):
+    """Файл с кодами для Playerok: один код в строке. Приватный (права 600), в .gitignore."""
     os.makedirs("exports", mode=0o700, exist_ok=True)
     path = os.path.join("exports", f"codes_{secrets.token_hex(4)}.txt")
     with open(path, "w", encoding="utf-8") as f:
         f.write(CodeStore.export_text(codes))
     os.chmod(path, 0o600)
+    return path
+
+
+def codes_generate(count, tariff_name, days, now=None):
+    """Партия случайных кодов + файл."""
+    codes = CODES.generate(count, tariff_name, days, now=now)
     journal(f"🎟 Сделано кодов: {len(codes)} на «{tariff_name}» ({days} дн.)")
-    return codes, path
+    return codes, write_codes_file(codes)
+
+
+def activate_by_message(uid, chat_id, raw):
+    """Код пришёл обычным сообщением: активируем и отвечаем в тот же чат."""
+    text, _ = activate_code(uid, raw)
+    rows = [[B("💳 Тарифы", "m:pay")], [B("◀️ В меню", "m:main")]]
+    api_send(chat_id, text, rows)
 
 
 def activate_code(uid, raw):
@@ -10315,15 +10359,15 @@ def activate_code(uid, raw):
         return "Код вводится в твоём кабинете — сначала напиши боту /start.", "main"
     status, entry, why = CODES.redeem(raw, buyer=key)
     if status != "ok":
-        return f"❌ {why}. Проверь код: он выглядит как RL-XXXX-XXXX.", "pay"
+        return f"❌ {why}", "pay"
     t = tariff_by_name(entry["tariff"])
     if t is None:
-        CODES.release(entry["code"], key)
+        CODES.restore(entry)
         return "❌ Тариф этого кода больше не продаётся. Напиши продавцу.", "pay"
     try:
-        host_activate_plan(key, t, entry["days"], "Playerok (код)", code="…" + entry["code"][-4:])
+        host_activate_plan(key, t, entry["days"], "код активации", code="…" + entry["code"][-4:])
     except Exception:
-        CODES.release(entry["code"], key)
+        CODES.restore(entry)
         raise
     c = TENANTS[key]
     themes = tenant_themes(key)
@@ -10569,12 +10613,7 @@ def pay_screen():
         rows.append([B("🧩 Собрать свой тариф", "m:myt")])
     if HOST_MODE:
         rows.append([B("🎟 Ввести промокод", "p:promo")])
-        pl = playerok_url()
-        text += ("\n\n🛒 Купить на Playerok: " + (pl if pl else "ссылку пришлёт продавец") + ".\n"
-                 "После оплаты ты получишь одноразовый код. Нажми «🔑 Ввести код» и пришли его сюда.")
-        rows.append([LB("🛒 Купить на Playerok", pl)] if pl else [])
-        rows.append([B("🔑 Ввести код", "p:codeentry")])
-        rows = [r for r in rows if r]
+        text += "\n\nЧтобы активировать тариф, отправьте код сообщением."
     return text, rows + [[B("◀️ В меню", "m:main")]]
 
 
@@ -11549,6 +11588,25 @@ def host_action(p, uid):
         threading.Thread(target=ad_broadcast, args=(d,), daemon=True).start()
         FLASH[uid] = f"📢 Рассылаю рекламу: получателей {len(ad_targets())}. Итог пришлю сюда."
         return "cl"
+    if p[0] == "buyerask" and len(p) > 1:                  # 📇 покупателю — кнопка «Поделиться контактом»
+        if not tenant_send(p[1], PROMPTS["buyerreq"], [[CONTACT_BTN]]):
+            FLASH[uid] = "Покупатель ещё не писал боту — пусть напишет /start, тогда кнопка дойдёт."
+        return f"buyer:{p[1]}"
+    if p[0] == "buyercard" and len(p) > 1:                 # 📇 карточка контакта — хозяину в чат
+        contact = (TENANTS.get(p[1]) or {}).get("contact") or {}
+        chat = HOST_CHAT.get("chat")
+        if not contact.get("vcf") or not chat:
+            FLASH[uid] = "Контакт покупателя пока не получен."
+        else:
+            api_send_contact(chat, contact["vcf"], f"📇 Контакт покупателя «{(TENANTS.get(p[1]) or {}).get('name') or p[1]}»")
+        return f"buyer:{p[1]}"
+    if p[0] == "codesexp":                                 # 📄 экспорт активных кодов — файлом
+        active = [c for c, _, _ in CODES.listing()]
+        if not active:
+            FLASH[uid] = "Активных кодов нет — сначала сделай партию."
+        else:
+            CODE_EXPORT[uid] = write_codes_file(active)
+        return "codes"
     if p[0] == "clkeyrm" and len(p) > 1:                    # 🔑 убрать ключ из бота — снова из переменной Bothost
         field, env_name, what = {"vk": ("vk_token", "VK_TOKEN", "Ключ VK"),
                                  "tt": ("tt_cookies", "TIKTOK_COOKIES", "Cookies TikTok")}[p[1]]
