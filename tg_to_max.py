@@ -104,6 +104,7 @@ from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError 
 from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
 from reloader.services.billing.catalog import over_limit  # noqa: E402
+from reloader.services.media.policy import MAX_MEDIA_MB, size_skip_reason  # noqa: E402
 from reloader import config as APP_CONFIG  # noqa: E402
 ADMIN_IDS = set(APP_CONFIG.ADMIN_IDS)      # 👥 администраторы бота (ADMIN_IDS в переменных хостинга)
 
@@ -339,7 +340,6 @@ DEFAULTS = {
     "ads_strict": False,               # 🧠 строже к рекламе (ловит больше, но может задеть обычный пост)
     "smart_time": False,               # 🧠 публиковать в часы, когда больше просмотров
     "smart_tags": False,               # 🧠 сам добавляет хэштеги по теме
-    "media_auto": False,               # вложение не скачалось: False — пост ждёт решения; True — выйдет без него
     "ai_edit": False,                  # 🪄 ИИ-редактор (бета): пересказывает пост другими словами
     "smart_quality": False,            # 🧠 слабые посты — на твоё одобрение, сильные — сразу
     "dedupe_strict": False,            # 🧠 строже ловит повторы (одна картинка/похожий текст)
@@ -3023,14 +3023,10 @@ def _screen(name, uid=None):
         rows += [[B("➕ Добавить канал", "p:chadd")], back]
     elif name == "vid":
         text = (f"🎬 Видео и GIF: {on_off(CFG['video_on'])}\n"
-                f"Максимальный размер: {CFG['video_mb']} МБ\n\n"
-                "Видео больше лимита пропускаются вместе с постом (MAX принимает до 250 МБ).")
-        text += ("\n\n📎 Если вложение (видео, фото, файл) не скачалось: "
-                 + ("выкладываю пост без него и не беспокою тебя." if CFG.get("media_auto") else
-                    "присылаю тебе карточку «Что делать?»."))
+                f"Максимальный размер: {media_cap_mb()} МБ\n\n"
+                "Пост с файлом больше лимита пропускается целиком — без текста и без ссылки "
+                f"(потолок {MAX_MEDIA_MB} МБ).")
         rows = [[B(f"🎬 Видео: {on_off(CFG['video_on'])}", "a:vid")],
-                [B("📎 Не скачалось: " + ("выкладывать без него" if CFG.get("media_auto") else "спрашивать меня"),
-                   "a:mauto")],
                 [B("➖ 50 МБ", "a:vmb:-50"), B("➕ 50 МБ", "a:vmb:50")],
                 [B("➖ 10 МБ", "a:vmb:-10"), B("➕ 10 МБ", "a:vmb:10")], back]
     elif name == "dd":
@@ -3140,11 +3136,9 @@ def _screen(name, uid=None):
         lines = []
         for i, it in enumerate(items):
             snip = plain_snip(it.get("text"), 40)
-            mark = ({"pending": "✋", "stuck": "⚠️"}.get(it.get("status"), "")) + ("⚡" if it.get("urgent") else "")
+            mark = ({"pending": "✋"}.get(it.get("status"), "")) + ("⚡" if it.get("urgent") else "")
             if it.get("status") == "pending":
                 when = f"ждёт ТВОЕГО одобрения уже {fmt_min((now - it['enq']) / 60)}"
-            elif it.get("status") == "stuck":
-                when = "ждёт решения: вложение не загрузилось"
             elif it.get("at", 0) > now:
                 when = "выйдет в " + time.strftime("%H:%M", time.localtime(it["at"]))
             else:
@@ -3884,9 +3878,6 @@ def do_action(act, uid=None):
         m = GCFG.setdefault("all_mode", {})
         m[str(uid)] = not m.get(str(uid))
         scr = "th"
-    elif p[0] == "mauto":
-        CFG["media_auto"] = not CFG.get("media_auto")
-        scr = "vid"
     elif p[0] == "aied":
         CFG["ai_edit"] = not CFG.get("ai_edit")
         scr = "ai"
@@ -4268,8 +4259,6 @@ def _approve(rest, uid, chat=None):
     """Кнопки на карточках одобрения. Возвращает (текст, кнопки) на замену карточки.
     now/later/no — один пост, gnow/glater/gno — вся пачка, ok — просто в очередь по расписанию."""
     verdict, _, ref = rest.partition(":")
-    if verdict in ("retry", "bare", "drop"):
-        return fix_stuck(verdict, ref, uid, chat)
     if verdict in ("adok", "adad"):                       # ответ на «Это реклама?»
         it = next((x for x in ADHELD if x["id"] == ref), None)
         if it is None:
@@ -4350,43 +4339,6 @@ def approve(rest, uid, chat=None):
         return "Это пост не из твоих тем.", None
     with theme_ctx(t):
         return _approve(rest, uid, chat)
-
-
-def send_stuck_card(it):
-    snip = plain_snip(it.get("text"), 120)
-    text = (f"⚠️ Пост из @{it['ch']} не вышел как есть{theme_tag()}\n"
-            f"Причина: {it.get('stuck_why', '?')}\n\n{snip}\n\n"
-            "Пост ждёт и бот сам пробует снова (через 1, 2, 5… 30 мин), пока не скачает. Можно не ждать:\n"
-            "🔁 Повторить — попробовать ещё раз\n"
-            "📤 Без вложения — выложить без того, что не скачалось\n"
-            "🗑 Убрать — не выкладывать этот пост")
-    rows = [[B("🔁 Повторить", f"ap:retry:{it['id']}"), B("📤 Без вложения", f"ap:bare:{it['id']}")],
-            [B("🗑 Убрать", f"ap:drop:{it['id']}")]]
-    for chat in set(CFG["admin_chats"].values()):
-        try:
-            add_card(chat, api_send(chat, text, rows), it["id"])
-        except Exception as e:
-            print("Карточка проблемного поста:", e)
-
-
-def fix_stuck(verdict, ref, uid, chat):
-    it = next((x for x in QUEUE if x["id"] == ref and x.get("status") == "stuck"), None)
-    if it is None:
-        return "Этот пост уже обработан.", None
-    who = CFG["admin_names"].get(str(uid), "админ")
-    if verdict == "drop":
-        drop_item(it)
-        bump("rejected")
-        text = f"🗑 {who}: пост из @{it['ch']} убран."
-    else:
-        it.update(status="ok", fails=0, retry_at=0, manual=True, at=0, enq=time.time(), waits=0)
-        if verdict == "bare":
-            it["nomedia"] = True
-        text = (f"📤 {who}: выкладываю пост из @{it['ch']} без недостающего вложения."
-                if verdict == "bare" else f"🔁 {who}: пробую ещё раз пост из @{it['ch']}.")
-    save_queue()
-    resolve_cards([ref], chat)
-    return text, None
 
 
 # ---------- ТАЙНИК ----------
@@ -5730,8 +5682,8 @@ async def ensure_photos(client, it):
                 print(f"[{it['ch']}] фото {ids[i]} не докачалось: {e}")
         if got:
             out.append(got)
-        elif not it.get("nomedia"):
-            raise MediaLost(f"фото пропало с диска и не докачалось ({i + 1} из {len(photos)})")
+        else:
+            raise MediaLost(f"download failed: photo {i + 1} of {len(photos)}")
     return out
 
 
@@ -5821,12 +5773,11 @@ async def download_doc(client, ch, d):
     return None, err
 
 
-MEDIA_RETRY = [60, 120, 300, 600, 900, 1800]   # файл не скачался: снова через 1, 2, 5, 10, 15, 30, 30… минут
 
 
 async def fetch_files(client, it, parts):
-    """Видео и файлы поста — на диск ДО первой отправки: {номер части: путь}. Не скачалось — MediaLost
-    (пост ждёт и пробует снова). Без файла пост выходит, только если админ нажал «Без вложения»."""
+    """Видео и файлы поста — на диск ДО первой отправки: {номер части: путь}.
+    Не скачалось — MediaLost: пост пропускается целиком (текст без файла не выходит)."""
     files = {}
     for i, (kind, _, _, ref) in enumerate(parts):
         if i < it.get("sent", 0) or kind not in ("vid", "doc"):
@@ -5834,16 +5785,13 @@ async def fetch_files(client, it, parts):
         if kind == "vid":
             print(f"[{it['ch']}] качаю видео поста {ref}...")
             path, err = await download_video(client, it["ch"], ref)
-            lost = f"видео не скачалось: {err}"
+            what = "video"
         else:
             path, err = await download_doc(client, it["ch"], ref)
-            lost = f"файл {ref['name']} не скачался: {err}"
-        if path:
-            files[i] = path
-        elif not it.get("nomedia"):
-            raise MediaLost(lost)
-        else:
-            journal(f"[{it['ch']}] {lost} — выкладываю без него (админ нажал «Без вложения»)")
+            what = f"file {ref['name']}"
+        if not path:
+            raise MediaLost(f"download failed: {what} ({str(err)[:120]})")
+        files[i] = path
     return files
 
 
@@ -5860,28 +5808,30 @@ def drop_file(path):
             os.remove(path)
 
 
-async def to_stuck(it, why):
-    """Пост не может выйти полностью. По умолчанию пост ЖДЁТ и сам пробует снова (1, 2, 5… 30 минут — пока файл
-    не скачается), без файла не выходит и не пропадает; админу — одна карточка «Что делать?» (можно не ждать).
-    Включено «media_auto» — выкладываем без того, что не скачалось."""
-    if CFG.get("media_auto"):
-        rest = len(it.get("photos") or []) + len(it.get("vids") or []) + len(it.get("docs") or [])
-        if (it.get("text") or "").strip() or rest > 1:
-            it.update(nomedia=True, status="ok", retry_at=0, at=0)
-            save_queue()
-            journal(f"[{it['ch']}] пост {it['id']}: {str(why)[:120]} — выкладываю без этого вложения")
-            return "retry"
-        journal(f"[{it['ch']}] пост {it['id']}: {str(why)[:120]} — кроме него в посте ничего нет, пропускаю")
-        drop_item(it)
-        return "dropped"
-    n = it.get("waits", 0)
-    pause = MEDIA_RETRY[min(n, len(MEDIA_RETRY) - 1)]
-    it.update(status="stuck", stuck_why=str(why)[:150], waits=n + 1, retry_at=time.time() + pause)
+def item_has_media(it):
+    return bool(it.get("photos") or it.get("vids") or it.get("docs"))
+
+
+def skip_post(it, reason):
+    """Пост пропускаем целиком: причина — в журнал. Без текста без вложения, без ссылок, без кнопок, без сообщений."""
+    journal(f"[{it['ch']}] пост {it['id']}: Skipped: {reason}")
+    resolve_cards([it["id"]])                        # старые карточки этого поста — убрать
+    drop_item(it)
     save_queue()
-    print(f"[{it['ch']}] пост {it['id']} ждёт файл, попытка {n + 1}, снова через {pause // 60} мин: {why}")
-    if not n:                                      # карточка — одна, а не на каждую попытку
-        await asyncio.to_thread(send_stuck_card, it)
-    return "stuck"
+    return "dropped"
+
+
+def drop_legacy_stuck():
+    """Посты «ждут файла» из прежней версии — пропускаем по новому правилу. Возвращает их число."""
+    old = [it for it in QUEUE if it.get("status") == "stuck"]
+    for it in old:
+        skip_post(it, f"download failed (из прежней очереди: {str(it.get('stuck_why') or '')[:80]})")
+    return len(old)
+
+
+def media_cap_mb():
+    """Лимит файла для пропуска: настройка «Видео», но не выше MAX_MEDIA_MB."""
+    return min(int(CFG["video_mb"] or MAX_MEDIA_MB), MAX_MEDIA_MB)
 
 
 async def publish_item(client, chat_id, it):
@@ -5900,7 +5850,7 @@ async def publish_item(client, chat_id, it):
 
 
 async def _publish_item(client, chat_id, it):
-    """'ok', 'retry', 'stuck' (ждёт решения админа) или 'dropped'. Отправленные части не шлёт повторно."""
+    """'ok', 'retry' или 'dropped' (пост пропущен целиком). Отправленные части не шлёт повторно."""
     client = src_client(client, it.get("ch", ""))
     async def snd(*args):
         mid = await asyncio.to_thread(send_max, *args)
@@ -5932,10 +5882,7 @@ async def _publish_item(client, chat_id, it):
             if i < it.get("sent", 0):
                 continue                           # эта часть уже ушла в прошлую попытку
             path = files.get(i)
-            if kind in ("vid", "doc") and not path:    # только по кнопке «Без вложения»
-                if t:                                  # текст был привязан к файлу — не теряем его
-                    await snd(chat_id, t, [], None)
-            elif kind == "doc":
+            if kind == "doc":
                 await snd(chat_id, t, [], None, path)
                 drop_file(path)
             elif kind == "vid":
@@ -5954,13 +5901,15 @@ async def _publish_item(client, chat_id, it):
         journal(f"[{it['ch']}] опубликован пост {it['id']}")
         return "ok"
     except MediaLost as e:
-        return await to_stuck(it, e)
+        return skip_post(it, str(e))
     except ChatDenied as e:
         await asyncio.to_thread(note_denied, chat_id, e)
         it["retry_at"] = DENIED.get(chat_id, time.time() + 600)
         save_queue()
         return "retry"
     except Exception as e:
+        if item_has_media(it):                        # вложение не ушло в MAX — пост пропускаем целиком
+            return skip_post(it, f"upload failed: {str(e)[:120]}")
         if is_temporary(e):
             retry_later(it, e, f"[{it['ch']}] пост {it['id']}")
             save_queue()
@@ -5969,12 +5918,9 @@ async def _publish_item(client, chat_id, it):
         bump("errors")
         print(f"[{it['ch']}] ошибка публикации {it['id']} (попытка {it['fails']}):", e)
         if it["fails"] >= 3:
-            if (it.get("photos") or it.get("vids") or it.get("docs")) and not it.get("nomedia"):
-                return await to_stuck(it, f"не отправился в MAX: {str(e)[:100]}")
             drop_item(it)
             save_queue()
-            await asyncio.to_thread(
-                notify, f"⚠️ Пост из @{it['ch']} не удалось опубликовать, пропущен.\nПричина: {str(e)[:150]}")
+            journal(f"[{it['ch']}] пост {it['id']}: Skipped: publish failed ({str(e)[:150]})")
             return "dropped"
         it["retry_at"] = time.time() + 60
         save_queue()
@@ -6097,7 +6043,8 @@ async def publish_due(client, chat_id):
     if DENIED.get(chat_id, 0) > now:
         return                                       # нет прав на канал — ждём (админам уже сказали)
     limit = CFG["max_age_h"] * 3600
-    stale = [it for it in QUEUE if not it.get("manual") and it.get("status") != "stuck" and now - it["enq"] > limit]
+    drop_legacy_stuck()                              # старые «ждущие файла» — пропускаем по новому правилу
+    stale = [it for it in QUEUE if not it.get("manual") and now - it["enq"] > limit]
     for it in stale:
         drop_item(it)
         bump("expired")
@@ -6108,7 +6055,7 @@ async def publish_due(client, chat_id):
         resolve_cards(item_refs(stale))
     free = on_free()
     force = now < FORCE["until"] and not free
-    ready = [x for x in QUEUE if x.get("status", "ok") in ("ok", "stuck")     # stuck — ждёт файл, пробует сам
+    ready = [x for x in QUEUE if x.get("status", "ok") == "ok"
              and x.get("retry_at", 0) <= now and x.get("at", 0) <= now]
 
     # 1) посты с кнопок «Сейчас» / «Через …»: выходят в своё время, без паузы и ночного режима.
@@ -6177,7 +6124,7 @@ async def publish_due(client, chat_id):
         res = await publish_item(client, chat_id, it)
         if res == "retry":
             break
-        if res in ("dropped", "stuck"):
+        if res == "dropped":
             continue
         ch = it["ch"]
         if new_series and ch not in seen:
@@ -6231,7 +6178,6 @@ def check_empty(now):
         return
     t.flags["empty_at"] = now
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
-    stuck = sum(1 for x in QUEUE if x.get("status") == "stuck")
     later = [x["at"] for x in QUEUE if x.get("status", "ok") == "ok" and x.get("manual") and x.get("at", 0) > now]
     lines = ["📭 На ближайший час постов нет."]
     lines.append("Очередь пуста." if not QUEUE else f"В очереди: {len(QUEUE)}, но в этот час ничего не выйдет.")
@@ -6243,8 +6189,6 @@ def check_empty(now):
         lines.append("Тайник пуст — подкинь мемов: кнопка ниже.")
     if pend:
         lines.append(f"Ждут одобрения: {pend} — /approve")
-    if stuck:
-        lines.append(f"Ждут решения (⚠️): {stuck} — смотри карточки")
     notify("\n".join(lines), rows=stash_fill_rows() if CFG["stash_on"] and not STASH else None)
 
 
@@ -6362,19 +6306,6 @@ def doc_info(m):
     return {"id": m.id, "name": name, "size": int(getattr(d, "size", 0) or 0)}
 
 
-DOC_TOLD = {}          # канал -> когда сказали, что файлы без входа в Telegram не скачать
-
-
-def note_docs_lost(ch, names):
-    journal(f"[{ch}] файл(ы) {', '.join(names)[:80]}: без входа в Telegram не скачать — пост выйдет без них")
-    if time.time() - DOC_TOLD.get(ch, 0) > 86400:
-        DOC_TOLD[ch] = time.time()
-        notify(f"📎 В @{ch} есть посты с файлами ({', '.join(names)[:60]}). Без входа в Telegram бот не может "
-               "скачивать файлы (PDF, архивы, музыку) — такие посты выходят без файла, а пост из одного файла "
-               "пропускается.\n\nЧтобы файлы переносились, подключи аккаунт Telegram: кнопка «🔑 Telegram»"
-               + (" в «⚙️ Ещё настройки»." if CLIENT_MODE else " в меню."))
-
-
 def video_info(m):
     """(размер в байтах, длительность) для видео/GIF, иначе None."""
     doc = video_doc(m)
@@ -6472,31 +6403,31 @@ async def _process_channel(client, ch, fails, fresh):
                     if vi:
                         vids.append((m, vi))
                         hashes.append(f"v{vi[0]}-{vi[1]}")
-            # файлы (PDF, архивы, музыка, голосовые): качаем при публикации
-            docs, lost = [], []
+            # файлы (PDF, архивы, музыка, голосовые): качаем при публикации.
+            # Строгое правило: файл больше лимита или без входа в Telegram не скачать — пост пропускается целиком.
+            docs, skip = [], None
             for m in media:
                 di = doc_info(m)
                 if not di:
                     continue
                 if is_web_client(client) and not getattr(m.document, "url", None):
-                    lost.append(di["name"])                # веб-версия Telegram файлы не отдаёт
-                elif di["size"] > CFG["video_mb"] * 1024 * 1024:
-                    lost.append(di["name"])
-                    journal(f"[{ch}] файл {di['name']} больше {CFG['video_mb']} МБ — без него")
-                    await asyncio.to_thread(notify, f"⚠️ @{ch}: файл «{di['name']}» ({di['size'] // 1048576} МБ) "
-                                                    f"больше лимита {CFG['video_mb']} МБ — пост выйдет без него.")
+                    skip = skip or f"download failed ({di['name']}: без входа в Telegram файл не скачать)"
+                elif size_skip_reason(di["size"], media_cap_mb()):
+                    skip = skip or size_skip_reason(di["size"], media_cap_mb())
                 else:
                     docs.append(di)
                     hashes.append(f"d{di['size']}-{di['name']}")
-            if lost and is_web_client(client):
-                await asyncio.to_thread(note_docs_lost, ch, lost)
+            if not skip:
+                skip = next((size_skip_reason(vi[0], media_cap_mb()) for _, vi in vids
+                             if size_skip_reason(vi[0], media_cap_mb())), None)
             entry = {"norm": norm(body), "img": hashes, "t": time.time(),
                      "fwd": [k for k in (fwd_key(m) for m in grp) if k]}
             has_media = bool(img_paths or vids or docs)
             dup = find_duplicate(entry, history) if CFG["dedupe_on"] else None
-            if not body and not has_media:
-                journal(f"[{ch}] пост {last}: " + ("только файл, а его не скачать — пропускаю" if lost
-                                                   else "пусто после чистки — пропускаю"))
+            if skip:                                     # пост пропущен целиком: в журнале причина, молча
+                journal(f"[{ch}] пост {last}: {skip if skip.startswith('Skipped') else 'Skipped: ' + skip}")
+            elif not body and not has_media:
+                journal(f"[{ch}] пост {last}: пусто после чистки — пропускаю")
             elif (bw := blocked_word(body)) is not None:
                 bump("blocked")
                 journal(f"[{ch}] пост {last}: стоп-слово «{bw}» — не публикую")
@@ -6522,9 +6453,6 @@ async def _process_channel(client, ch, fails, fresh):
                     save_history()
                 bump("dups")
                 journal(f"[{ch}] пост {last}: ДУБЛЬ по смыслу, уже публиковали — пропускаю")
-            elif any(vi[0] > CFG["video_mb"] * 1024 * 1024 for _, vi in vids):
-                journal(f"[{ch}] пост {last}: видео больше {CFG['video_mb']} МБ — пропускаю")
-                await asyncio.to_thread(notify, f"⚠️ @{ch}: видео больше {CFG['video_mb']} МБ — пост пропущен.")
             elif len(QUEUE) >= 100:
                 journal(f"[{ch}] пост {last}: очередь переполнена (100) — пропускаю")
             else:
@@ -12210,14 +12138,11 @@ def pipeline_status(t, now=None):
                                                "на бесплатном тарифе работает только первый канал MAX, этот на паузе")
                      + " — каналы не читаются, посты не выходят")]
         out = [(False, f"«{t.name}»: на паузе — посты не выходят (кнопка «▶️ Продолжить»)")] if CFG["paused"] else []
-        by = {k: [x for x in QUEUE if x.get("status", "ok") == k] for k in ("pending", "stuck", "ok")}
+        by = {k: [x for x in QUEUE if x.get("status", "ok") == k] for k in ("pending", "ok")}
         if by["pending"]:
             oldest = max(now - x.get("enq", now) for x in by["pending"])
             out.append((True, f"«{t.name}»: ждут твоего ✅: {len(by['pending'])} "
                               f"(самый старый — {fmt_min(int(oldest // 60))} назад)"))
-        if by["stuck"]:
-            out.append((False, f"«{t.name}»: ждут решения «Что делать?»: {len(by['stuck'])} — "
-                               f"{str(by['stuck'][0].get('stuck_why') or '?')[:90]}"))
         if by["ok"]:
             out.append((True, f"«{t.name}»: в очереди на выход: {len(by['ok'])}, следующий — {next_pub_text()}"))
         held = Counter(x.get("ch") for x in ADHELD if now - x.get("enq", now) < 86400)

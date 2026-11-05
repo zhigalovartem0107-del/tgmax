@@ -15,7 +15,6 @@ for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
 os.chdir(tempfile.mkdtemp())
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
-bot.DEFAULTS["media_auto"] = False; bot.GCFG["media_auto"] = False   # тут проверяем карточку «не вышел как есть»
 bot.S.trust_env = False
 
 NOTES = []
@@ -118,24 +117,25 @@ assert srv.files[got[1]["attachments"][0]["payload"]["token"]][0] == "Песня
 assert not [x for x in os.listdir(bot.MEDIA_DIR) if x.startswith("d_")], os.listdir(bot.MEDIA_DIR)
 print("f2 ok: со входом в Telegram PDF и музыка уходят в MAX файлами с текстом поста, временные файлы удаляются")
 
-# 2б) файл не скачался — пост не выходит «пустым», а ждёт решения админа
+# 2б) файл не скачался — пост пропускается целиком: ни текста без файла, ни карточки, ни кнопок
 tg2 = TG([])
 it = dict(q["knit:11"], id="knit:99", sent=0, docs=[{"id": 99, "name": "x.pdf", "size": 1}])
 bot.QUEUE.append(it)
-bot.send_stuck_card = lambda it: None
-assert asyncio.run(bot.publish_item(tg2, 5, it)) == "stuck" and it["status"] == "stuck"
-print("f2б ok: файл пропал из Telegram — пост ждёт решения админа, а не уходит без файла")
-
-# 2в) файл больше лимита размера: MAX его не возьмёт — пост выходит без файла, и владелец об этом УЗНАЁТ
-#     (раньше только строчка в журнале — файл пропадал молча)
 NOTES.clear()
-big = bot.CFG["video_mb"] * 1024 * 1024 + 1
+assert asyncio.run(bot.publish_item(tg2, 5, it)) == "dropped" and it not in bot.QUEUE
+assert not NOTES, NOTES
+print("f2б ok: файл не скачался — пост пропущен целиком, без текста и без карточки")
+
+# 2в) файл больше 250 МБ: пост пропускается целиком — не в очередь, без текста, без сообщений и ссылок
+NOTES.clear()
+big = 250 * 1024 * 1024 + 1
 tg3 = TG([Msg(31, "Обновление игры", Doc(big, "application/vnd.android.package-archive"), "Game 1.0.apk", b"x")])
 bot.LAST_IDS["knit"] = 30
 asyncio.run(bot.process_channel(tg3, "knit", {})); MONO[0] += 10
 asyncio.run(bot.process_channel(tg3, "knit", {}))
-assert any("Game 1.0.apk" in n and str(bot.CFG["video_mb"]) in n for n in NOTES), NOTES
-print("f2в ok: файл больше лимита — владелец получает сообщение, а не тихую строчку в журнале")
+assert not [x for x in bot.QUEUE if x["ch"] == "knit" and "Обновление игры" in x["text"]], bot.QUEUE
+assert not NOTES, NOTES
+print("f2в ok: файл больше 250 МБ — пост пропущен целиком, без текста и без сообщений")
 
 
 # 3) без входа (t.me): документ не скачать — честно говорим; голосовое — переносим
@@ -168,16 +168,14 @@ bot.QUEUE.clear(); bot.LAST_IDS["v"] = 20; NOTES.clear()
 asyncio.run(bot.process_channel(web, "v", {})); MONO[0] += 10
 asyncio.run(bot.process_channel(web, "v", {}))
 q = {x["id"]: x for x in bot.QUEUE}
-assert set(q) == {"v:21", "v:23"}, list(q)
-assert q["v:21"]["text"] == "Схема пуловера" and not q["v:21"]["docs"]
-assert any("только файл" in j for j in bot.JOURNAL)
-assert len([n for n in NOTES if "🔑 Telegram" in n and "PDF" in n]) == 1, NOTES
+assert set(q) == {"v:23"}, list(q)                        # пост с PDF без входа не скачать — пропущен целиком
+assert any("Skipped: download failed" in j and "v:21" not in j or "Skipped: download failed" in j for j in bot.JOURNAL)
+assert not [n for n in NOTES if "PDF" in n], NOTES           # ни текста без PDF, ни сообщения
 n0 = len(srv.messages)
 assert asyncio.run(bot.publish_item(web, 5, q["v:23"])) == "ok"
 b = srv.messages[-1]["body"]
 assert srv.files[b["attachments"][0]["payload"]["token"]] == ("voice_23.ogg", b"OggS"), b
-print("f3 ok: без входа: пост с PDF выходит текстом + совет подключить Telegram (один раз), "
-      "пост из одного файла пропускается, голосовое переносится")
+print("f3 ok: без входа: пост с PDF пропущен целиком (без текста и сообщений), голосовое переносится")
 
 # 4) тайник: переслал боту файл в MAX — он выходит тем же файлом
 msg = {"body": {"text": "", "attachments": []}, "link": {"type": "forward", "message": {
@@ -238,7 +236,6 @@ print("f5 ok: отчёт за день — картинка: посты, про�
 import importlib
 spec2 = importlib.util.spec_from_file_location("bot2", ROOT + "/tg_to_max.py")
 b2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(b2)
-b2.DEFAULTS["media_auto"] = False; b2.GCFG["media_auto"] = False   # тут проверяем карточку «не вышел как есть»
 b2.S.trust_env = False
 b2.AUTODEL.update(temp=[], menu={})
 srv.deleted.clear()

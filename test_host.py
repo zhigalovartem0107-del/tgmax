@@ -869,27 +869,15 @@ with bot.theme_ctx(tb):
 bot.delete_theme(t2)
 print("h41 ok: 🧹 фильтр — чужие ссылки (и max.ru) убираются в любом месте; подписи/реклама из любой темы работают во всех")
 
-# 42) вложение не скачалось — пост НЕ уходит без него и НЕ пропадает: ждёт решения (карточка «Что делать?»);
-#     «выкладывать без него» — только если владелец сам так включил
-with bot.theme_ctx(tb):
-    it = {"id": "x:1", "ch": "x", "text": "Есть текст", "photos": [], "vids": [5], "docs": [], "status": "ok"}
-    bot.QUEUE.append(it)
-    n0 = len(OUT)
-    assert asyncio.run(bot.to_stuck(it, "видео не скачалось")) == "stuck"
-    assert it in bot.QUEUE and it["status"] == "stuck" and not it.get("nomedia")
-    card = [o for o in OUT[n0:] if "не вышел как есть" in o[0]]
-    assert card and "ap:retry:x:1" in json.dumps(card[-1][1]), OUT[n0:]
-    for btn in ("🔁 Повторить —", "📤 Без вложения —", "🗑 Убрать —"):      # покупателю понятно, что жать
-        assert btn in card[-1][0], card[-1][0]
-    bot.CFG["media_auto"] = True                                  # владелец сам включил «выкладывать без него»
-    it2 = {"id": "x:2", "ch": "x", "text": "Текст", "photos": [], "vids": [6], "docs": [], "status": "ok"}
-    bot.QUEUE.append(it2)
-    assert asyncio.run(bot.to_stuck(it2, "видео не скачалось")) == "retry" and it2["nomedia"]
-    bot.CFG["media_auto"] = False
-    bot.QUEUE[:] = [x for x in bot.QUEUE if x not in (it, it2)]
-press(5001, 62000, "m:vid")
-assert "a:mauto" in shown() and "спрашивать меня" in shown(), shown()
-print("h42 ok: 📎 не скачалось вложение — пост ждёт решения, а не выходит без него и не пропадает")
+# 42) вложение не скачалось — пост пропускается целиком: без текста, без карточки, без кнопок и ссылок
+n0 = len(OUT)
+it42 = {"id": "x:1", "ch": "chan", "date": time.time(), "enq": time.time(), "text": "Новость с видео",
+        "photos": [], "vids": [1], "docs": [], "sent": 0, "fails": 0, "status": "ok"}
+bot.QUEUE.append(it42)
+assert bot.skip_post(it42, "download failed: video (обрыв)") == "dropped" and it42 not in bot.QUEUE
+assert not [o for o in OUT[n0:] if o[1]], OUT[n0:]                   # ни кнопок, ни карточки
+assert any("Skipped: download failed" in j for j in bot.JOURNAL), bot.JOURNAL[-3:]
+print("h42 ok: 📎 вложение не скачалось — пост пропущен целиком: без текста, без карточки и кнопок, причина в журнале")
 
 # 47) фото не скачалось при чтении канала — пост всё равно встаёт в очередь, фото докачивается перед публикацией
 feed["x"] = rss.replace("</channel>", """<item><title>Пост с фото</title><link>https://site.ru/9</link>
@@ -1132,14 +1120,14 @@ now = time.time()
 with bot.theme_ctx(tb):
     saved_q, saved_ads = list(bot.QUEUE), list(bot.ADHELD)
     bot.QUEUE[:] = [{"id": "p:1", "ch": "src", "status": "pending", "enq": now - 3 * 3600},
-                    {"id": "p:2", "ch": "src", "status": "stuck", "stuck_why": "файл Шапка.pdf не скачался", "enq": now},
+                    {"id": "p:2", "ch": "src", "status": "ok", "enq": now},
                     {"id": "p:3", "ch": "src", "status": "ok", "enq": now}]
     bot.ADHELD[:] = [{"id": "a:1", "ch": "spam_ch", "enq": now}, {"id": "a:2", "ch": "spam_ch", "enq": now}]
     lines = " | ".join(t_ for _, t_ in bot.pipeline_status(tb, now))
     bot.QUEUE[:], bot.ADHELD[:] = saved_q, saved_ads
 assert "ждут твоего ✅: 1" in lines and "3 ч" in lines, lines
-assert "«Что делать?»: 1" in lines and "Шапка.pdf" in lines, lines
-assert "в очереди на выход: 1" in lines and "реклама" in lines and "@spam_ch — 2" in lines, lines
+assert "Что делать" not in lines and "ждут решения" not in lines, lines      # статуса «ждёт файла» больше нет
+assert "в очереди на выход: 2" in lines and "реклама" in lines and "@spam_ch — 2" in lines, lines
 k_exp = bot.tenant_by_chat(99102)                                   # кабинет, выключенный хозяином
 bot.TENANTS[k_exp]["enabled"] = False
 lines = " | ".join(t_ for _, t_ in bot.pipeline_status(bot.tenant_themes(k_exp)[0], now))

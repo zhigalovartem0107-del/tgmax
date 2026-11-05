@@ -20,12 +20,14 @@ def mk(d, content, **files):
 root = tempfile.mkdtemp()
 new = os.path.join(root, "new"); os.makedirs(new)
 # свежий, но НЕрабочий вход и старый РАБОЧИЙ с данными
-mk(os.path.join(root, "a", "bot1"), "BAD")
-time.sleep(0.05)
+def stamp(d, t):
+    """Время изменения входа задаём явно: порядок «свежий/старый» не зависит от загрузки машины."""
+    os.utime(os.path.join(d, "session.session"), (t, t))
+mk(os.path.join(root, "a", "bot1"), "BAD"); stamp(os.path.join(root, "a", "bot1"), 1000)
 mk(os.path.join(root, "b", "deep", "bot2"), "GOOD", settings__json='{"admins":[5]}', stash__json="[]", queue_t2__json="[]")
+stamp(os.path.join(root, "b", "deep", "bot2"), 2000)
 os.makedirs(os.path.join(root, "b", "deep", "bot2", "stash_media")); open(os.path.join(root, "b", "deep", "bot2", "stash_media", "a.jpg"), "w").write("x")
-time.sleep(0.05)
-mk(os.path.join(root, "c"), "BAD")               # самый свежий, тоже нерабочий
+mk(os.path.join(root, "c"), "BAD"); stamp(os.path.join(root, "c"), 3000)   # самый свежий, тоже нерабочий
 mk(new, "BAD")                                   # и тут, в рабочей папке, вход протух
 bot.setup_data_dir(base=new, extra_roots=[root], check=check)
 assert open("session.session").read() == "GOOD", open("session.session").read()

@@ -114,9 +114,9 @@ async def pub(it):
     return await bot.publish_item(cl, 5, it)
 bot.VIDEO_RETRY_PAUSES[:] = [0, 0]
 r1 = asyncio.run(pub(q["chan:106"])); assert r1 == "ok", r1
-r2 = asyncio.run(pub(q["chan:107"])); assert r2 == "stuck", r2
-assert any("слишком большое" in (t or "") for t, _ in API), API
-print("w5 ok: видео с ссылкой уходит; большое видео не публикуется без видео — приходит карточка с причиной")
+r2 = asyncio.run(pub(q["chan:107"])); assert r2 == "dropped", r2
+assert not any("слишком большое" in (t or "") for t, _ in API), API     # ни текста без видео, ни карточки
+print("w5 ok: видео с ссылкой уходит; большое видео — пост пропущен целиком, без текста и карточки")
 
 # тест-репост, когда последний пост — альбом: берётся весь альбом с текстом, а не одно последнее фото
 ALB = "<section class='tgme_channel_history'>" + wrap(200, text("пост 200")) + wrap(203, photo(201, "https://cdn/a1.jpg")

@@ -11,7 +11,6 @@ os.chdir(tempfile.mkdtemp())
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
-bot.DEFAULTS["media_auto"] = False; bot.GCFG["media_auto"] = False   # тут проверяем карточку «не вышел как есть»
 
 CLOCK = [1_800_000_000.0]
 time.time = lambda: CLOCK[0]
@@ -226,7 +225,6 @@ bot.VIDEO_RETRY_PAUSES[:] = [0, 0]
 import importlib
 spec2 = importlib.util.spec_from_file_location("bot2", ROOT + "/tg_to_max.py")
 bot2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(bot2)
-bot2.DEFAULTS["media_auto"] = False; bot2.GCFG["media_auto"] = False   # тут проверяем карточку «не вышел как есть»
 bot2.VIDEO_RETRY_PAUSES[:] = [0, 0]
 bot2.notify = lambda t, tag=True, rows=None: NOTES.append(t)
 sent2, api2 = [], []
@@ -248,25 +246,12 @@ it = {"id": "a:7", "ch": "a", "date": 0, "enq": 0, "text": "текст к вид
       "sent": 0, "fails": 0, "status": "ok"}
 bot2.QUEUE.append(it)
 res = asyncio.run(bot2.publish_item(Client(Msg()), 5, it))
-assert res == "stuck", res
-assert it["status"] == "stuck" and not sent2, (it, sent2)             # ничего не ушло
-card = [a for a in api2 if a[2] and "ap:bare:a:7" in str(a[2])]
-assert card and "видео не скачалось" in card[0][1], api2
-# админ жмёт «Без вложения» -> выходит текст
-text, _ = bot2.approve("bare:a:7", 1, 111)
-assert it["status"] == "ok" and it["nomedia"] and it["manual"]
-res = asyncio.run(bot2.publish_item(Client(Msg()), 5, it))
-assert res == "ok" and sent2 and "текст к видео" in sent2[0][0], sent2
-print("9 ok: нет видео -> пост ждёт решения админа, «без вложения» выкладывает текст")
+assert res == "dropped" and not sent2 and it not in bot2.QUEUE, (res, sent2)   # видео нет — пост пропущен целиком
+assert not [a for a in api2 if a[2] and "ap:" in str(a[2])], api2              # ни кнопок, ни карточки
+print("9 ok: нет видео -> пост пропущен целиком: без текста, без кнопок")
 
-# 9a) «Убрать» и «Повторить»
-it2 = {"id": "a:8", "ch": "a", "date": 0, "enq": 0, "text": "x", "photos": [], "vids": [8], "sent": 0,
-       "fails": 0, "status": "stuck"}
-bot2.QUEUE.append(it2)
-bot2.approve("retry:a:8", 1, 111); assert it2["status"] == "ok" and it2["manual"] and not it2.get("nomedia")
-it2["status"] = "stuck"
-bot2.approve("drop:a:8", 1, 111); assert it2 not in bot2.QUEUE
-print("9a ok: «Повторить» и «Убрать» работают")
+# 9a) кнопок «Повторить» / «Убрать» больше нет: карточек не создаём, approve их не принимает
+
 
 # 9c) фото пропало с диска: докачиваем из Telegram по id, а не шлём пост без фото
 os.makedirs(bot2.MEDIA_DIR, exist_ok=True)
@@ -293,8 +278,8 @@ it4 = {"id": "a:6", "ch": "a", "date": 0, "enq": 0, "text": "с фото", "phot
        "pids": [6], "vids": [], "sent": 0, "fails": 0, "status": "ok"}
 bot2.QUEUE.append(it4)
 res = asyncio.run(bot2.publish_item(NoClient(), 5, it4))
-assert res == "stuck" and not sent2, (res, sent2)
-print("9d ok: фото не найдено -> пост не выходит без фото")
+assert res == "dropped" and not sent2 and it4 not in bot2.QUEUE, (res, sent2)
+print("9d ok: фото не найдено -> пост пропущен целиком, без фото и без текста")
 
 # 9b) видео качается со 2-й попытки
 class Flaky(Msg):
@@ -337,28 +322,12 @@ t0 = CLOCK[0]
 it5 = {"id": "a:9", "ch": "a", "date": t0, "enq": t0, "text": "видео + файл", "photos": [], "vids": [9],
        "docs": [{"id": 10, "name": "x.pdf", "size": 3}], "sent": 0, "fails": 0, "status": "ok"}
 bot2.QUEUE.append(it5)
-assert asyncio.run(bot2.publish_item(Two(), 5, it5)) == "stuck"
-assert not sent2, sent2                                                # ни видео, ни текста — пост целиком ждёт
-assert it5["status"] == "stuck" and it5["retry_at"] == t0 + 60, it5
-cards = [a for a in api2 if a[2] and "ap:bare:a:9" in str(a[2])]
-assert len(cards) == 1 and "сам пробует" in cards[0][1], api2
-CLOCK[0] = t0 + 61
-asyncio.run(bot2.publish_due(Two(), 5))                                # 2-я попытка — тоже нет
-assert it5 in bot2.QUEUE and it5["retry_at"] == CLOCK[0] + 120 and not sent2, it5
-CLOCK[0] = t0 + 3 * 86400                                              # трое суток CDN молчит — пост всё ещё ждёт
-asyncio.run(bot2.publish_due(Two(), 5))
-assert it5 in bot2.QUEUE and it5["status"] == "stuck", "ждущий файла пост не удаляется по сроку очереди"
-assert len([a for a in api2 if a[2] and "ap:bare:a:9" in str(a[2])]) == 1, "карточка одна, без спама"
-DocMsg.ok = True
-CLOCK[0] = it5["retry_at"] + 1
-asyncio.run(bot2.publish_due(Two(), 5))
-assert it5 not in bot2.QUEUE, it5
-assert [x[2] is not None for x in sent2] == [True, False] and sent2[1][3], sent2   # видео с текстом, затем файл
-assert VidMsg.n == 1, VidMsg.n                         # видео, скачанное в 1-й попытке, не качали заново
-assert any(c["ref"] == "a:9" and c.get("del_at") for c in bot2.CARDS), "карточка «Что делать?» убрана"
-assert not [f for f in os.listdir(bot2.MEDIA_DIR) if "a_9" in f or "a_10" in f], os.listdir(bot2.MEDIA_DIR)
+assert asyncio.run(bot2.publish_item(Two(), 5, it5)) == "dropped"      # файл не скачался — пост пропущен целиком
+assert not sent2, sent2                                                # ни видео, ни текста, ни ссылки
+assert it5 not in bot2.QUEUE
+assert not [a for a in api2 if a[2] and "ap:" in str(a[2])], api2    # кнопок нет
 CLOCK[0] = t0
-print("9e ok: файл не скачался — пост ждёт и сам повторяет (карточка одна), скачался — выходит целиком, ничего не пропущено")
+print("9e ok: файл не скачался — пост пропущен целиком: без текста, без кнопок, без повторов")
 
 
 # ---- 10) цепочка: через час в 12 -> следующий в 13 -> 14 ----
