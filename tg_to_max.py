@@ -647,17 +647,18 @@ def active_theme(uid):
     return theme_by_id(META["active"].get(str(uid))) or (THEMES[0] if THEMES else _VOID)
 
 
-def six_menu(uid):
-    """Главное меню — ровно 6 кнопок. Всё остальное — в «⚙️ Настройках» и в /admin."""
+def main_menu(uid):
+    """Главное меню — ровно 5 кнопок. «Поддержка» — прямая ссылка на профиль админа в MAX (контакт продавца).
+    Статистика и инструкция — в «⚙️ Настройках»; панель хозяина — в /admin."""
     host = is_host(uid)
-    me = None if host else seller_link()
     state = ("⏸ Бот на паузе — посты не выходят. Снять: «⚙️ Настройки»." if CFG["paused"]
              else "▶️ Бот работает — новые посты выходят сами.")
     text = "📋 Главное меню\n\n" + state + "\n\n" + subscription_line()
-    support = LB("❓ Поддержка", me) if me else B("❓ Поддержка", "m:hp")
-    rows = [[B("🎭 Мои каналы", "m:home" if host else "m:th"), B("⚙️ Настройки", "m:more")],
-            [B("📊 Статистика", "m:st"), B("💳 Подписка", "m:pay")],
-            [B("📖 Инструкция", "m:gd"), support]]
+    link = seller_link()
+    support = LB("❓ Поддержка", link) if link else B("❓ Поддержка", "m:hp")   # контакт не задан — без мёртвой ссылки
+    rows = [[B("🎭 Мои каналы", "m:home" if host else "m:th"), B("📅 Расписание", "m:q")],
+            [B("⚙️ Настройки", "m:more"), B("💳 Подписка", "m:pay", intent="positive")],
+            [support]]
     return text.strip(), rows
 
 
@@ -3035,7 +3036,7 @@ def _screen(name, uid=None):
     if got is not None:
         return got
     if name == "main" and HOST_MODE:
-        return six_menu(uid)                            # главное меню: 6 кнопок; панель — /admin
+        return main_menu(uid)                           # главное меню: 5 кнопок; панель — /admin
     if HOST_MODE and is_host(uid) and name == "home":   # «Мои каналы» хозяина: заводим кабинет с темой, если его ещё нет
         t = ensure_host_cabinet()
         act = active_theme(uid)                         # открываем ту тему, что хозяин выбрал, а не всегда первую
@@ -3461,13 +3462,14 @@ def _screen(name, uid=None):
         rows = [[B("🎬 Видео", "m:vid"), B("🔁 Повторы", "m:dd")],
                 [B("🧹 Реклама", "m:fl"), B("⏱ Проверка каналов", "m:iv")],
                 [B("👥 Админы", "m:ad"), B("📈 Отчёт", "m:rp")],
-                [B("📊 Статус", "m:st"), B("🧪 Тест", "m:ts")],
+                [B("📊 Статистика", "m:st"), B("🧪 Тест", "m:ts")],
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
                 [B("🔎 Проверка связи", "m:dg")] + ([B("🔑 Telegram", "tg:menu")] if show_tg(uid) else []),
                 [B("🧠 Умное", "m:ai"), B("❓ Команды", "m:hp")],
                 [B("✍️ Подпись", "m:sg"), B("⏳ Расписание", "m:q")],
                 [B("✋ Проверка постов", "m:ap")] + ([] if on_free() else [B("🗃 Тайник", "m:sh")]),
-                *([[B("📊 Аналитика: когда смотрят", "m:anl")]] if feature_on("stats") and not on_free() else []),
+                *([[B("📊 Статистика просмотров", "m:anl")]] if feature_on("stats") and not on_free() else []),
+                [B("📖 Инструкция", "m:gd")],
                 *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
                 [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")],
                 [B("📄 Условия", "m:terms")], back]

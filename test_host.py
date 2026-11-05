@@ -308,7 +308,7 @@ print("h22 ok: /panel открывает панель кабинетов хоз�
 # 23) у покупателя — простое меню (как раньше в его боте); пока дни есть — без кнопки оплаты, за 3 дня — «Продлить»
 bot.TENANTS[ckey]["until"] = time.time() + 30 * 86400
 press(5001, 62000, "m:main")
-assert "Инструкция" in shown() and "Мои каналы" in shown(), shown()
+assert "Расписание" in shown() and "Мои каналы" in shown(), shown()
 assert "Подписка" in shown() and "Кабинеты" not in shown(), shown()          # докупить дни можно всегда
 bot.TENANTS[ckey]["until"] = time.time() + 2 * 86400
 press(5001, 62000, "m:main")
@@ -973,7 +973,7 @@ time.sleep(0.5)
 assert "5001" not in bot.ANL_BUSY
 bot.analytics_send = real_send
 press(5001, 62000, "m:main")
-assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 6, OUT[-1]   # главное меню — 6 кнопок
+assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 5, OUT[-1]   # главное меню — 5 кнопок
 press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — тайник, закреп, пауза
 assert "m:sh" in shown() and "a:pause" in shown(), shown()
 print("h45 ok: аналитика — «подожди 1–2 минуты», без повторного запуска; главное меню — 6 кнопок, остальное в настройках")
@@ -1155,7 +1155,7 @@ bot.handle_update({"update_type": "message_created", "message": {
 press(5001, 62000, "m:main")
 assert link_of(OUT[-1][1]) == "https://max.ru/boss_nick", OUT[-1][1]
 press(1, 61000, "m:main")
-assert link_of(OUT[-1][1]) is None                                   # самому хозяину кнопка не нужна
+assert link_of(OUT[-1][1]) == "https://max.ru/boss_nick"             # «❓ Поддержка» — всегда прямая ссылка, у всех
 bot.TENANTS[k_exp]["until"] = 0                                      # и без подписки покупатель может написать
 msg(9102, 99102, "привет")
 assert link_of(OUT[-1][1]) == "https://max.ru/boss_nick", OUT[-1]
@@ -2362,31 +2362,40 @@ print("h82 ok: 📇 связь лично: username — ссылка MAX; без
 # ---------- главное меню из 6 кнопок · /admin · приветственное видео на /start ----------
 from reloader import config as APP_CONFIG
 
-MENU6 = ["🎭 Мои каналы", "⚙️ Настройки", "📊 Статистика", "💳 Подписка", "📖 Инструкция", "❓ Поддержка"]
+MENU5 = ["🎭 Мои каналы", "⚙️ Настройки", "📊 Статистика", "💳 Подписка", "📖 Инструкция", "❓ Поддержка"]
 
-# 83) 📋 главное меню — ровно 6 кнопок (покупатель и хозяин); всё остальное — в «Настройках» и в /admin
+# 83) 📋 главное меню — ровно 5 кнопок: 🎭 Мои каналы, 📅 Расписание, ⚙️ Настройки, 💳 Подписка (зелёная),
+#     ❓ Поддержка — прямая ссылка на профиль админа в MAX (не кнопка-обработчик); статистика — в «⚙️ Настройках»
+MENU5 = ["🎭 Мои каналы", "📅 Расписание", "⚙️ Настройки", "💳 Подписка", "❓ Поддержка"]
+contact83 = bot.SELLER_CONTACT
+bot.SELLER_CONTACT = "@reloader_admin"
 press(7800, 78000, "m:main")
 bl83 = buttons_of(OUT[-1][1])
-assert [b_["text"] for b_ in bl83] == MENU6, [b_["text"] for b_ in bl83]
-assert len(bl83) == 6
-pl83 = {b_["text"]: (b_.get("payload") or b_.get("url") or "") for b_ in bl83}
-assert pl83["🎭 Мои каналы"] == "m:th" and pl83["⚙️ Настройки"] == "m:more" and pl83["📊 Статистика"] == "m:st"
-assert pl83["💳 Подписка"] == "m:pay" and pl83["📖 Инструкция"] == "m:gd"
-assert pl83["❓ Поддержка"].startswith(("m:", "https://")), pl83["❓ Поддержка"]
+assert [b_["text"] for b_ in bl83] == MENU5 and len(bl83) == 5, [b_["text"] for b_ in bl83]
+by83 = {b_["text"]: b_ for b_ in bl83}
+assert by83["🎭 Мои каналы"]["payload"] == "m:th" and by83["📅 Расписание"]["payload"] == "m:q"
+assert by83["⚙️ Настройки"]["payload"] == "m:more" and by83["💳 Подписка"]["payload"] == "m:pay"
+assert by83["💳 Подписка"].get("intent") == "positive", by83["💳 Подписка"]          # зелёная
+assert all(by83[t].get("intent") in (None, "default") for t in MENU5 if t != "💳 Подписка"), bl83
+sup83 = by83["❓ Поддержка"]
+assert sup83["type"] == "link" and sup83["url"] == "https://max.ru/reloader_admin" and "payload" not in sup83, sup83
+assert not {"m:st", "m:gd", "m:anl", "m:hp", "m:cl"} & {b_.get("payload") for b_ in bl83}, bl83
 press(1, 61000, "m:main")
 bh83 = buttons_of(OUT[-1][1])
-assert [b_["text"] for b_ in bh83] == MENU6, [b_["text"] for b_ in bh83]
-ph83 = {b_["text"]: (b_.get("payload") or b_.get("url") or "") for b_ in bh83}
-assert ph83["🎭 Мои каналы"] == "m:home" and ph83["💳 Подписка"] == "m:pay"
-for who, rows in (("buyer", OUT[-1][1]),):
-    pass
-assert "m:cl" not in json.dumps(OUT[-1][1]), "панель — только в /admin"
+assert [b_["text"] for b_ in bh83] == MENU5, [b_["text"] for b_ in bh83]
+assert bh83[0]["payload"] == "m:home" and bh83[4]["type"] == "link", bh83
+press(7800, 78000, "m:more")                                              # статистика переехала в «Настройки»
+more83 = buttons_of(OUT[-1][1])
+assert any(b_["text"].startswith("📊 Статистика") and b_.get("payload") in ("m:anl", "m:st") for b_ in more83), more83
+assert "a:pause" in json.dumps(OUT[-1][1]) and "m:sg" in json.dumps(OUT[-1][1])
+bot.SELLER_CONTACT, nick83 = "@ВАШ_КОНТАКТ", bot.GCFG.pop("host_nick", None)   # контакт не задан — без мёртвой ссылки
 press(7800, 78000, "m:main")
-assert not {"m:sh", "m:pinset", "m:anl", "m:cl", "m:ch"} & set(p_ for p_ in pl83.values()), pl83
-press(7800, 78000, "m:more")
-more83 = json.dumps(OUT[-1][1], ensure_ascii=False)
-assert "a:pause" in more83 and "m:sg" in more83 and "m:q" in more83 and "m:ap" in more83, more83[:300]
-print("h83 ok: 📋 главное меню — 6 кнопок у покупателя и хозяина; пауза, подпись, расписание — в «Настройках»")
+bl83b = buttons_of(OUT[-1][1])
+assert [b_["text"] for b_ in bl83b] == MENU5 and not any(b_.get("url") == "https://max.ru/None" for b_ in bl83b)
+bot.SELLER_CONTACT = contact83
+if nick83:
+    bot.GCFG["host_nick"] = nick83
+print("h83 ok: 📋 главное меню — 5 кнопок; «Подписка» зелёная; «Поддержка» — прямая ссылка на профиль MAX; статистика — в настройках")
 
 # 84) 👥 /admin: панель для хозяина и для ADMIN_IDS; покупатель — отказ; «Пользователи» показывают карточку
 #     (ID, тариф, каналы MAX, источники Telegram)
@@ -2420,18 +2429,18 @@ try:
     n85 = len(OUT)
     msg(7800, 78000, "/start")
     assert SENT85 and SENT85[-1][0] == 78000 and SENT85[-1][2] == vid85, SENT85
-    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6, OUT[-1]
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, OUT[-1]
     APP_CONFIG.WELCOME_VIDEO_PATH = "/no/such/welcome.mp4"
     n85b = len(SENT85)
     msg(7800, 78000, "/start")
     assert len(SENT85) == n85b, "файла нет — видео не пытаемся слать"
-    assert any(o[0].startswith("👋") for o in OUT[n85:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6
+    assert any(o[0].startswith("👋") for o in OUT[n85:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5
     APP_CONFIG.WELCOME_VIDEO_PATH = vid85
     def _boom85(*a, **k):
         raise RuntimeError("MAX не принял видео")
     bot.send_max = _boom85
     msg(7800, 78000, "/start")
-    assert any(o[0].startswith("👋") for o in OUT[-4:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6, OUT[-4:]
+    assert any(o[0].startswith("👋") for o in OUT[-4:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, OUT[-4:]
     bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: (SENT85.append((chat, text, video_path)), "m")[1]
     APP_CONFIG.WELCOME_VIDEO_PATH = ""
     APP_CONFIG.WELCOME_VIDEO_URL = "https://example.invalid/welcome.mp4"
@@ -2440,7 +2449,7 @@ try:
     try:
         n85c = len(SENT85)
         msg(7800, 78000, "/start")
-        assert len(SENT85) == n85c and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6, "ссылка не скачалась — текст и меню"
+        assert len(SENT85) == n85c and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, "ссылка не скачалась — текст и меню"
     finally:
         bot.S.get = real_get85
     class _Resp85:
@@ -2466,7 +2475,7 @@ finally:
     bot.send_max = real_send85
     APP_CONFIG.WELCOME_VIDEO_PATH = ""
     APP_CONFIG.WELCOME_VIDEO_URL = ""
-print("h85 ok: 🎬 /start: видео, затем меню из 6 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
+print("h85 ok: 🎬 /start: видео, затем меню из 5 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
