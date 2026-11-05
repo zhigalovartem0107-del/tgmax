@@ -105,6 +105,8 @@ from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E4
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
 from reloader.services.billing.catalog import over_limit  # noqa: E402
 from reloader.services.media.policy import MAX_MEDIA_MB, size_skip_reason  # noqa: E402
+from reloader.services.ai.keys import KeyRotator, mask_keys, parse_keys  # noqa: E402
+from reloader.services.ai.rewrite import AiUnavailable, DEFAULTS as AI_DEFAULTS, rewrite as ai_rewrite_text  # noqa: E402
 from reloader import config as APP_CONFIG  # noqa: E402
 ADMIN_IDS = set(APP_CONFIG.ADMIN_IDS)      # 👥 администраторы бота (ADMIN_IDS в переменных хостинга)
 
@@ -1221,9 +1223,44 @@ def smart_tags(raw, ch=""):
     return ("\n\n" + " ".join(tags[:3])) if tags else ""
 
 
-def compose_text(raw, ch=""):
-    """Текст поста для MAX: сам пост + умные хэштеги (если включены) + подпись."""
-    if ai_on():
+AI_PROVIDERS = {"gemini": ("GEMINI_API_KEYS", "Gemini"), "openrouter": ("OPENROUTER_API_KEYS", "OpenRouter"),
+                "deepseek": ("DEEPSEEK_API_KEYS", "DeepSeek")}
+
+
+def ai_keys(provider):
+    """Ключи провайдера ИИ: сохранённые в панели бота (settings.json) главнее переменной окружения."""
+    saved = (GCFG.get("ai_keys") or {}).get(provider)
+    if saved:
+        return list(saved)
+    return parse_keys(os.environ.get(AI_PROVIDERS[provider][0]))
+
+
+AI_ROTATORS = {p: KeyRotator(p, (lambda p=p: ai_keys(p))) for p in AI_PROVIDERS}
+
+
+def ai_settings():
+    """Адрес и модель каждого провайдера: по умолчанию — из rewrite.DEFAULTS; можно поменять переменными."""
+    out = {}
+    for prov, d in AI_DEFAULTS.items():
+        env = prov.upper()
+        out[prov] = {"url": (os.environ.get(f"{env}_API_URL") or d["url"]).rstrip("/"),
+                     "model": os.environ.get(f"{env}_MODEL") or d["model"]}
+    return out
+
+
+def ai_llm_ready():
+    return any(ai_keys(p) for p in AI_PROVIDERS)
+
+
+def ai_rewrite(text):
+    """🤖 Пересказ поста через ИИ (Gemini → OpenRouter → DeepSeek). Все ключи исчерпаны — AiUnavailable."""
+    return ai_rewrite_text(text, AI_ROTATORS, S, ai_settings(), journal)
+
+
+def compose_text(raw, ch="", rewritten=False):
+    """Текст поста для MAX: сам пост + умные хэштеги (если включены) + подпись.
+    Без ключей ИИ — локальный пересказ синонимами; с ключами пересказ делает publish_item (через ИИ)."""
+    if ai_on() and not rewritten and not ai_llm_ready():
         with contextlib.suppress(Exception):
             raw = ai_edit(raw)
     return ((raw or "") + smart_tags(raw, ch) + "\n\n" + signature()).strip()
@@ -3483,6 +3520,8 @@ PROMPTS = {
                  "Пришли рекламный пост: текст и/или одну картинку."),
     "cladmark": ("Теперь маркировка по закону о рекламе. Пришли одной строкой рекламодателя и erid (токен из ОРД), "
                  "например:\nООО «Ромашка», ИНН 7700000000, erid: 2VtzqwXXXX\n\nСлово «Реклама» бот допишет сам."),
+    "claikeys": ("🤖 Пришли ключи ИИ — через запятую или каждый с новой строки, можно сразу несколько. "
+                 "Сообщение с ключами удалю из чата. Ключи из бота главнее переменной в Bothost."),
     "clvk": ("🔑 Ключ VK нужен, чтобы брать посты из VK. Бесплатно: vk.com/apps?act=manage → «Создать» → "
              "тип «Standalone» → в настройках приложения скопируй «Сервисный ключ доступа» и пришли сюда. "
              "Сообщение с ключом удалю из чата; ключ из бота главнее переменной VK_TOKEN в Bothost."),
@@ -3581,6 +3620,22 @@ def apply_text(action, text, uid=None):
         ok, why = yk_check()
         return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
+    if (action or "").startswith("claikeys:"):            # 🤖 ключи ИИ списком — только хозяин
+        if not is_host(uid):
+            return "Нет доступа.", "main"
+        tail = secret_tail(uid)
+        prov = action.split(":", 1)[1]
+        if prov not in AI_PROVIDERS:
+            return "Не знаю такой сервис." + tail, "clkeys"
+        keys = parse_keys(text)
+        if not keys:
+            return "Не вижу ключей. Пришли их через запятую или каждый с новой строки." + tail, "clkeys"
+        GCFG.setdefault("ai_keys", {})[prov] = keys
+        save_cfg()
+        AI_ROTATORS[prov].reset()                         # новый список — работает сразу, без перезапуска
+        title = AI_PROVIDERS[prov][1]
+        return (f"✅ Ключи {title} сохранены: {len(keys)} ({mask_keys(keys)}). Работают сразу, без перезапуска; "
+                "упёрся в лимит — бот берёт следующий." + tail), "clkeys"
     if action in ("clvk", "cltt"):                        # 🔑 ключ VK / 🎵 cookies TikTok — только хозяин
         if not is_host(uid):
             return "Нет доступа.", "main"
@@ -5048,7 +5103,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
                     "«Удалить». В нём полный доступ к аккаунту.\n\n" + text)
         send_screen(chat_id, text, rows)
         return
-    if action in ("clyk", "clvk", "cltt") and is_host(uid):   # ключи: сообщение с секретом сразу удаляем из чата
+    if (action in ("clyk", "clvk", "cltt") or (action or "").startswith("claikeys:")) and is_host(uid):   # ключи: из чата
         gone = False
         with contextlib.suppress(Exception):
             gone = delete_msg(((msg or {}).get("body") or {}).get("mid"))
@@ -5860,7 +5915,13 @@ async def _publish_item(client, chat_id, it):
             it.setdefault("mids", []).append(mid)      # все части поста — чтобы автоудаление убрало его целиком
         return mid
     try:
-        chunks = split_text(compose_text(it["text"], it.get("ch", "")))
+        body = it["text"]
+        if ai_on() and ai_llm_ready() and (body or "").strip():
+            if not it.get("ai_text"):                  # пересказ — один раз: повтор отправки его не повторяет
+                it["ai_text"] = await asyncio.to_thread(ai_rewrite, body)
+                save_queue()
+            body = it["ai_text"]
+        chunks = split_text(compose_text(body, it.get("ch", ""), rewritten=bool(it.get("ai_text"))))
         text, extra = chunks[0], chunks[1:]
         photos = await ensure_photos(client, it)
         parts = []
@@ -5902,6 +5963,8 @@ async def _publish_item(client, chat_id, it):
         return "ok"
     except MediaLost as e:
         return skip_post(it, str(e))
+    except AiUnavailable as e:                          # 🤖 все ключи ИИ исчерпаны — пост пропускаем
+        return skip_post(it, f"AI keys exhausted ({str(e)[:300]})")
     except ChatDenied as e:
         await asyncio.to_thread(note_denied, chat_id, e)
         it["retry_at"] = DENIED.get(chat_id, time.time() + 600)
@@ -11297,11 +11360,31 @@ def keys_screen():
             f"💳 ЮKassa: {yk_seen()}\n"
             f"🔑 VK: {key_state(GCFG.get('vk_token'), 'VK_TOKEN', tail4)}\n"
             f"🎵 TikTok cookies: {key_state(GCFG.get('tt_cookies'), 'TIKTOK_COOKIES', n_cookies)}")
+    text += "\n\n🤖 Ключи ИИ (пересказ постов): можно несколько — через запятую или с новой строки; " \
+            "упёрся в лимит — бот берёт следующий."
+    for prov, (env_name, title) in AI_PROVIDERS.items():
+        text += f"\n🤖 {title}: {ai_key_state(prov)}"
     rows = [[B("💳 Ключи ЮKassa", "p:clyk")],
             [B("🔑 Ключ VK", "p:clvk")] + ([B("🗑 Убрать", "a:clkeyrm:vk")] if GCFG.get("vk_token") else []),
-            [B("🎵 Cookies TikTok", "p:cltt")] + ([B("🗑 Убрать", "a:clkeyrm:tt")] if GCFG.get("tt_cookies") else []),
-            [B("◀️ Кабинеты", "m:cl")]]
-    return text, rows
+            [B("🎵 Cookies TikTok", "p:cltt")] + ([B("🗑 Убрать", "a:clkeyrm:tt")] if GCFG.get("tt_cookies") else [])]
+    for prov, (env_name, title) in AI_PROVIDERS.items():
+        saved = (GCFG.get("ai_keys") or {}).get(prov)
+        rows.append([B(f"🤖 Ключи {title}", f"p:claikeys:{prov}")]
+                    + ([B("🗑 Убрать", f"a:claikrm:{prov}")] if saved else []))
+    return text, rows + [[B("◀️ Кабинеты", "m:cl")]]
+
+
+def ai_key_state(prov):
+    """Сколько ключей ИИ и откуда (бот или переменная) — только хвосты «••••abcd»."""
+    env_name = AI_PROVIDERS[prov][0]
+    saved = (GCFG.get("ai_keys") or {}).get(prov)
+    word = lambda n: n_word(n, "ключ", "ключа", "ключей")
+    if saved:
+        return f"✅ из бота: {len(saved)} {word(len(saved))} ({mask_keys(saved)}) — главнее {env_name}"
+    env = parse_keys(os.environ.get(env_name))
+    if env:
+        return f"✅ из переменной {env_name}: {len(env)} {word(len(env))} ({mask_keys(env)})"
+    return "— не заданы"
 
 
 POOL_STATUS = {"active": "✅ Активен", "flood": "⏳ FloodWait", "dead": "⛔ Не работает"}
@@ -11602,6 +11685,14 @@ def host_action(p, uid):
         else:
             CODE_EXPORT[uid] = write_codes_file(active)
         return "codes"
+    if p[0] == "claikrm" and len(p) > 1 and p[1] in AI_PROVIDERS:   # 🤖 убрать ключи ИИ из бота
+        (GCFG.get("ai_keys") or {}).pop(p[1], None)
+        save_cfg()
+        AI_ROTATORS[p[1]].reset()
+        env_name, title = AI_PROVIDERS[p[1]]
+        FLASH[uid] = (f"🗑 Ключи {title} убраны из бота — " + (f"теперь из переменной {env_name}"
+                      if parse_keys(os.environ.get(env_name)) else f"переменной {env_name} в Bothost тоже нет"))
+        return "clkeys"
     if p[0] == "clkeyrm" and len(p) > 1:                    # 🔑 убрать ключ из бота — снова из переменной Bothost
         field, env_name, what = {"vk": ("vk_token", "VK_TOKEN", "Ключ VK"),
                                  "tt": ("tt_cookies", "TIKTOK_COOKIES", "Cookies TikTok")}[p[1]]
