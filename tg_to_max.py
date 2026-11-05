@@ -104,6 +104,8 @@ from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError 
 from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
 from reloader.services.billing.catalog import over_limit  # noqa: E402
+from reloader import config as APP_CONFIG  # noqa: E402
+ADMIN_IDS = set(APP_CONFIG.ADMIN_IDS)      # 👥 администраторы бота (ADMIN_IDS в переменных хостинга)
 
 # Ключи официального Telegram Desktop: вход без my.telegram.org. Владелец выбрал это сам, на свой риск —
 # Telegram может ограничить аккаунт за чужие ключи. Свои ключи — кнопка «🔧 Свои ключи».
@@ -641,6 +643,20 @@ def active_theme(uid):
         act = theme_by_id(META["active"].get(str(uid)))
         return act if act in ts else ts[0]
     return theme_by_id(META["active"].get(str(uid))) or (THEMES[0] if THEMES else _VOID)
+
+
+def six_menu(uid):
+    """Главное меню — ровно 6 кнопок. Всё остальное — в «⚙️ Настройках» и в /admin."""
+    host = is_host(uid)
+    me = None if host else seller_link()
+    state = ("⏸ Бот на паузе — посты не выходят. Снять: «⚙️ Настройки»." if CFG["paused"]
+             else "▶️ Бот работает — новые посты выходят сами.")
+    text = "📋 Главное меню\n\n" + state + "\n\n" + subscription_line()
+    support = LB("❓ Поддержка", me) if me else B("❓ Поддержка", "m:hp")
+    rows = [[B("🎭 Мои каналы", "m:home" if host else "m:th"), B("⚙️ Настройки", "m:more")],
+            [B("📊 Статистика", "m:st"), B("💳 Подписка", "m:pay")],
+            [B("📖 Инструкция", "m:gd"), support]]
+    return text.strip(), rows
 
 
 def simple_menu(uid):
@@ -2858,8 +2874,13 @@ def is_host(uid):
     return same_uid(uid, HOST_OWNER) or same_uid(uid, GCFG.get("host_uid"))
 
 
+def is_global_admin(uid):
+    return str(uid) in {str(x) for x in ADMIN_IDS}
+
+
 def can_panel(uid):
-    return is_host(uid) if HOST_MODE else is_owner(uid)
+    """Панель /admin: хозяин бота и администраторы из ADMIN_IDS."""
+    return (is_host(uid) or is_global_admin(uid)) if HOST_MODE else is_owner(uid)
 
 
 def owner_locked_out(uid):
@@ -2976,8 +2997,8 @@ def _screen(name, uid=None):
     got = buyer_admin_screen(name, uid)
     if got is not None:
         return got
-    if HOST_MODE and is_host(uid) and name == "main":
-        name = "cl"                                     # у хозяина бота главное меню — панель кабинетов
+    if name == "main" and HOST_MODE:
+        return six_menu(uid)                            # главное меню: 6 кнопок; панель — /admin
     if HOST_MODE and is_host(uid) and name == "home":   # «Мои каналы» хозяина: заводим кабинет с темой, если его ещё нет
         t = ensure_host_cabinet()
         act = active_theme(uid)                         # открываем ту тему, что хозяин выбрал, а не всегда первую
@@ -3413,6 +3434,11 @@ def _screen(name, uid=None):
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
                 [B("🔎 Проверка связи", "m:dg")] + ([B("🔑 Telegram", "tg:menu")] if show_tg(uid) else []),
                 [B("🧠 Умное", "m:ai"), B("❓ Команды", "m:hp")],
+                [B("✍️ Подпись", "m:sg"), B("⏳ Расписание", "m:q")],
+                [B("✋ Проверка постов", "m:ap")] + ([] if on_free() else [B("🗃 Тайник", "m:sh")]),
+                *([[B("📊 Аналитика: когда смотрят", "m:anl")]] if feature_on("stats") and not on_free() else []),
+                *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
+                [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")],
                 [B("📄 Условия", "m:terms")], back]
     elif simple_menu(uid):
         text, rows = client_main(uid)
@@ -4669,17 +4695,17 @@ def run_command(cmd, arg, uid, chat_id):
         return max(lo, min(hi, int(m.group()))) if m else None
 
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
-    if HOST_MODE and is_host(uid) and cmd in ("start", "menu", "m", "panel", "admin", "p"):
-        show("cl")
-    elif cmd in ("panel", "admin", "p"):
+    if cmd in ("panel", "admin", "p"):
         if can_panel(uid) and not CLIENT_MODE:
             show("cl")
         else:
-            say("Панель кабинетов — только у хозяина бота.")
+            say("Панель — только для администраторов бота.")
     elif cmd == "start" and CLIENT_MODE:
         say(*screen("gd", uid))                        # инструкция — обычным сообщением, меню — под ней
         show("main")
     elif cmd in ("start", "menu", "m"):
+        if cmd == "start":
+            send_welcome(chat_id)                      # 🎬 короткое видео «как это работает», затем меню
         show("main")
     elif cmd in ("help", "h", "commands"):
         show("hp")
@@ -4865,6 +4891,47 @@ def note_wrong_code(uid, t, name=""):
                         "Если ты раздавал код приглашения — он мог утечь: 👥 Админы → проверь список.")
 
 
+WELCOME_TEXT = ("👋 Привет! Я копирую посты из твоих Telegram-каналов в канал MAX. "
+                "Короткое видео — как это работает. Меню ниже 👇")
+
+
+def welcome_video_file():
+    """Приветственное видео: файл из WELCOME_VIDEO_PATH или один раз скачанное по WELCOME_VIDEO_URL. Нет — None."""
+    path = (APP_CONFIG.WELCOME_VIDEO_PATH or "").strip()
+    if path and os.path.isfile(path):
+        return path
+    url = (APP_CONFIG.WELCOME_VIDEO_URL or "").strip()
+    if not url:
+        return None
+    dest = os.path.abspath("welcome_video.mp4")
+    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        return dest
+    try:
+        r = S.get(url, timeout=60)
+        r.raise_for_status()
+        if not r.content:
+            return None
+        with open(dest, "wb") as f:
+            f.write(r.content)
+        return dest
+    except Exception as e:
+        journal(f"🎬 Приветственное видео по ссылке не скачалось ({type(e).__name__}) — приветствую текстом")
+        return None
+
+
+def send_welcome(chat_id):
+    """/start: видео (если есть), затем текст. Сбой отправки видео не мешает ни тексту, ни меню."""
+    path = welcome_video_file()
+    if path:
+        try:
+            send_max(chat_id, WELCOME_TEXT, [], video_path=path)
+            return True
+        except Exception as e:
+            journal(f"🎬 Приветственное видео не отправилось ({type(e).__name__}: {str(e)[:120]}) — текстом")
+    api_send(chat_id, WELCOME_TEXT)
+    return False
+
+
 def handle_message(uid, chat_id, name, text, msg=None):
     global CLAIM_CODE
     t = (text or "").strip()
@@ -4878,7 +4945,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
         host_adopt_orphans()
         new_host_code()                                 # старый код больше не действует
         print(f"HOST: хозяином стал user_id {uid} ({name}) по коду хозяина")
-        api_send(chat_id, "Готово, ты теперь ХОЗЯИН бота ✅ Открываю панель всех кабинетов.")
+        api_send(chat_id, "Готово, ты теперь ХОЗЯИН бота ✅ Панель — команда /admin.")
         m, rows = screen("main", uid)
         send_screen(chat_id, m, rows)
         return
@@ -10272,7 +10339,7 @@ def buyers_screen(page=0, query=""):
     keys.sort(key=lambda k: -(TENANTS[k].get("until") or 0))
     shown, page, pages = paginate(keys, page)
     lines = [f"{i}. {TENANTS[k].get('name') or k} · {buyer_status(k)}" for i, k in enumerate(shown, page * 8 + 1)]
-    text = (f"👥 Покупатели" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
+    text = (f"👥 Пользователи" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
             + ("\n".join(lines) if lines else "Никого не нашёл." if query else "Пока никого нет."))
     rows = [[B(f"{TENANTS[k].get('name') or k}"[:40], f"m:buyer:{k}")] for k in shown]
     nav = ([B("⬅️ Раньше", f"m:buyers:{page - 1}")] if page > 0 else []) \
@@ -10307,7 +10374,7 @@ def buyer_admin_screen(name, uid):
         return None
     if name == "mprof" and not is_host(uid):
         return buyer_screen(tenant_key(uid) or "", admin=False)
-    if not is_host(uid):
+    if not can_panel(uid):                              # 👥 🎟 — только в панели /admin
         return None
     if name.startswith("buyer:"):
         return buyer_screen(name.partition(":")[2], admin=True)
@@ -11380,8 +11447,8 @@ def session_upload(uid, atts):
 
 
 def host_screen(name, uid):
-    """Панель хозяина бота: все кабинеты. None — это не экран панели."""
-    if not is_host(uid):
+    """Панель /admin: все кабинеты (хозяин бота и администраторы ADMIN_IDS). None — это не экран панели."""
+    if not can_panel(uid):
         return None
     back = [B("◀️ Кабинеты", "m:cl")]
     if name.startswith("clb"):
@@ -11395,7 +11462,7 @@ def host_screen(name, uid):
                  + ("\n\n⚠️ Задай свой контакт для клиентов: кнопка ниже." if SELLER_CONTACT == "@ВАШ_КОНТАКТ" else ""))
         rows = [[B(f"💳 Проверить оплату: {TENANTS[k].get('name')}"[:60], f"m:clc:{k}")] for k in pend[:5]]
         n_cab = sum(1 for k, c in TENANTS.items() if k != host_id() and c.get("plan") != "Хозяин")
-        rows.append([B(f"👥 Все покупатели ({n_cab})", "m:cll:0")])
+        rows.append([B(f"👥 Пользователи ({n_cab})", "m:buyers")])
         rows.append([B("🎭 Мои каналы (мой кабинет)", "m:home")])   # хозяин настраивает свои темы (создаст, если их ещё нет)
         rows += [[B("💰 Тарифы и реквизиты", "m:cltar"), B(f"🎟 Промокоды ({len(promos())})", "m:clpr")],
                  [B("🧪 Бета-функции", "m:clbeta"), B("📊 Аналитика", "m:anl")],
@@ -11404,7 +11471,7 @@ def host_screen(name, uid):
                  [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")],
                  [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
                  [B("🔑 Ключи и доступы", "m:clkeys")],
-                 [B("👥 Покупатели", "m:buyers"), B("🎟 Коды", "m:codes")]]
+                 [B("🎟 Коды", "m:codes")]]
         return text, rows
     if name == "clkeys":                                  # 🔑 ключи: ЮKassa, VK, TikTok — вводятся прямо в чат
         return keys_screen()

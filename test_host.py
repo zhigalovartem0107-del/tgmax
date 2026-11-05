@@ -58,6 +58,9 @@ def buy(uid, chat, plan):
         press(uid, chat, "pe:" + plan)
 
 
+def buttons_of(rows):
+    return [b_ for r in rows for b_ in r]
+
 # 1) новый пользователь -> свой кабинет на бесплатном тарифе (1 канал MAX, 2 источника, навсегда) — сразу меню
 msg(100, 5100, "/start")
 assert "100" in bot.TENANTS and bot.tenant_mode("100") == "free" and len(bot.tenant_themes("100")) == 1
@@ -299,20 +302,20 @@ print("h21 ok: канал привязывается кнопкой из спи�
 msg(1, 61000, "/panel")
 assert "Кабинеты" in OUT[-1][0], OUT[-1][0]
 msg(5001, 62000, "/panel")
-assert "только у хозяина" in OUT[-1][0], OUT[-1][0]
+assert "только для администраторов" in OUT[-1][0], OUT[-1][0]
 print("h22 ok: /panel открывает панель кабинетов хозяину, покупателю — нет")
 
 # 23) у покупателя — простое меню (как раньше в его боте); пока дни есть — без кнопки оплаты, за 3 дня — «Продлить»
 bot.TENANTS[ckey]["until"] = time.time() + 30 * 86400
 press(5001, 62000, "m:main")
-assert "Как пользоваться" in shown() and "Откуда брать посты" in shown(), shown()
-assert "Продлить доступ" in shown() and "Кабинеты" not in shown(), shown()   # докупить дни можно всегда
+assert "Инструкция" in shown() and "Мои каналы" in shown(), shown()
+assert "Подписка" in shown() and "Кабинеты" not in shown(), shown()          # докупить дни можно всегда
 bot.TENANTS[ckey]["until"] = time.time() + 2 * 86400
 press(5001, 62000, "m:main")
-assert "Продлить доступ" in shown(), shown()
+assert "Подписка" in shown(), shown()
 press(5001, 62000, "m:more")
 assert "Ещё настройки" in shown() and "🔑 Telegram" not in shown(), shown()
-msg(1, 61000, "/start")                                      # а у хозяина по-прежнему панель
+msg(1, 61000, "/admin")                                      # а у хозяина по-прежнему панель — по /admin
 assert "Кабинеты" in OUT[-1][0], OUT[-1][0]
 assert not any(n == "panel" for n, _ in bot.COMMAND_HELP)                      # /panel не светится в подсказках
 print("h23 ok: покупателю — простое меню с «Продлить доступ»; /panel не в подсказках; хозяину — панель")
@@ -561,18 +564,20 @@ print("h31 ok: ЮKassa — ключи чистятся от пробелов/к�
 
 # 32) отдельная кнопка «Все покупатели»: срок, тариф, дата регистрации, кнопка в кабинет; листание по 10
 press(1, 61000, "m:cl")
-assert "m:cll:0" in shown(), shown()
-for n in range(12):                                          # ещё покупатели, чтобы было 2 страницы
+assert "m:buyers" in shown() and "Пользователи" in shown(), shown()
+for n in range(12):                                          # ещё пользователи, чтобы было 2 страницы
     msg(8000 + n, 88000 + n, "/start")
-press(1, 61000, "m:cll:0")
+press(1, 61000, "m:buyers")
 txt = OUT[-1][0]
-assert "Все покупатели" in txt and "стр. 1/2" in txt and "до " in txt and "с " in txt and "m:cll:1" in shown(), txt
-assert f"m:clc:{ckey}" in shown() and "«Старт»" in txt, txt    # активный покупатель — сверху, с тарифом
-press(1, 61000, "m:cll:1")
-assert "стр. 2/2" in OUT[-1][0] and "не оплачивал" in OUT[-1][0], OUT[-1][0]
-press(5001, 62000, "m:cll:0")                                # покупателю список недоступен
-assert "Все покупатели" not in shown()
-print("h32 ok: «Все покупатели» — срок, тариф, дата регистрации, переход в кабинет, листание")
+assert "Пользователи" in txt and f"m:buyer:{ckey}" in shown() and "Дальше" in shown() and "m:buyers:1" in shown(), txt
+press(1, 61000, f"m:buyer:{ckey}")                           # карточка: ID, тариф, каналы MAX, источники
+card32 = OUT[-1][0]
+assert f"ID: {ckey}" in card32 and "Тариф:" in card32 and "Каналы MAX" in card32 and "Источники Telegram" in card32, card32
+press(1, 61000, "m:buyers:1")
+assert "Пользователи" in OUT[-1][0] and "m:buyers" in shown(), OUT[-1][0]
+press(5001, 62000, "m:buyers")                               # покупателю список недоступен
+assert "Пользователи" not in shown()
+print("h32 ok: 👥 «Пользователи» — список со страницами, карточка с ID, тарифом, каналами MAX и источниками")
 
 # 33) пробный период при «Старте»; личная ссылка на покупателя; 📌 закреп и 🗑 автоудаление
 bot.GCFG["trial_days"] = 3
@@ -609,7 +614,7 @@ assert "mid-A" in srv.deleted and "mid-B" in srv.deleted, srv.deleted
 with bot.theme_ctx(pt):
     assert not bot.PUB["autodel"]
     bot.CFG["pin_new"] = False; bot.CFG["autodel_h"] = 0
-press(5001, 62000, "m:main")
+press(5001, 62000, "m:more")                                   # закреп — в «⚙️ Настройках» (главное меню — 6 кнопок)
 assert "m:pinset" in shown(), shown()                          # у покупателя кнопка тоже есть
 print("h33 ok: 🎁 пробный период при «Старте»; 💬 личная ссылка на покупателя; 📌 закреп и 🗑 автоудаление постов")
 
@@ -680,7 +685,7 @@ finally:
 assert len(posts) == 18 and a["best_day"] == 3 and a["best_hour"] == 19 and a["slot"] == (3, 19), (len(posts), a["best_day"], a["best_hour"])
 cap = bot.analytics_caption("Канал", a)
 assert "четверг" in cap and "19:00" in cap, cap
-press(5001, 62000, "m:main")
+press(5001, 62000, "m:more")                                   # аналитика — в «⚙️ Настройках»
 assert "m:anl" in shown(), shown()
 press(5001, 62000, "m:anl")                                    # сначала понятное объяснение, потом кнопка
 assert "Когда выкладывать" in OUT[-1][0] and "7 дней" in OUT[-1][0] and "a:anl" in shown(), OUT[-1][0]
@@ -980,9 +985,10 @@ time.sleep(0.5)
 assert "5001" not in bot.ANL_BUSY
 bot.analytics_send = real_send
 press(5001, 62000, "m:main")
-txt = OUT[-1][0]
-assert "Что делают кнопки" in txt and "Тайник — запасные посты" in txt and "Пауза — остановить" in txt, txt
-print("h45 ok: аналитика — «подожди 1–2 минуты», без повторного запуска; в меню объяснено, что делает каждая кнопка")
+assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 6, OUT[-1]   # главное меню — 6 кнопок
+press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — тайник, закреп, пауза
+assert "m:sh" in shown() and "a:pause" in shown(), shown()
+print("h45 ok: аналитика — «подожди 1–2 минуты», без повторного запуска; главное меню — 6 кнопок, остальное в настройках")
 
 # 46) фильтр рекламы на реальных постах: розыгрыш «подпишись на чужие каналы» и «код, успей — активации ограничены» —
 #     реклама; раздача от разработчиков — нет. Правила общие для любой темы. Огрызки «Подпишись на» не остаются.
@@ -1145,12 +1151,12 @@ print("h51 ok: 🔎 проверка показывает, где застрял
 
 # 52) у покупателя — кнопка-ссылка «💬 Написать мне лично»: открывает личный чат с хозяином в MAX (не сообщение от бота)
 def link_of(rows):
-    return next((b["url"] for r in rows for b in r if b.get("type") == "link" and "лично" in b.get("text", "")), None)
+    return next((b["url"] for r in rows for b in r if b.get("type") == "link" and ("лично" in b.get("text", "") or "Поддержка" in b.get("text", ""))), None)
 saved_contact = bot.SELLER_CONTACT
 press(1, 61000, "p:clcontact"); msg(1, 61000, "@seller_real")
 press(5001, 62000, "m:main")
 assert link_of(OUT[-1][1]) == "https://max.ru/seller_real", OUT[-1][1]
-assert "Написать мне лично" in OUT[-1][0], OUT[-1][0]                  # в меню объяснено, что это за кнопка
+assert "❓ Поддержка" in json.dumps(OUT[-1][1], ensure_ascii=False), OUT[-1][1]   # кнопка поддержки — в 6-кнопочном меню
 press(1, 61000, "p:clcontact"); msg(1, 61000, "https://max.ru/u/f9LHodD0cOK")
 press(5001, 62000, "m:main")
 assert link_of(OUT[-1][1]) == "https://max.ru/u/f9LHodD0cOK", OUT[-1][1]
@@ -1674,8 +1680,11 @@ with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]
 press(6500, 65000, "m:main")
 for adv in ("m:sh", "m:pinset", "m:anl"):
-    assert adv not in shown(), (adv, shown())                                      # продвинутое — у платных
-assert "m:ch" in shown() and "m:pay" in shown()
+    assert adv not in shown(), (adv, shown())                                      # главное меню — 6 кнопок
+assert "m:th" in shown() and "m:pay" in shown()
+press(6500, 65000, "m:more")                                                       # продвинутое — не в «Настройках» на бесплатном
+for adv in ("m:sh", "m:pinset", "m:anl"):
+    assert adv not in shown(), (adv, shown())
 feed["x"] = rss.replace("</channel>", """<item><title>Пост с картинкой</title><link>https://site.ru/65</link>
 <description>&lt;img src="https://site.ru/65.jpg"&gt; Текст поста</description><pubDate>Thu, 08 Oct 2026 12:00:00 +0000</pubDate></item></channel>""")
 got65 = []
@@ -2361,6 +2370,115 @@ assert card_msgs[-1]["body"]["attachments"][0]["payload"]["vcf_info"] == VCF82, 
 text82c, rows82c = bot.buyer_screen(k72, admin=True)
 assert links_of(rows82c) == ["https://max.ru/buyer72"]
 print("h82 ok: 📇 связь лично: username — ссылка MAX; без username — запрос контакта кнопкой; поделился — карточка контакта в чат хозяина")
+
+# ---------- главное меню из 6 кнопок · /admin · приветственное видео на /start ----------
+from reloader import config as APP_CONFIG
+
+MENU6 = ["🎭 Мои каналы", "⚙️ Настройки", "📊 Статистика", "💳 Подписка", "📖 Инструкция", "❓ Поддержка"]
+
+# 83) 📋 главное меню — ровно 6 кнопок (покупатель и хозяин); всё остальное — в «Настройках» и в /admin
+press(7800, 78000, "m:main")
+bl83 = buttons_of(OUT[-1][1])
+assert [b_["text"] for b_ in bl83] == MENU6, [b_["text"] for b_ in bl83]
+assert len(bl83) == 6
+pl83 = {b_["text"]: (b_.get("payload") or b_.get("url") or "") for b_ in bl83}
+assert pl83["🎭 Мои каналы"] == "m:th" and pl83["⚙️ Настройки"] == "m:more" and pl83["📊 Статистика"] == "m:st"
+assert pl83["💳 Подписка"] == "m:pay" and pl83["📖 Инструкция"] == "m:gd"
+assert pl83["❓ Поддержка"].startswith(("m:", "https://")), pl83["❓ Поддержка"]
+press(1, 61000, "m:main")
+bh83 = buttons_of(OUT[-1][1])
+assert [b_["text"] for b_ in bh83] == MENU6, [b_["text"] for b_ in bh83]
+ph83 = {b_["text"]: (b_.get("payload") or b_.get("url") or "") for b_ in bh83}
+assert ph83["🎭 Мои каналы"] == "m:home" and ph83["💳 Подписка"] == "m:pay"
+for who, rows in (("buyer", OUT[-1][1]),):
+    pass
+assert "m:cl" not in json.dumps(OUT[-1][1]), "панель — только в /admin"
+press(7800, 78000, "m:main")
+assert not {"m:sh", "m:pinset", "m:anl", "m:cl", "m:ch"} & set(p_ for p_ in pl83.values()), pl83
+press(7800, 78000, "m:more")
+more83 = json.dumps(OUT[-1][1], ensure_ascii=False)
+assert "a:pause" in more83 and "m:sg" in more83 and "m:q" in more83 and "m:ap" in more83, more83[:300]
+print("h83 ok: 📋 главное меню — 6 кнопок у покупателя и хозяина; пауза, подпись, расписание — в «Настройках»")
+
+# 84) 👥 /admin: панель для хозяина и для ADMIN_IDS; покупатель — отказ; «Пользователи» показывают карточку
+#     (ID, тариф, каналы MAX, источники Telegram)
+ADMIN_BEFORE84 = bot.ADMIN_IDS
+bot.ADMIN_IDS = {555}
+assert APP_CONFIG.parse_ids("12, 34 ,x,56") == [12, 34, 56]
+msg(555, 55500, "/admin")
+p84 = buttons_of(OUT[-1][1])
+assert any(b_.get("payload") == "m:buyers" and "Пользователи" in b_["text"] for b_ in p84), OUT[-1][1]
+press(555, 55500, "m:buyers")
+assert "7800" in json.dumps(OUT[-1][1]) or "Пользователи" in OUT[-1][0] or "Покупатели" in OUT[-1][0], OUT[-1][0]
+press(555, 55500, f"m:buyer:{k78}")
+card84 = OUT[-1][0]
+assert f"ID: {k78}" in card84 and "Тариф:" in card84 and "Каналы MAX" in card84 and "Источники Telegram" in card84, card84
+msg(7800, 78000, "/admin")
+assert "только для администраторов" in OUT[-1][0] and not any(b_.get("payload") == "m:buyers" for b_ in buttons_of(OUT[-1][1])), OUT[-1]
+press(1, 61000, "m:cl")
+assert any(b_.get("payload") == "m:buyers" for b_ in buttons_of(OUT[-1][1])), "хозяин: кнопка «👥 Пользователи»"
+bot.ADMIN_IDS = ADMIN_BEFORE84
+print("h84 ok: 👥 /admin — панель хозяина и ADMIN_IDS; покупатель — отказ; «Пользователи» — карточка с ID, тарифом, каналами")
+
+# 85) 🎬 приветственное видео на /start: сначала видео (если есть), потом меню из 6 кнопок;
+#     нет файла / сбой отправки / нет сети — текст и меню всё равно
+SENT85 = []
+real_send85 = bot.send_max
+bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: (SENT85.append((chat, text, video_path)), "m")[1]
+vid85 = os.path.join(tempfile.mkdtemp(), "welcome.mp4")
+open(vid85, "wb").write(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64)
+APP_CONFIG.WELCOME_VIDEO_PATH = vid85
+try:
+    n85 = len(OUT)
+    msg(7800, 78000, "/start")
+    assert SENT85 and SENT85[-1][0] == 78000 and SENT85[-1][2] == vid85, SENT85
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6, OUT[-1]
+    APP_CONFIG.WELCOME_VIDEO_PATH = "/no/such/welcome.mp4"
+    n85b = len(SENT85)
+    msg(7800, 78000, "/start")
+    assert len(SENT85) == n85b, "файла нет — видео не пытаемся слать"
+    assert any(o[0].startswith("👋") for o in OUT[n85:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6
+    APP_CONFIG.WELCOME_VIDEO_PATH = vid85
+    def _boom85(*a, **k):
+        raise RuntimeError("MAX не принял видео")
+    bot.send_max = _boom85
+    msg(7800, 78000, "/start")
+    assert any(o[0].startswith("👋") for o in OUT[-4:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6, OUT[-4:]
+    bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: (SENT85.append((chat, text, video_path)), "m")[1]
+    APP_CONFIG.WELCOME_VIDEO_PATH = ""
+    APP_CONFIG.WELCOME_VIDEO_URL = "https://example.invalid/welcome.mp4"
+    real_get85 = bot.S.get
+    bot.S.get = lambda url, **kw: (_ for _ in ()).throw(ConnectionError("нет сети")) if "invalid" in url else real_get85(url, **kw)
+    try:
+        n85c = len(SENT85)
+        msg(7800, 78000, "/start")
+        assert len(SENT85) == n85c and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU6, "ссылка не скачалась — текст и меню"
+    finally:
+        bot.S.get = real_get85
+    class _Resp85:
+        status_code = 200
+        content = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
+        headers = {"Content-Type": "video/mp4"}
+        def raise_for_status(self):
+            pass
+    bot.S.get = lambda url, **kw: _Resp85() if "example.invalid" in url else real_get85(url, **kw)
+    try:
+        msg(7800, 78000, "/start")
+        assert SENT85[-1][2] and os.path.isfile(SENT85[-1][2]), SENT85[-1]
+    finally:
+        bot.S.get = real_get85
+    APP_CONFIG.WELCOME_VIDEO_URL = ""
+    n85d = len(SENT85)
+    handle_update_started = {"update_type": "bot_started", "chat_id": 78000,
+                             "user": {"user_id": 7800, "first_name": "U7800"}}
+    APP_CONFIG.WELCOME_VIDEO_PATH = vid85
+    bot.handle_update(handle_update_started)
+    assert len(SENT85) == n85d + 1 and SENT85[-1][2] == vid85, "кнопка «Старт» — то же приветствие"
+finally:
+    bot.send_max = real_send85
+    APP_CONFIG.WELCOME_VIDEO_PATH = ""
+    APP_CONFIG.WELCOME_VIDEO_URL = ""
+print("h85 ok: 🎬 /start: видео, затем меню из 6 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
