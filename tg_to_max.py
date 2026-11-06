@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110603            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110604            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -93,7 +93,7 @@ for _stream in (sys.stdout, sys.stderr):              # логи хостинг�
         _stream.reconfigure(line_buffering=True)
 from reloader.core import log as _log
 from reloader.core import files as _files
-from reloader.core.files import load_json, _WRITE_LOCK, save_json, DATA_FILES, DATA_GLOBS, SKIP_DIRS, _find_sessions  # noqa: E402
+from reloader.core.files import load_json, load_json_safe, _WRITE_LOCK, save_json, DATA_FILES, DATA_GLOBS, SKIP_DIRS, _find_sessions  # noqa: E402
 from reloader.core.timeutil import MONTHS_GEN, MONTHS_SHORT  # noqa: E402
 from reloader.core import timeutil as _timeutil
 from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
@@ -452,7 +452,7 @@ if CLIENT_MODE:                           # бот клиента начинае
     DEFAULTS["approval_on"] = False       # покупателю — «просто работает»: посты выходят сами, без нажатий
     DEFAULTS["gap_min"] = 20              # и без долгих пауз между постами
 GCFG = copy.deepcopy(DEFAULTS)           # общие настройки (и значения по умолчанию для старой темы)
-GCFG.update(load_json(SETTINGS_FILE, {}))
+GCFG.update(load_json_safe(SETTINGS_FILE, {}))      # испорчен/пропал — из резервной копии
 for _k in ("host_uids", "host_chat"):     # старые версии записывали «хозяйские» id из чужих чатов (канала) — забываем
     GCFG.pop(_k, None)
 def contact_ok(s):
@@ -542,7 +542,7 @@ class Theme:
 
 
 def _load_themes():
-    data = load_json(THEMES_FILE, {})
+    data = load_json_safe(THEMES_FILE, {})
     themes = [Theme(d["id"], d["name"], d.get("link", ""), d.get("chat_id"), d.get("own", {}),
                     d.get("legacy", False), d.get("owner", "")) for d in data.get("themes", [])]
     if not themes and not HOST_MODE:
@@ -560,18 +560,23 @@ _log.CUR = CUR                         # журнал знает, чей каб�
 
 
 def cur():
-    return CUR.get() or (THEMES[0] if THEMES else _VOID)
+    """Тема, с которой сейчас работает код. Не выбрана: в host-режиме — пустая (а не первая попавшаяся —
+    она чья-то чужая), в обычном боте — первая (основная)."""
+    t = CUR.get()
+    if t is not None:
+        return t
+    return _VOID if HOST_MODE or not THEMES else THEMES[0]
 
 
 # ---------- HOST-РЕЖИМ: кабинеты пользователей в одном боте ----------
 TENANTS_FILE = "tenants.json"
-TENANTS = load_json(TENANTS_FILE, {}) if HOST_MODE else {}   # {user_id владельца кабинета: {...}}
+TENANTS = load_json_safe(TENANTS_FILE, {}) if HOST_MODE else {}   # {user_id владельца кабинета: {...}}
 TEN_LOCK = threading.Lock() if False else None
 
 
 def save_tenants():
     if HOST_MODE:
-        save_json(TENANTS_FILE, TENANTS)
+        save_json(TENANTS_FILE, TENANTS, backup=True)
 
 
 def blank_tenant(uid, name=""):
@@ -581,14 +586,17 @@ def blank_tenant(uid, name=""):
 
 
 def tenant_key(uid):
-    """К какому кабинету относится пользователь (он в его админах). None — ни к какому."""
+    """К какому кабинету относится пользователь. Свой кабинет (ключ — его id; у хозяина — кабинет хозяина)
+    важнее кабинетов, где он есть в списке админов: иначе «мои темы» — чужие. None — ни к какому."""
     if not HOST_MODE or uid is None:
         return None
     su = str(uid)
-    for key, c in TENANTS.items():
-        if su == key or any(same_uid(a, uid) for a in (c.get("admins") or [])):
-            return key
-    return None
+    if su in TENANTS:
+        return su
+    hk = host_id()
+    if hk and hk in TENANTS and is_host(uid):
+        return hk
+    return next((key for key, c in TENANTS.items() if any(same_uid(a, uid) for a in (c.get("admins") or []))), None)
 
 
 def tenant_by_chat(chat):
@@ -629,9 +637,11 @@ def theme_by_id(tid):
 
 
 def theme_of_ref(ref):
-    """Тема по id поста/пачки (у не-первых тем он начинается с «id|»)."""
-    t = theme_by_id(ref.split("|", 1)[0]) if "|" in ref else None
-    return t or THEMES[0]
+    """Тема по id поста/пачки: у не-первых тем он начинается с «id|», у старой основной — без «|».
+    Темы уже нет (удалили) — None: кнопку старой карточки не относим к чужой теме."""
+    if "|" in ref:
+        return theme_by_id(ref.split("|", 1)[0])
+    return next((t for t in THEMES if t.legacy), None)
 
 
 def active_theme(uid):
@@ -701,6 +711,8 @@ class _ThemeCfg:
             rec = tenant_rec_by_theme()
             if rec is not None:
                 return rec.setdefault(_TENANT_KEYS[k], copy.deepcopy(_TENANT_DEF[k]))
+            if k != "paused" or cur().owner:            # нет кабинета: карточки и уведомления — никому чужому
+                return copy.deepcopy(_TENANT_DEF[k])
         if k in GLOBAL_KEYS:
             return GCFG[k]
         t = cur()
@@ -714,6 +726,8 @@ class _ThemeCfg:
             if rec is not None:
                 rec[_TENANT_KEYS[k]] = v
                 save_tenants()
+                return
+            if k != "paused" or cur().owner:            # нет кабинета — некуда записать (и в общие не пишем)
                 return
         if k in GLOBAL_KEYS:
             GCFG[k] = v
@@ -781,9 +795,9 @@ CARDS_LOCK = threading.Lock()
 
 
 def save_cfg():
-    save_json(SETTINGS_FILE, GCFG, private=True)       # тут и ключи из панели: файл читает только бот
+    save_json(SETTINGS_FILE, GCFG, private=True, backup=True)   # тут и ключи из панели: файл читает только бот
     save_json(THEMES_FILE, {"themes": [t.to_json() for t in THEMES], "active": META["active"],
-                            "last_report": META["last_report"]})
+                            "last_report": META["last_report"]}, backup=True)
 
 
 def save_queue():
@@ -845,9 +859,10 @@ def create_theme(name, owner=""):
     return t
 
 
-def delete_theme(t):
-    """Удаляет тему вместе с очередью и тайником. Первую (основную) удалить нельзя."""
-    if t.legacy or t not in THEMES:
+def delete_theme(t, force=False):
+    """Удаляет тему вместе с очередью и тайником. Первую (основную) удалить нельзя — кроме очистки
+    в host-режиме (force): там основная тема — пережиток обычного бота, без неё всё работает."""
+    if t not in THEMES or (t.legacy and not (force and HOST_MODE)):
         return
     with theme_ctx(t):
         for it in list(QUEUE):
@@ -863,7 +878,7 @@ def delete_theme(t):
             os.remove(path)
         except OSError:
             pass
-    CUR.set(THEMES[0])
+    CUR.set(None)                                       # дальше — без удалённой темы (см. cur())
     save_cfg()
 
 
@@ -2766,6 +2781,17 @@ def resolve_cards(refs, keep_chat=None, keep_sec=300):
         save_json(CARDS_FILE, CARDS)
 
 
+def drop_card(ref, chat):
+    """Убирает одну карточку в одном чате (у владельца темы карточка остаётся)."""
+    if chat is None:
+        return
+    with CARDS_LOCK:
+        for c in CARDS:
+            if c["ref"] == ref and c["chat"] == chat and c.get("del_at") is None:
+                c["del_at"] = time.time()
+        save_json(CARDS_FILE, CARDS)
+
+
 def delete_msg(mid):
     r = S.delete(f"{MAX_API}/messages", params={"message_id": mid}, headers=HEADERS, timeout=30)
     if r.status_code != 200:
@@ -2820,6 +2846,16 @@ def preview_text(it):
     return f"{head}\n({', '.join(media) or 'только текст'})\n\n{text}"
 
 
+def card_chats():
+    """Кому слать карточки и уведомления текущей темы: чаты админов её кабинета. В host-режиме хозяину —
+    только по его собственным темам (чужие посты он не одобряет); теме без кабинета — никому."""
+    chats = CFG["admin_chats"]
+    out = set(chats.values())
+    if HOST_MODE and cur().owner != host_id():
+        out -= {c for u, c in chats.items() if is_host(u)} | ({HOST_CHAT.get("chat")} - {None})
+    return out
+
+
 def send_preview(it, rows=None, chats=None):
     """Присылает админам пост на одобрение (с кнопками rows)."""
     msg = preview_text(it)
@@ -2829,7 +2865,7 @@ def send_preview(it, rows=None, chats=None):
             token = upload_image(it["photos"][0])
         except Exception as e:
             print("Предпросмотр: фото не загрузилось:", e)
-    for chat in (chats or set(CFG["admin_chats"].values())):
+    for chat in (chats or card_chats()):
         try:
             add_card(chat, api_send(chat, msg, rows, token), it["id"])
         except Exception as e:
@@ -2863,7 +2899,7 @@ def send_previews(items):
     rows = [[B("✅ По очереди, начиная сейчас", f"ap:gnow:{gid}")],
             [B(f"⏰ По очереди через {fmt_min(CFG['later_min'])}", f"ap:glater:{gid}")],
             [B("❌ Пропустить все", f"ap:gno:{gid}")]]
-    for chat in set(CFG["admin_chats"].values()):
+    for chat in card_chats():
         try:
             add_card(chat, api_send(chat, text, rows), gid)
         except Exception as e:
@@ -2929,7 +2965,7 @@ def notify(text, tag=True, rows=None):
     n = len(tenant_themes(cur().owner)) if HOST_MODE and cur().owner else len(THEMES)
     if tag and n > 1:
         text = f"🎭 {cur().name}\n{text}"
-    for chat in set(CFG["admin_chats"].values()):
+    for chat in card_chats():
         try:
             api_send(chat, text, rows)
         except Exception as e:
@@ -2979,6 +3015,86 @@ RIGHTS_TEXT = ("📄 Подтверди права на контент\n\n"
 
 def consented(uid):
     return load_json(CONSENT_FILE, {}).get(str(uid), {}).get("ver") == TERMS_VER
+
+
+SRC_BY_SELLER = "Каналы Telegram, откуда брать посты, подключает продавец — напиши ему, какие нужны."
+
+
+def sources_locked(uid):
+    """Источники Telegram подключает продавец: покупатель в host-режиме их не добавляет и не убирает
+    (только свой канал MAX). Хозяин и админы ADMIN_IDS — могут."""
+    return HOST_MODE and not can_panel(uid)
+
+
+def sources_list(chs, show=60):
+    """Нумерованный список источников для экрана; длинный — первые show и «… и ещё N» (MAX — до 4000 символов)."""
+    lines = [f"{i + 1}. {ch_label(c)}" for i, c in enumerate(chs[:show])]
+    if len(chs) > show:
+        lines.append(f"… и ещё {len(chs) - show}")
+    return "\n".join(lines) or "пока нет"
+
+
+def drop_source(i):
+    """Убирает источник №i текущей темы (и что о нём помнили)."""
+    gone = CFG["channels"].pop(i)
+    LAST_IDS.pop(gone, None)
+    cur().saved_ids.pop(gone, None)
+    return gone
+
+
+def add_sources(text, admin=False):
+    """Добавляет каналы-источники (Telegram, соцсети) в текущую тему. (ответ, экран после).
+    admin — добавляет продавец из панели: про лимит — подсказка ему, а не «перейди на тариф»."""
+    names, bad = [], []
+    for tok in re.split(r"[\s,;]+", text.strip()):
+        if not tok:
+            continue
+        skey, why = social_parse(tok)
+        if skey or why:
+            if not feature_on("social"):
+                bad.append(tok + " (соцсети пока в бете — скоро будут у всех)")
+            elif on_free():
+                bad.append(tok + " (соцсети — на платном тарифе" + ("" if admin else ": «💳 Подписка»") + ")")
+            elif why:
+                bad.append(f"{tok} ({why})")
+            else:
+                names.append(skey)
+                save_json(SOCIAL_FILE, SOCIAL)
+            continue
+        m = re.fullmatch(r"(?:https?://)?(?:t\.me/|telegram\.me/)?@?([A-Za-z0-9_]{4,32})/?", tok)
+        if m:
+            names.append(m.group(1))
+        else:
+            bad.append(tok)
+    have = [c.lower() for c in CFG["channels"]]
+    added, over = [], []
+    for name in names:
+        if name.lower() in have:
+            continue
+        if (CLIENT_MODE or (HOST_MODE and sub_info())) and len(CFG["channels"]) >= lim_sources():
+            over.append(name)
+            continue
+        CFG["channels"].append(name)
+        have.append(name.lower())
+        BAD.pop(name, None)
+        added.append(name)
+    save_cfg()
+    if not names:
+        return "Не похоже на username канала. Попробуй ещё раз." + (
+            "\nНе поняла: " + ", ".join(bad) if bad else ""), "ch"
+    msg = ("Добавил: " + ", ".join(ch_label(n) for n in added) + ". Старые посты не публикую, только новые."
+           if added else "" if over else "Эти каналы уже в списке.")   # не влезли в лимит — это не «уже в списке»
+    if bad:
+        msg += "\nНе поняла: " + ", ".join(bad)
+    if over and admin:
+        msg += (f"\n⚠️ В тарифе покупателя до {lim_sources()} источников в теме — не добавил: "
+                + ", ".join("@" + n for n in over) + ". Больше — смени ему тариф или лимиты: «📦 Тариф», «📏 Лимиты».")
+        return msg.strip(), "ch"
+    if over:
+        msg += (f"\n⚠️ В тарифе до {lim_sources()} каналов в одной теме — не добавил: "
+                + ", ".join("@" + n for n in over) + ". Нужно больше — перейди на тариф больше 👇")
+        return msg.strip(), "pay"
+    return msg.strip(), "ch"
 
 
 def need_rights(uid):
@@ -3056,6 +3172,8 @@ def _screen(name, uid=None):
         return got
     if name == "dg" and simple_menu(uid):
         name = "main"                                   # 🔎 проверки связи у покупателя нет — его меню
+    if name == "rights" and sources_locked(uid):
+        name = "ch"                                     # источники добавляет продавец — подтверждать нечего
     if name == "bview" and HOST_MODE and can_panel(uid):   # 👀 админ смотрит меню глазами покупателя
         text, rows = buyer_menu(uid)
         return "👀 Так покупатели видят главное меню:\n\n" + text, rows + [[B("◀️ Панель", "m:cl")]]
@@ -3077,7 +3195,11 @@ def _screen(name, uid=None):
         if got is not None:
             return got
         name = "main"
-    if name == "ch":
+    if name == "ch" and sources_locked(uid):             # 📡 покупатель видит источники, но не меняет
+        text = "📡 Каналы-источники\n\n" + sources_list(CFG["channels"]) + "\n\n" + SRC_BY_SELLER
+        link = seller_link()
+        rows = ([[LB("❓ Поддержка", link)]] if link else []) + [back]
+    elif name == "ch":
         chs = CFG["channels"]
         text = "📡 Каналы-источники\n\n" + ("\n".join(f"{i + 1}. {ch_label(c)}" for i, c in enumerate(chs)) or "список пуст") \
             + ("\n\nНажми на канал, чтобы убрать его." if chs else
@@ -3436,12 +3558,13 @@ def _screen(name, uid=None):
         text = "❓ Поддержка\n\n" + (f"Напиши продавцу: {SELLER_CONTACT}" if known else "Продавец ещё не указал контакт.")
         rows = ([[LB("❓ Поддержка", link)]] if link else []) + [back]
     elif name == "hp":
-        text = help_text() + "\n\nМожно просто скинуть боту фото/видео/пересланное — улетит в тайник."
+        text = help_text(uid) + "\n\nМожно просто скинуть боту фото/видео/пересланное — улетит в тайник."
         rows = [back]
     elif name == "gd":
-        text = guide_text()
-        rows = [[B("📢 Куда выкладывать (канал MAX)", "m:chpick")],
-                [B("📡 Откуда брать посты (Telegram)", "m:ch")], back]
+        locked = sources_locked(uid)
+        text = guide_text(locked)
+        rows = [[B("📢 Куда выкладывать (канал MAX)", "m:chpick")]] \
+            + ([] if locked else [[B("📡 Откуда брать посты (Telegram)", "m:ch")]]) + [back]
     elif name == "anl" and feature_on("stats"):
         chans = [t for t in (scope_themes() if HOST_MODE else THEMES) if t.chat_id]
         text = ("📊 Аналитика — «Итоги недели» по каждому каналу\n\n"
@@ -3466,7 +3589,7 @@ def _screen(name, uid=None):
     elif name.split(":")[0] == "myt" and HOST_MODE and feature_on("mytariff"):
         text, rows = mytariff_screen(name.partition(":")[2])
     elif name == "terms":
-        text, rows = terms_text(), [[B("📡 Каналы-источники", "m:ch")], back]
+        text, rows = terms_text(), ([] if sources_locked(uid) else [[B("📡 Каналы-источники", "m:ch")]]) + [back]
     elif name == "rights":
         text, rows = RIGHTS_TEXT, rights_rows(uid)
     elif name == "more" and simple_menu(uid):
@@ -3493,6 +3616,8 @@ def _screen(name, uid=None):
                 *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
                 [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")],
                 [B("📄 Условия", "m:terms")], back]
+    elif HOST_MODE and simple_menu(uid) and not can_panel(uid):
+        return _screen("main", uid)                     # неизвестный экран — меню покупателя из 6 кнопок
     elif simple_menu(uid):
         text, rows = client_main(uid)
     else:
@@ -3568,6 +3693,8 @@ PROMPTS = {
     "shhours": "Пришли часы, в которые выкладывать из тайника, через запятую. Например: 12, 18 или 9, 13, 17, 21.",
     "chadd": "Пришли каналы Telegram, из которых брать посты: @name или t.me/name "
              "(можно несколько — через пробел или с новой строки).",
+    "clsrcadd": ("Пришли каналы Telegram для этой темы покупателя: @name или t.me/name "
+                 "(можно несколько — через пробел или с новой строки)."),
     "themenew": "Пришли название новой темы, например: «Мемы про котов».",
     "thname": "Пришли новое название темы.",
     "thlink": "Пришли ссылку на канал MAX, куда выкладывать эту тему (https://max.ru/…). "
@@ -3640,7 +3767,10 @@ def apply_text(action, text, uid=None):
         GCFG["yk_shop"], GCFG["yk_key"] = sid, key        # ключи из панели главнее переменных хостинга
         save_cfg()
         ok, why = yk_check()
-        return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." if ok else
+        keep = ("" if yk_env_keys() == (sid, key) else
+                "\n\n💾 Чтобы ключи не пропали при пересборке бота на хостинге, задай их и в переменных Bothost: "
+                "YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY (тот же shopId и ключ).")
+        return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." + keep if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
     if (action or "").startswith("claikeys:"):            # 🤖 ключи ИИ списком — панель
         if not can_panel(uid):
@@ -3710,55 +3840,25 @@ def apply_text(action, text, uid=None):
         CFG["stash_mode"] = "hours"
         save_cfg()
         return "Тайник: выкладываю в " + ", ".join(f"{h:02d}:00" for h in hrs) + " ✅", "sh"
+    if action == "chadd" and sources_locked(uid):
+        return SRC_BY_SELLER, "ch"
     if action == "chadd" and need_rights(uid):
         return "Сначала подтверди права на контент.", "rights"
     if action == "chadd":
-        names, bad = [], []
-        for tok in re.split(r"[\s,;]+", text.strip()):
-            if not tok:
-                continue
-            skey, why = social_parse(tok)
-            if skey or why:
-                if not feature_on("social"):
-                    bad.append(tok + " (соцсети пока в бете — скоро будут у всех)")
-                elif on_free():
-                    bad.append(tok + " (соцсети — на платном тарифе: «💳 Продлить доступ»)")
-                elif why:
-                    bad.append(f"{tok} ({why})")
-                else:
-                    names.append(skey)
-                    save_json(SOCIAL_FILE, SOCIAL)
-                continue
-            m = re.fullmatch(r"(?:https?://)?(?:t\.me/|telegram\.me/)?@?([A-Za-z0-9_]{4,32})/?", tok)
-            if m:
-                names.append(m.group(1))
-            else:
-                bad.append(tok)
-        have = [c.lower() for c in CFG["channels"]]
-        added, over = [], []
-        for name in names:
-            if name.lower() in have:
-                continue
-            if (CLIENT_MODE or (HOST_MODE and sub_info())) and len(CFG["channels"]) >= lim_sources():
-                over.append(name)
-                continue
-            CFG["channels"].append(name)
-            have.append(name.lower())
-            BAD.pop(name, None)
-            added.append(name)
-        save_cfg()
-        if not names:
-            return "Не похоже на username канала. Попробуй ещё раз." + (
-                "\nНе поняла: " + ", ".join(bad) if bad else ""), "ch"
-        msg = ("Добавил: " + ", ".join(ch_label(n) for n in added) + ". Старые посты не публикую, только новые."
-               if added else "Эти каналы уже в списке.")
-        if bad:
-            msg += "\nНе поняла: " + ", ".join(bad)
-        if over:
-            msg += (f"\n⚠️ В тарифе до {lim_sources()} каналов в одной теме — не добавил: "
-                    + ", ".join("@" + n for n in over) + ". Нужно больше — перейди на тариф больше 👇")
-            return msg, "pay"
-        return msg, "ch"
+        return add_sources(text)
+    if (action or "").startswith("clsrcadd:"):          # 📡 админ подключает источники теме покупателя
+        if not can_panel(uid):
+            return SRC_BY_SELLER, "main"
+        t = theme_by_id(action.split(":", 1)[1])
+        if t is None:
+            return "Тема не найдена (удалена?).", "cl"
+        with theme_ctx(t):
+            before = list(CFG["channels"])
+            answer, _ = add_sources(text, admin=True)
+            new = [c for c in CFG["channels"] if c not in before]
+            if new:                                       # покупатель видит в журнале, откуда новые посты
+                journal("📡 Продавец подключил источники: " + ", ".join(ch_label(c) for c in new))
+        return answer, f"clsrt:{t.id}"
     if action == "themenew":
         name = text.strip()[:40]
         if not name:
@@ -3796,7 +3896,7 @@ def apply_text(action, text, uid=None):
             else:
                 t.chat_id = None
         save_cfg()
-        nxt = "ask:chadd" if not CFG["channels"] else "thm"
+        nxt = "ask:chadd" if not CFG["channels"] and not sources_locked(uid) else "thm"
         if t.chat_id:
             return "Канал MAX найден и привязан ✅" + rights_note(t.chat_id), nxt
         BIND["theme"] = t.id
@@ -4147,10 +4247,8 @@ def do_action(act, uid=None):
         scr = "sh"
     elif p[0] == "chdel":
         i = int(p[1])
-        if 0 <= i < len(CFG["channels"]):
-            gone = CFG["channels"].pop(i)
-            LAST_IDS.pop(gone, None)
-            cur().saved_ids.pop(gone, None)
+        if not sources_locked(uid) and 0 <= i < len(CFG["channels"]):
+            drop_source(i)
         scr = "ch"
     save_cfg()
     return scr
@@ -4279,6 +4377,12 @@ def handle_callback(cb):
         text, rows = host_pay_check(uid)
     elif kind == "pk" and (CLIENT_MODE or HOST_MODE):      # «Оплатить онлайн» (ЮKassa)
         text, rows = host_pay_online(rest, uid) if HOST_MODE else pay_online(rest, uid)
+    elif kind in ("rk", "p") and (rest == "chadd" or kind == "rk") and sources_locked(uid):
+        PENDING.pop(uid, None)                             # источники подключает продавец
+        text, rows = screen("ch", uid)
+    elif kind == "p" and rest.startswith("cl") and HOST_MODE and not can_panel(uid):
+        PENDING.pop(uid, None)                             # ввод панели — только для админов
+        text, rows = screen("main", uid)
     elif kind == "rk":                                     # подтвердил права на контент — сразу к добавлению
         record_consent(uid)
         PENDING[uid] = "chadd"
@@ -4412,8 +4516,12 @@ def approve(rest, uid, chat=None):
     """Тема определяется по id поста/пачки из кнопки, а не по тому, какую тему открыл админ."""
     ref = rest.partition(":")[2]
     t = theme_of_ref(ref)
+    if t is None:                                          # тему удалили («🗑 Очистить старые каналы» и т.п.)
+        resolve_cards([ref])
+        return "Этого поста уже нет — его тему удалили. Карточку убрал.", None
     if HOST_MODE and t not in my_themes(uid):              # чужой пост (другого кабинета) — не трогаем
-        return "Это пост не из твоих тем.", None
+        drop_card(ref, chat)
+        return "Это пост не из твоих тем — не трогаю его. Карточку убрал.", None
     with theme_ctx(t):
         return _approve(rest, uid, chat)
 
@@ -4560,25 +4668,29 @@ COMMAND_HELP = [
 ]
 
 
-def guide_text():
-    """Инструкция для покупателя: настройка по шагам и что делает каждая кнопка."""
+def guide_text(locked=False):
+    """Инструкция для покупателя: настройка по шагам и что делает каждая кнопка.
+    locked — источники (каналы Telegram) подключает продавец, покупатель — только свой канал MAX."""
     return ("📖 Как пользоваться\n\n"
             "Этот бот сам берёт новые посты из каналов Telegram и выкладывает их в твой канал MAX — "
             "с фото, видео и текстом.\n\n"
-            "🚀 Настройка — 3 шага\n"
-            "1️⃣ Добавь этого бота в свой канал MAX как админа (с правом публиковать).\n"
+            + ("🚀 Настройка — 2 шага\n" if locked else "🚀 Настройка — 3 шага\n")
+            + "1️⃣ Добавь этого бота в свой канал MAX как админа (с правом публиковать).\n"
             "2️⃣ Нажми «📢 Куда выкладывать» и пришли ссылку на свой канал MAX (https://max.ru/…).\n"
-            "3️⃣ Нажми «📡 Откуда брать посты» → «➕ Добавить канал» и пришли канал Telegram "
-            "(@name или https://t.me/name).\n"
-            "Готово — дальше бот работает сам, круглосуточно.\n\n"
+            + (SRC_BY_SELLER + "\n" if locked else
+               "3️⃣ Нажми «📡 Откуда брать посты» → «➕ Добавить канал» и пришли канал Telegram "
+               "(@name или https://t.me/name).\n")
+            + "Готово — дальше бот работает сам, круглосуточно.\n\n"
             "🔘 Что делают кнопки\n"
-            "📡 Откуда брать посты — каналы Telegram, из которых копировать. Нажми на канал — уберёшь его.\n"
-            "📢 Куда выкладывать — твой канал MAX.\n"
+            + ("📡 Каналы-источники — откуда бот берёт посты (их подключает продавец).\n" if locked else
+               "📡 Откуда брать посты — каналы Telegram, из которых копировать. Нажми на канал — уберёшь его.\n")
+            + "📢 Куда выкладывать — твой канал MAX.\n"
             "⏳ Расписание — пауза между постами, чтобы не выкладывать всё разом.\n"
             "✋ Проверка постов — " + ("сейчас ВКЛ: " if CFG["approval_on"] else "сейчас выкл. Если включить, ")
             + "каждый новый пост сначала приходит тебе сюда с кнопками «✅ Сейчас», «⏰ Через…» и "
             "«❌ Пропустить». Не хочешь нажимать — выключи, и посты пойдут сами.\n"
-            "✍️ Подпись — твой текст под каждым постом (например, название канала).\n"
+            + ("✍️ Подпись под постами" if locked else "✍️ Подпись") + " — твой текст под каждым постом "
+            "(например, название канала).\n"
             "🗃 Тайник — запас своих постов: просто кинь боту фото, видео или текст — он выложит их, "
             "когда новых постов нет.\n"
             "⏸ Пауза — остановить публикации, ▶️ Продолжить — запустить снова.\n"
@@ -4586,8 +4698,10 @@ def guide_text():
                "переносились файлы (PDF и т.п.), большие видео и посты закрытых каналов. Нужны только номер и код.\n")
             + 
             "⚙️ Ещё настройки — видео, повторы, удаление рекламы, админы, журнал, 📄 условия.\n\n"
-            "⚖️ Добавляй только свои каналы или те, на копирование которых у тебя есть разрешение владельца. "
-            "Перед первым добавлением бот попросит это подтвердить.\n\n"
+            + ("" if locked else
+               "⚖️ Добавляй только свои каналы или те, на копирование которых у тебя есть разрешение владельца. "
+               "Перед первым добавлением бот попросит это подтвердить.\n\n")
+            +
             "❓ Посты не выходят? Напиши продавцу — контакт ниже.\n"
             f"Вопросы и оплата: {SELLER_CONTACT}")
 
@@ -4656,8 +4770,9 @@ def client_main(uid=None):
     return text, rows
 
 
-def help_text():
-    return "❓ Команды\n\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_HELP)
+def help_text(uid=None):
+    hide = {"check"} if simple_menu(uid) else set()     # 🔎 проверки связи у покупателя нет
+    return "❓ Команды\n\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_HELP if n not in hide)
 
 
 HOOKS = {"dropped": 0, "warned": False}
@@ -4698,7 +4813,8 @@ def drop_webhooks():
 def register_commands():
     """Показывает команды в подсказке MAX (если API не принял — не страшно, команды работают и так)."""
     try:
-        body = {"commands": [{"name": n, "description": d[:100]} for n, d in COMMAND_HELP[:32]]}
+        cmds = [(n, d) for n, d in COMMAND_HELP if not (HOST_MODE and n == "check")]   # видят и покупатели
+        body = {"commands": [{"name": n, "description": d[:100]} for n, d in cmds[:32]]}
         r = S.patch(f"{MAX_API}/me/commands", headers=HEADERS, timeout=30, json=body)
         if r.status_code != 200:                     # старый способ (раньше команды задавались через PATCH /me)
             r = S.patch(f"{MAX_API}/me", headers=HEADERS, timeout=30, json=body)
@@ -4828,6 +4944,8 @@ def run_command(cmd, arg, uid, chat_id):
                 save_cfg()
                 CUR.set(t)
                 show("main")
+    elif cmd == "check" and simple_menu(uid):
+        show("main")                                   # 🔎 проверки связи у покупателя нет — его меню
     elif cmd == "check":
         say("🔎 Проверяю связь, секунду…")
         say(run_diag())
@@ -7041,7 +7159,8 @@ BETA_FEATURES = {   # ключ: (название, что делает, где �
     "social": ("🌐 Соцсети-источники",
                "Брать посты не только из Telegram, но и из TikTok, VK, YouTube, Rutube и сайтов с RSS. "
                "Достаточно прислать ссылку на аккаунт — новые посты пойдут в канал MAX.",
-               "меню → «📡 Откуда брать посты» → «➕ Добавить канал» → прислать ссылку"),
+               "у себя: меню → «📡 Каналы» → «➕ Добавить канал»; покупателю: «👥 Все покупатели» → "
+               "покупатель → «📡 Источники Telegram» → «➕ Добавить канал» — прислать ссылку"),
     "ai": ("🪄 ИИ-редактор",
            "Пересказывает каждый пост другими словами (синонимами), чтобы он не был копией. Тема, длина, ссылки, "
            "@каналы, цифры и КАПС остаются. Бесплатно, без ключей.",
@@ -9645,8 +9764,8 @@ def sub_info():
 
 def tenant_mode(key, now=None):
     """run — оплачен (или пробный срок), free — бесплатный тариф (срок кончился или не оплачивал), off — выключен хозяином."""
-    c = TENANTS.get(key) or {}
-    if not c.get("enabled", True):
+    c = TENANTS.get(key)
+    if c is None or not c.get("enabled", True):          # кабинета нет (потерялся) или хозяин выключил
         return "off"
     return "run" if c.get("until", 0) > (now or time.time()) else "free"
 
@@ -9737,8 +9856,14 @@ def create_tenant(uid, chat, name="", username=""):
     if username:
         TENANTS[key]["usernames"] = {str(uid): username}
     save_tenants()
-    new_cabinet_theme(key, "Мой канал")
+    if not tenant_themes(key):                            # темы остались (кабинет потерялся) — не плодим пустую
+        new_cabinet_theme(key, "Мой канал")
     print(f"HOST: новый кабинет {name or uid} (ID {uid})")
+    setup = ("Подключи свой канал MAX: «🎭 Мои каналы» → «⚙️ Эта тема» → «📢 Канал MAX». "
+             + ("Каналы Telegram, откуда брать посты, подключит продавец." if sources_locked(uid) else
+                "Там же — «📡 Каналы-источники»."))
+    todo = ("" if can_panel(uid) else
+            " Подключи ему каналы-источники: «👥 Все покупатели» → покупатель → «📡 Источники Telegram».")
     days = int(GCFG.get("trial_days", 3) or 0)
     if days > 0 and tariffs():                            # 🎁 пробный доступ без промокода — один раз, при первом «Старте»
         host_set_plan(key, 0)
@@ -9746,12 +9871,12 @@ def create_tenant(uid, chat, name="", username=""):
         TENANTS[key]["trial"] = True
         save_tenants()
         tenant_send(key, f"🎁 Тебе включён бесплатный пробный доступ на {days} {n_word(days, 'день', 'дня', 'дней')} — "
-                         f"до {fmt_date(TENANTS[key]['until'])}.\nНастрой канал: «📢 Куда выкладывать» и "
-                         "«📡 Откуда брать посты». Понравится — продлишь кнопкой «💳 Продлить доступ».")
-        host_alert(f"🎁 Новый покупатель «{name or uid}» — включил ему пробные {days} дн.")
+                         f"до {fmt_date(TENANTS[key]['until'])}.\n{setup} Понравится — продлишь кнопкой «💳 Подписка».")
+        host_alert(f"🎁 Новый покупатель «{name or uid}» — включил ему пробные {days} дн.{todo}")
     else:
-        tenant_send(key, f"🆓 Ты на бесплатном тарифе: {free_plan_text()}, навсегда. Настрой канал: «📢 Куда "
-                         "выкладывать» и «📡 Откуда брать посты». Нужно больше — «💳 Тарифы».")
+        tenant_send(key, f"🆓 Ты на бесплатном тарифе: {free_plan_text()}, навсегда. {setup} Нужно больше — «💳 Подписка».")
+        if todo:
+            host_alert(f"🆕 Новый покупатель «{name or uid}» (ID {uid}).{todo}")
     tenant_send(key, CONTACT_ASK, [[CONTACT_BTN]])
     return key
 
@@ -10192,8 +10317,9 @@ def host_adopt_orphans():
             TENANTS.pop(k, None)
             moved = True
             print(f"HOST: кабинет хозяина переехал на {key} (прежний был {k})")
-    # «ничьи» темы + «повисшие» (их владелец — кабинет, которого уже нет) забирает хозяин
-    orphans = [t for t in THEMES if not t.owner or (t.owner != key and t.owner not in TENANTS)]
+    # «ничьи» темы (обычный бот до host-режима) забирает хозяин. Темы потерянных кабинетов — НЕ берём:
+    # это чужие каналы (иначе хозяину идут чужие посты); покупатель вернётся — получит их обратно
+    orphans = [t for t in THEMES if not t.owner]
     has_own = any(t.owner == key for t in THEMES)
     if not orphans and not has_own and key not in TENANTS:
         return                                            # хозяину нечего присваивать и кабинета у него нет
@@ -10213,6 +10339,20 @@ def host_adopt_orphans():
     if orphans or moved:
         print(f"HOST: твои темы — личный кабинет хозяина (бесплатно, бессрочно): "
               + (", ".join(t.name for t in THEMES if t.owner == key) or "—"))
+
+
+def storage_note():
+    """Подсказка в лог при запуске: где лежат данные бота и что переживёт пересборку на хостинге."""
+    data, code = os.path.abspath(os.getcwd()), os.path.dirname(os.path.abspath(__file__))
+    note = f"💾 Данные бота (настройки, кабинеты, темы): {data}"
+    with contextlib.suppress(ValueError):
+        if os.path.commonpath([data, code]) == code:
+            note += ("\n   Папка рядом с кодом: на хостинге без постоянного диска она стирается при пересборке — "
+                     "подключи постоянный диск и задай TG_MAX_DIR (путь к нему).")
+    miss = [n for n in ("SELLER_CONTACT", "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY") if not (os.environ.get(n) or "").strip()]
+    if miss:
+        note += "\n   Чтобы контакт и ключи ЮKassa пережили любую пересборку, задай переменные хостинга: " + ", ".join(miss)
+    return note
 
 
 def host_clean_chats():
@@ -10250,6 +10390,32 @@ def ensure_host_cabinet():
     if not tenant_themes(key):
         new_cabinet_theme(key, "Мой канал")
     return tenant_themes(key)[0]
+
+
+def wipe_scope(uid):
+    """«🗑 Очистить старые каналы»: темы кабинета того, кто чистит (у хозяина — ещё и «ничьи» темы старых
+    версий бота). Кабинеты покупателей и темы потерянных кабинетов сюда не попадают."""
+    key = host_id() if is_host(uid) else tenant_key(uid)
+    return [t for t in THEMES if (key and t.owner == key) or (is_host(uid) and not t.owner)]
+
+
+def wipe_themes(themes):
+    """Удаляет темы целиком: очередь, тайник, отсеянное, файлы и карточки на одобрение.
+    Возвращает (тем, источников, постов в очереди)."""
+    n_src = n_posts = 0
+    gone = {t.id for t in themes}
+    for t in list(themes):
+        with theme_ctx(t):
+            n_src += len(CFG["channels"])
+            n_posts += len(QUEUE)
+            resolve_cards(item_refs(list(QUEUE)) + [x["id"] for x in ADHELD])   # карточки — из всех чатов
+            for it in list(ADHELD):
+                drop_files(it)
+        delete_theme(t, force=True)
+    if BIND.get("theme") in gone:
+        BIND["theme"] = None
+    save_cfg()
+    return len(themes), n_src, n_posts
 
 
 def host_set_plan(key, i):
@@ -11568,7 +11734,8 @@ def host_screen(name, uid):
                  [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
                  [B("🔑 Ключи и доступы", "m:clkeys")],
                  [B("👥 Покупатели", "m:buyers"), B("🎟 Коды", "m:codes")],
-                 [B("👀 Посмотреть меню покупателя", "m:bview")]]
+                 [B("👀 Посмотреть меню покупателя", "m:bview")],
+                 [B("🗑 Очистить старые каналы", "m:clwipe")]]
         return text, rows
     if name == "clkeys":                                  # 🔑 ключи: ЮKassa, VK, TikTok — вводятся прямо в чат
         return keys_screen()
@@ -11588,6 +11755,20 @@ def host_screen(name, uid):
                    if subs else "Сейчас каналов нет — ботом пользуются все."))
         rows = [[B(f"❌ {c['title']}"[:60], f"a:clfsdel:{i}")] for i, c in enumerate(subs)]
         return text, rows + [[B("➕ Добавить канал", "p:clfsadd")], back]
+    if name == "clwipe":                                  # 🗑 очистить старые каналы — сначала спрашиваем
+        ts = wipe_scope(uid)
+        if not ts:
+            return "🗑 Старых каналов нет — в твоём кабинете пусто.", [back]
+        lines = []
+        for t in ts:
+            with theme_ctx(t):
+                lines.append(f"• {t.name} — источников: {len(CFG['channels'])}, в очереди: {len(QUEUE)}"
+                             + (", канал MAX привязан" if t.chat_id else ""))
+        return ("🗑 Очистить старые каналы?\n\nУдалю все темы твоего кабинета:\n" + "\n".join(lines)
+                + "\n\nКаналы MAX отвяжу, источники Telegram, очередь и тайник сотру, карточки на одобрение уберу. "
+                  "Кабинеты покупателей не трону. Вернуть нельзя.\n\n"
+                  "Потом подключишь новые каналы: «🎭 Мои каналы (мой кабинет)»."), \
+            [[B("✅ Да, очистить", "a:clwipeok")], [B("Нет", "m:cl")]]
     kind, _, key = name.partition(":")
     if kind == "cll":                                     # все покупатели: срок, тариф, дата регистрации
         page = int(key or 0)
@@ -11663,9 +11844,19 @@ def host_screen(name, uid):
                 [B("⏹ Выключить сейчас", f"a:clpu:{key}:stop"), B("🗑 Удалить", f"a:clpdel:{key}")],
                 [B("◀️ Промокоды", "m:clpr")]]
         return text, rows
+    if kind == "clsrt":                                   # 📡 источники одной темы покупателя
+        t = theme_by_id(key)
+        return theme_sources_screen(t) if t is not None else ("Тема не найдена (удалена?).", [back])
     c = TENANTS.get(key)
-    if kind in ("clc", "clpl", "cllim", "cldel") and c is None:
+    if kind in ("clc", "clpl", "cllim", "cldel", "clsrc") and c is None:
         return "Кабинет не найден (удалён?).", [back]
+    if kind == "clsrc":                                   # 📡 источники покупателя: одна тема — сразу её
+        ts = tenant_themes(key)
+        if len(ts) == 1:
+            return theme_sources_screen(ts[0])
+        return ((f"📡 Источники Telegram — кабинет «{c.get('name') or key}». Выбери тему:" if ts else
+                 "У покупателя пока нет тем."),
+                [[B(f"📡 {t.name}"[:60], f"m:clsrt:{t.id}")] for t in ts] + [[B("◀️ Кабинет", f"m:clc:{key}")]])
     if kind == "cltar":
         pay = GCFG.get("pay_info") or "— не заданы"
         text = ("💰 Тарифы (цена за 30 дней; за 90 дней — ×2,5)\n\n" + "\n".join(tariff_line(t) for t in tariffs())
@@ -11713,6 +11904,7 @@ def host_screen(name, uid):
         elif not phone:
             rows.append([B("📇 Попросить контакт", f"a:clask:{key}")])
         rows += chan_rows                                   # 📺 открыть канал покупателя — как там выходят посты
+        rows.append([B("📡 Источники Telegram", f"m:clsrc:{key}")])   # источники покупателю подключает продавец
         rows += [[B("⛔ Выключить", f"a:cloff:{key}") if mode != "off" else B("✅ Включить", f"a:clon:{key}")],
                  [B("📦 Тариф", f"m:clpl:{key}"), B("📏 Лимиты", f"m:cllim:{key}")],
                  [B("✉️ Написать", f"p:clsay:{key}"), B("🧪 Бета-функции", f"m:clbt:{key}")],
@@ -11735,6 +11927,20 @@ def host_screen(name, uid):
         return (f"🗑 Удалить кабинет «{c.get('name')}»? Его каналы, темы и настройки сотрутся. Вернуть нельзя.",
                 [[B("✅ Да, удалить", f"a:cldelok:{key}"), B("Нет", f"m:clc:{key}")]])
     return None
+
+
+def theme_sources_screen(t):
+    """Панель: источники Telegram темы покупателя — добавить и убрать (сам покупатель их не меняет)."""
+    with theme_ctx(t):
+        chs, lim = list(CFG["channels"]), lim_sources()
+    c = TENANTS.get(t.owner) or {}
+    text = (f"📡 Источники Telegram — тема «{t.name}», кабинет «{c.get('name') or t.owner}»\n\n"
+            + sources_list(chs) + f"\n\nПо тарифу покупателя — до {lim} в теме."
+            + ("\nНажми на канал, чтобы убрать его." if chs else "")
+            + ("\nКнопками — первые 48: убери их, покажу следующие." if len(chs) > 48 else ""))
+    btns = [B(f"❌ {ch_label(x).lstrip('@')}"[:30], f"a:clsrcdel:{t.id}:{i}") for i, x in enumerate(chs[:48])]
+    return text, [btns[i:i + 2] for i in range(0, len(btns), 2)] + [
+        [B("➕ Добавить канал", f"p:clsrcadd:{t.id}")], [B("◀️ Кабинет", f"m:clc:{t.owner}")]]
 
 
 def host_action(p, uid):
@@ -11840,6 +12046,24 @@ def host_action(p, uid):
                     pr["until"] = time.time() - 1
         save_cfg()
         return f"clpo:{code}"
+    if p[0] == "clsrcdel" and len(p) > 2:                   # 📡 убрать источник у темы покупателя
+        t = theme_by_id(p[1])
+        if t is None:
+            return "cl"
+        with theme_ctx(t):
+            i = int(p[2]) if p[2].isdigit() else -1
+            if 0 <= i < len(CFG["channels"]):
+                gone = drop_source(i)
+                save_cfg()
+                journal(f"📡 Продавец убрал источник {ch_label(gone)}")
+        return f"clsrt:{t.id}"
+    if p[0] == "clwipeok":                                  # 🗑 очистить старые каналы своего кабинета
+        n, n_src, n_posts = wipe_themes(wipe_scope(uid))
+        if n:
+            journal(f"🗑 Очистка старых каналов: тем {n}, источников {n_src}, постов в очереди {n_posts}")
+        FLASH[uid] = (f"🗑 Удалил тем: {n} (источников: {n_src}, постов в очереди: {n_posts}). Подключи новые "
+                      "каналы: «🎭 Мои каналы (мой кабинет)»." if n else "Старых каналов нет — удалять нечего.")
+        return "cl"
     if p[0] in ("clmsgall",):
         return "cl"
     key = p[1] if len(p) > 1 else ""
@@ -12137,10 +12361,13 @@ def clients_text(action, text, uid):
             with contextlib.suppress(Exception):
                 write_subscription(cid)
         url = seller_link()
+        keep = ("" if (os.environ.get("SELLER_CONTACT") or "").strip() == SELLER_CONTACT else
+                "\n\n💾 Чтобы контакт не пропал при пересборке бота на хостинге, задай его и в переменных Bothost: "
+                f"SELLER_CONTACT = {SELLER_CONTACT}")
         return (f"Готово, мой контакт: {SELLER_CONTACT}\n\n" + (
             f"Кнопка «❓ Поддержка» у покупателей открывает: {url}" if url else
             "⚠️ Это не ссылка — кнопка «❓ Поддержка» не откроет чат с тобой. Пришли ссылку на свой профиль MAX "
-            "(https://max.ru/…) или @ник.")), "cltar"
+            "(https://max.ru/…) или @ник.") + keep), "cltar"
     if action == "clpayset":
         GCFG["pay_info"] = text.strip()[:500]
         save_cfg()
@@ -12447,6 +12674,7 @@ async def main():
         with contextlib.suppress(Exception):
             clean_bot_names()
         print(f"HOST-режим: один бот для всех. Кабинетов: {len(TENANTS)}. Хозяин (OWNER_ID): {HOST_OWNER or '— не задан!'}")
+        print(storage_note())
     for t in THEMES:
         print(f"Тема «{t.name}»: MAX chat_id =", t.chat_id)
         with theme_ctx(t):

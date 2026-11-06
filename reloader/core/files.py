@@ -2,6 +2,7 @@
 import json
 from contextlib import suppress
 import os
+import shutil
 import threading
 import time
 
@@ -14,20 +15,51 @@ def load_json(path, default):
         return default
 
 
+def load_json_safe(path, default):
+    """Как load_json, но для важных файлов (настройки, кабинеты, темы): основной файл испорчен или пропал —
+    берём резервную копию path + ".bak" (её пишет save_json(backup=True)). Испорченный файл — в .broken."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        if not os.path.exists(path + ".bak"):
+            return default                              # первый запуск — копии ещё нет
+    except Exception:
+        with suppress(OSError):
+            shutil.copyfile(path, path + ".broken")
+    try:
+        with open(path + ".bak", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return default
+    print(f"💾 {path}: файл испорчен или пропал — поднял данные из резервной копии {path}.bak")
+    return data
+
+
 _WRITE_LOCK = threading.Lock()
 
 
-def save_json(path, data, private=False):
+def _write(path, data, private, sync):
+    tmp = path + ".tmp"
+    with suppress(FileNotFoundError):
+        os.remove(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+    with open(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        if sync:                                        # важное — на диск до замены: сбой не оставит пустой файл
+            f.flush()
+            os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def save_json(path, data, private=False, backup=False):
     """Атомарная запись: если процесс убили посередине, файл не повреждается.
-    private — файл с ключами: читать и писать может только бот (права 600)."""
+    private — файл с ключами: читать и писать может только бот (права 600).
+    backup — важный файл (настройки, кабинеты, темы): пишем на диск надёжно и держим копию path + ".bak"."""
     with _WRITE_LOCK:
-        tmp = path + ".tmp"
-        with suppress(FileNotFoundError):
-            os.remove(tmp)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        _write(path, data, private, sync=backup)
+        if backup:
+            _write(path + ".bak", data, private, sync=True)
 
 
 DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",

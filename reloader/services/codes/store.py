@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 
-from reloader.core.files import load_json, save_json
+from reloader.core.files import load_json_safe, save_json
 
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"    # для случайных: без 0, O, 1, I
 RANDOM_LEN = 12
@@ -50,14 +50,14 @@ class CodeStore:
         self._lock = threading.RLock()
 
     def _read(self):
-        data = load_json(self.path, {})
+        data = load_json_safe(self.path, {})        # испорчен/пропал — из резервной копии
         data.setdefault("codes", {})
         data.setdefault("audit", [])
         return data
 
     def _write(self, data):
         data["audit"] = data["audit"][-AUDIT_MAX:]
-        save_json(self.path, data, private=True)
+        save_json(self.path, data, private=True, backup=True)
 
     @property
     def audit(self):

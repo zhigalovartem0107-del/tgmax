@@ -61,6 +61,12 @@ def buy(uid, chat, plan):
 def buttons_of(rows):
     return [b_ for r in rows for b_ in r]
 
+
+def admin_add(t, text):
+    """Источники покупателю подключает продавец: карточка покупателя → «📡 Источники Telegram» → «➕ Добавить канал»."""
+    press(1, 61000, f"p:clsrcadd:{t.id}")
+    msg(1, 61000, text)
+
 # 1) новый пользователь -> свой кабинет на бесплатном тарифе (1 канал MAX, 2 источника, навсегда) — сразу меню
 msg(100, 5100, "/start")
 assert "100" in bot.TENANTS and bot.tenant_mode("100") == "free" and len(bot.tenant_themes("100")) == 1
@@ -70,8 +76,8 @@ print("h1 ok: новый пользователь — сразу свой каб
 
 # 2) на бесплатном тарифе меню открыто (раньше без подписки — только экран оплаты)
 press(100, 5100, "m:ch")
-assert "Оплатить доступ" not in shown() and "p:chadd" in shown(), shown()
-print("h2 ok: на бесплатном тарифе меню открыто")
+assert "Оплатить доступ" not in shown() and "Каналы-источники" in OUT[-1][0] and "подключает продавец" in OUT[-1][0], shown()
+print("h2 ok: на бесплатном тарифе меню открыто (источники подключает продавец)")
 
 # 3) оплата на 30 дней через ЮKassa -> доступ открывается сам
 bot.GCFG["tariffs"] = [{"name": "Старт", "themes": 1, "sources": 5, "price": 300},
@@ -92,16 +98,13 @@ print("h3 ok: оплата на 30 дней картой через ЮKassa от
 assert bot.price90(300) == 750
 print("h3б ok: 90 дней = цена ×2.5 (300 -> 750)")
 
-# 4) с подпиской пользователь добавляет свои каналы (после подтверждения прав)
+# 4) с подпиской покупателю каналы-источники подключает продавец (из карточки покупателя)
 t100 = bot.tenant_themes("100")[0]
 t100.chat_id = 9100
-press(100, 5100, "p:chadd")
-assert "права на контент" in shown().lower() or "Подтверди" in shown(), shown()
-press(100, 5100, "rk:ok")
-msg(100, 5100, "robloxers roblox1")
+admin_add(t100, "robloxers roblox1")
 with bot.theme_ctx(t100):
     assert bot.CFG["channels"] == ["robloxers", "roblox1"], bot.CFG["channels"]
-print("h4 ok: с подпиской пользователь добавляет свои каналы-источники")
+print("h4 ok: с подпиской продавец подключает покупателю каналы-источники")
 
 # 5) второй пользователь — отдельный изолированный кабинет
 msg(200, 5200, "/start")
@@ -221,13 +224,17 @@ press(999, 59000, "m:th")
 assert "платить" not in shown().lower() and "Оплат" not in shown(), shown()
 print("h15 ok: хозяин привязывается по секретному коду — становится хозяином, темы переезжают, оплату не просит")
 
-# 16) «повисшая» тема (её кабинета больше нет) достаётся хозяину, а не пропадает из панели
+# 16) «повисшая» тема (её кабинета больше нет — например, потерялся файл кабинетов) хозяину НЕ достаётся:
+#     это чужой канал (иначе хозяину идут чужие посты); тема не работает; покупатель вернётся — она снова его
 ghost = bot.Theme("ghost1", "Повисшая тема", "", owner="888888")
 bot.THEMES.append(ghost)
 assert "888888" not in bot.TENANTS
 bot.host_adopt_orphans()
-assert ghost.owner == "999" and ghost in bot.tenant_themes("999"), ghost.owner
-print("h16 ok: «повисшая» тема (без кабинета) достаётся хозяину")
+assert ghost.owner == "888888" and ghost not in bot.tenant_themes("999") and not bot.theme_live(ghost), ghost.owner
+msg(888888, 88880, "/start")                                  # покупатель вернулся — его тема снова у него
+assert bot.tenant_key(888888) == "888888" and bot.tenant_themes("888888") == [ghost], bot.tenant_themes("888888")
+assert bot.theme_live(ghost)
+print("h16 ok: «повисшая» тема хозяину не достаётся и не работает; вернулся покупатель — тема снова его")
 
 # 17) хозяин может создать свой кабинет и темы с НУЛЯ (если тем на боте не осталось) — без оплаты
 bot.GCFG.pop("host_uid", None)            # хозяин снова по OWNER_ID=1
@@ -752,18 +759,18 @@ atom = """<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.y
 <media:thumbnail url="https://i.ytimg.com/vi/abc/hqdefault.jpg"/><media:description>Описание ролика</media:description></media:group></entry></feed>"""
 yt = bot.parse_feed("yt~x", atom)
 assert yt[0][3] == ["https://i.ytimg.com/vi/abc/hqdefault.jpg"] and "watch?v=abc" in yt[0][2] and "Описание" in yt[0][2], yt
-# покупатель-тестер добавляет TikTok и RSS по ссылке; Instagram — честный отказ
+# покупателю-тестеру продавец подключает TikTok и RSS по ссылке; Instagram — честный отказ
 press(5001, 62000, "p:chadd")
-assert "tiktok" in OUT[-1][0].lower() or "Подтверди" in OUT[-1][0] or "прав" in OUT[-1][0].lower(), OUT[-1][0]
-bot.PENDING[5001] = "chadd"
-bot.record_consent(5001)
-msg(5001, 62000, "https://www.tiktok.com/@cool.guy https://site.ru/feed instagram.com/x")
+assert "подключает продавец" in OUT[-1][0], OUT[-1][0]                 # сам покупатель не добавляет
 tb = bot.active_theme(5001)
+admin_add(tb, "https://www.tiktok.com/@cool.guy https://site.ru/feed instagram.com/x")
 with bot.theme_ctx(tb):
     chs = list(bot.CFG["channels"])
 assert "tt~cool.guy" in chs and any(c.startswith("rss~") for c in chs), chs
 said = " ".join(o[0] for o in OUT[-3:])
 assert "Instagram" in said and "TikTok: cool.guy" in said, said
+with bot.theme_ctx(tb):
+    assert any("Продавец подключил источники" in x and "TikTok: cool.guy" in x for x in bot.JOURNAL), list(bot.JOURNAL)[-3:]
 rkey = next(c for c in chs if c.startswith("rss~"))
 # чтение RSS-источника: старое не постим, новое — в очередь, фото по ссылке
 feed = {"x": rss}
@@ -1401,7 +1408,7 @@ finally:
     bot.publish_item = real_pub58
 assert pub58 == [58100], pub58                                       # второй канал MAX на паузе
 bot.META["active"][str(5800)] = t58a.id
-press(5800, 58000, "p:chadd"); msg(5800, 58000, "@newsource5")
+admin_add(t58a, "@newsource5")
 with bot.theme_ctx(t58a):
     assert "newsource5" not in bot.CFG["channels"]
 assert "тариф" in " ".join(o[0] for o in OUT[-3:]), OUT[-3:]
@@ -1414,7 +1421,7 @@ with bot.theme_ctx(t58a):
 bot.host_apply_paid(k58, "Старт", 30, 300, "тест")                   # «Старт»: до 5 источников — 6-й не добавить
 with bot.theme_ctx(t58a):
     bot.CFG["channels"][:] = ["a1", "a2", "a3", "a4", "a5"]
-press(5800, 58000, "p:chadd"); msg(5800, 58000, "@newsource6")
+admin_add(t58a, "@newsource6")
 with bot.theme_ctx(t58a):
     assert "newsource6" not in bot.CFG["channels"], bot.CFG["channels"]
 bot.TENANTS[k58]["enabled"] = False                                  # хозяин выключил — молчит и на бесплатном
@@ -1669,7 +1676,7 @@ with bot.theme_ctx(t65):
     bot.CFG["signature_text"] = ""
     body = bot.compose_text("Просто пост", "src")
     assert "Reloader" not in body and "max.ru" not in body, body                     # без водяного знака
-press(6500, 65000, "p:chadd"); bot.record_consent(6500); press(6500, 65000, "p:chadd"); msg(6500, 65000, "@secondsource")
+admin_add(t65, "@secondsource")
 with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]
 press(6500, 65000, "m:main")
@@ -1729,7 +1736,7 @@ with bot.theme_ctx(t65):
     assert bot.live_channels() == ["realsrc"], bot.live_channels()               # соцсеть на бесплатном не читается
     bot.CFG["channels"][:] = ["firstsrc"]
 soc66, bot.beta_rec("social")["state"] = bot.beta_rec("social")["state"], "all"      # соцсети открыты всем…
-press(6500, 65000, "p:chadd"); msg(6500, 65000, "https://www.tiktok.com/@artist")
+admin_add(t65, "https://www.tiktok.com/@artist")
 bot.beta_rec("social")["state"] = soc66
 with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]              # …но не бесплатному
@@ -2212,7 +2219,7 @@ assert len(bot.tenant_themes(k76)) == 2 and len(bot.GCFG["pay_log"]) == pay76 + 
 assert bot.GCFG["pay_log"][-1]["key"] == k76 and bot.GCFG["pay_log"][-1]["plan"] == "Старт"
 with bot.theme_ctx(bot.tenant_themes(k76)[0]):
     assert len(bot.CFG["channels"]) == 6, "источники не удалены"
-press(7600, 76000, "p:chadd"); msg(7600, 76000, "@onemore76")
+admin_add(bot.tenant_themes(k76)[0], "@onemore76")
 with bot.theme_ctx(bot.tenant_themes(k76)[0]):
     assert "onemore76" not in bot.CFG["channels"] and len(bot.CFG["channels"]) == 6
 assert "до 5" in OUT[-1][0] or "в тарифе" in OUT[-1][0], OUT[-1][0]
@@ -2330,9 +2337,11 @@ n81 = len(OUT)
 msg(7800, 78000, "Спасибо, понятно")
 assert not any("Код недействителен" in o[0] for o in OUT[n81:]), OUT[n81:]
 code81 = bot.codes_generate(1, "Старт", 30)[0][0]
-press(7800, 78000, "p:chadd")
+name81 = bot.active_theme(7800).name
+press(7800, 78000, "p:thname")
 msg(7800, 78000, code81)
-assert bot.CODES.get(code81) is not None, "код не съеден вводом канала"
+bot.active_theme(7800).name = name81
+assert bot.CODES.get(code81) is not None, "код не съеден вводом (название темы)"
 assert bot.TENANTS[k78]["plan"] == "Про", "тариф не сменился"
 bot.CODES.delete(code81)
 print("h81 ok: 🧩 покупатель: без кнопки «Ввести код» и Playerok; подсказка есть; код во время ввода — не перехватывается")
@@ -2536,7 +2545,8 @@ PANEL88 = [("👥 Все покупатели", "m:cll:0"), ("🎭 Мои кан
            ("📊 Аналитика", "m:anl"), ("📞 Изменить мой контакт", "p:clcontact"), ("📣 Написать всем", "p:clmsg"),
            ("📢 Сделать рассылку", "p:cladpost"), ("📌 Обязательная подписка", "m:clfs"),
            ("👤 Telegram Аккаунты", "m:cltgacc"), ("🔑 Ключи и доступы", "m:clkeys"), ("👥 Покупатели", "m:buyers"),
-           ("🎟 Коды", "m:codes"), ("👀 Посмотреть меню покупателя", "m:bview")]
+           ("🎟 Коды", "m:codes"), ("👀 Посмотреть меню покупателя", "m:bview"),
+           ("🗑 Очистить старые каналы", "m:clwipe")]
 def panel_of(rows):
     return [(_re.sub(r" \(\d+\)$", "", b_["text"]), b_.get("payload")) for b_ in buttons_of(rows)
             if not (b_.get("payload") or "").startswith("m:clc:")]       # «💳 Проверить оплату» — по ситуации
@@ -2622,7 +2632,15 @@ press(9300, 93000, "m:dg")                                       # старая 
 assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, OUT[-1]
 press(1, 61000, "m:home")                                        # у админа — как было
 assert "m:dg" in shown(), shown()
-print("h92 ok: 🔎 «Проверка связи» у покупателя убрана везде; меню покупателя и админа не изменились")
+n92 = len(OUT)
+msg(9300, 93000, "/check")                                       # и командой — нет
+assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6 and not any("Проверяю связь" in o[0] for o in OUT[n92:])
+press(9300, 93000, "m:hp")
+assert "/check" not in OUT[-1][0] and "/status" in OUT[-1][0], OUT[-1][0]
+n92 = len(OUT)
+msg(1, 61000, "/check")                                          # у хозяина — работает
+assert any("Проверяю связь" in o[0] for o in OUT[n92:]), [o[0][:60] for o in OUT[n92:]]
+print("h92 ok: 🔎 «Проверка связи» у покупателя убрана везде (и /check); меню покупателя и админа не изменились")
 
 # 93) ❓ «Поддержка» — прямая ссылка на контакт из «📞 Изменить мой контакт» (в любом виде), не команда бота
 def support_of(uid, chat):
@@ -2688,6 +2706,221 @@ press(9420, 94200, f"m:clc:{bot.tenant_key(9400)}")             # покупат
 assert "buyer94chan" not in shown() and "durov" not in shown(), shown()
 assert panel_of(bot.screen("cl", 1)[1]) == PANEL88, "панель админа не тронута"
 print("h94 ok: 👥 покупатель в «Все покупатели»: каналы MAX ссылками (куда реально выкладывает бот), источники Telegram")
+
+# 95) 📡 источники Telegram подключает продавец: у покупателя нет «➕ Добавить канал» и «❌ убрать» нигде
+#     (экраны, инструкция, условия, приветствие, цепочка «канал MAX → источники», старые кнопки, ввод текстом);
+#     админ добавляет и убирает источники покупателя из его карточки
+OUT.clear()
+msg(9500, 95000, "/start")
+k95 = bot.tenant_key(9500)
+t95 = bot.tenant_themes(k95)[0]
+hello95 = " ".join(o[0] for o in OUT)
+assert "подключит продавец" in hello95 and "Откуда брать посты" not in hello95, hello95
+assert "Продлить доступ" not in hello95 and "«💳 Тарифы»" not in hello95 and "«💳 Подписка»" in hello95, hello95
+for scr95 in ("m:th", "m:thm", "m:ch", "m:gd", "m:terms", "m:more", "m:main", "m:home"):
+    press(9500, 95000, scr95)
+    assert "p:chadd" not in shown() and "a:chdel" not in shown() and "➕ Добавить канал" not in shown(), (scr95, shown())
+press(9500, 95000, "m:ch")
+assert "подключает продавец" in OUT[-1][0], OUT[-1][0]
+press(9500, 95000, "m:gd")
+assert "подключает продавец" in OUT[-1][0] and "Перед первым добавлением" not in OUT[-1][0], OUT[-1]
+assert "m:ch" not in [b_.get("payload") for b_ in buttons_of(OUT[-1][1])], OUT[-1][1]
+for p95 in ("p:chadd", "rk:ok"):                                   # старые кнопки в чате
+    press(9500, 95000, p95)
+    assert bot.PENDING.get(9500) != "chadd" and "Пришли каналы Telegram" not in OUT[-1][0], (p95, OUT[-1])
+bot.PENDING[9500] = "chadd"                                        # ввод «как будто» после старой кнопки
+msg(9500, 95000, "@durov")
+assert t95.own.get("channels") == [], t95.own.get("channels")
+assert any("подключает продавец" in o[0] for o in OUT[-3:]), [o[0][:80] for o in OUT[-3:]]
+srv.chats["buyer95chan"] = 9501                                    # «канал MAX → источники»: источники не спрашиваем
+bot.PENDING[9500] = "thlink"
+msg(9500, 95000, "https://max.ru/buyer95chan")
+assert t95.chat_id == 9501 and bot.PENDING.get(9500) != "chadd", (t95.chat_id, bot.PENDING.get(9500))
+assert not any("Пришли каналы Telegram" in o[0] for o in OUT[-3:]), [o[0][:80] for o in OUT[-3:]]
+t95.own["channels"] = ["keepme"]
+press(9500, 95000, "a:chdel:0")                                    # убрать источник покупатель не может
+assert t95.own["channels"] == ["keepme"], t95.own["channels"]
+press(9500, 95000, "m:ch")
+assert "@keepme" in OUT[-1][0], OUT[-1][0]                         # видит, откуда берутся посты
+# админ: карточка покупателя → «📡 Источники Telegram» → добавить / убрать
+host95 = list(bot.tenant_themes(bot.host_id())[0].own.get("channels") or [])
+press(1, 61000, f"m:clc:{k95}")
+assert f"m:clsrc:{k95}" in shown(), shown()
+press(1, 61000, f"m:clsrc:{k95}")
+assert f"p:clsrcadd:{t95.id}" in shown() and "@keepme" in OUT[-1][0] and f"a:clsrcdel:{t95.id}:0" in shown(), OUT[-1]
+press(1, 61000, f"a:clsrcdel:{t95.id}:0")                          # убрать
+assert t95.own["channels"] == [] and "@keepme" not in OUT[-1][0], (t95.own["channels"], OUT[-1][0])
+press(1, 61000, f"p:clsrcadd:{t95.id}")
+assert bot.PENDING.get(1) == f"clsrcadd:{t95.id}", bot.PENDING.get(1)
+n95 = len(OUT)
+msg(1, 61000, "t.me/durov")                                        # добавить
+assert t95.own["channels"] == ["durov"], t95.own["channels"]
+assert any("Добавил" in o[0] for o in OUT[n95:]) and f"a:clsrcdel:{t95.id}:0" in shown(), OUT[n95:]
+press(1, 61000, f"p:clsrcadd:{t95.id}")
+n95 = len(OUT)
+msg(1, 61000, "@third_src")                                        # бесплатный тариф: 1 источник
+assert t95.own["channels"] == ["durov"] and any("Лимиты" in o[0] for o in OUT[n95:]), OUT[n95:]
+assert list(bot.tenant_themes(bot.host_id())[0].own.get("channels") or []) == host95, "темы хозяина не тронуты"
+press(9500, 95000, f"a:clsrcdel:{t95.id}:0")                       # покупателю — нельзя
+bot.PENDING[9500] = f"clsrcadd:{t95.id}"
+msg(9500, 95000, "@hacker_src")
+press(9500, 95000, f"m:clsrc:{k95}")
+assert t95.own["channels"] == ["durov"] and "p:clsrcadd" not in shown(), (t95.own["channels"], shown())
+with bot.theme_ctx(t95):                                           # журнал покупателя: что сделал продавец
+    log95 = [x for x in bot.JOURNAL if "Продавец" in x and getattr(x, "owner", "") == k95]
+assert any("durov" in x for x in log95) and any("keepme" in x for x in log95), log95
+saved95 = list(t95.own["channels"])
+t95.own["channels"] = [f"many_source_{i:02d}" for i in range(70)]  # продавец поднял лимит — источников много
+press(1, 61000, f"m:clsrc:{k95}")
+assert len(OUT[-1][0]) < bot.MAX_TEXT and len(OUT[-1][1]) <= 30 and "и ещё" in OUT[-1][0], (len(OUT[-1][0]), len(OUT[-1][1]))
+press(9500, 95000, "m:ch")
+assert len(OUT[-1][0]) < bot.MAX_TEXT and "и ещё" in OUT[-1][0], len(OUT[-1][0])
+t95.own["channels"] = saved95
+bot.ADMIN_IDS = {"557"}
+try:
+    press(557, 55700, f"m:clsrc:{k95}")                            # админ ADMIN_IDS — тоже управляет
+    assert f"p:clsrcadd:{t95.id}" in shown(), shown()
+finally:
+    bot.ADMIN_IDS = set()
+print("h95 ok: 📡 источники подключает продавец: у покупателя нет добавления/удаления нигде, админ — из карточки покупателя")
+
+# 96) ✋ карточки на одобрение — только владельцу темы: не хозяину чужих тем, не «ничьим» темам из старых настроек,
+#     не темам пропавших кабинетов; старые карточки удалённых тем — «поста уже нет», а не «не из твоих тем»
+msg(9600, 96000, "/start")
+k96 = bot.tenant_key(9600)
+t96 = bot.tenant_themes(k96)[0]
+SENT96 = []
+real_send96 = bot.api_send
+def rec96(chat, text, rows=None, token=None):
+    SENT96.append(chat)
+    OUT.append((text or "", rows or []))
+    return "m"
+bot.api_send = rec96
+try:
+    def card96(t, n):
+        it = {"id": f"{t.prefix}src96:{n}", "ch": "src96", "status": "pending", "date": time.time(),
+              "enq": time.time(), "text": f"пост {n}", "photos": [], "vids": [], "docs": []}
+        with bot.theme_ctx(t):
+            bot.QUEUE.append(it)
+            SENT96.clear()
+            bot.send_preview(it, [[bot.B("✅", f"ap:now:{it['id']}")]])
+        return it, set(SENT96)
+    it96, to96 = card96(t96, 1)
+    assert to96 == {96000}, to96                                    # покупателю — его карточка
+    bot.TENANTS[k96]["admins"].append(1); bot.TENANTS[k96]["chats"]["1"] = 61000   # хозяин «попал» в чужой кабинет
+    _, to96 = card96(t96, 2)
+    assert to96 == {96000}, to96                                    # хозяину чужие карточки не идут
+    bot.TENANTS[k96]["admins"].remove(1); bot.TENANTS[k96]["chats"].pop("1")
+    rec1 = bot.TENANTS.pop(bot.host_id()); bot.TENANTS[bot.host_id()] = rec1   # кабинет хозяина — последним
+    bot.TENANTS[k96]["admins"].append(1)                            # хозяин в списке админов чужого кабинета
+    assert bot.tenant_key(1) == bot.host_id(), bot.tenant_key(1)     # …а «мои темы» — всё равно свой кабинет
+    assert bot.my_themes(1) == bot.tenant_themes(bot.host_id())
+    bot.TENANTS[k96]["admins"].remove(1)
+    gc96 = dict(bot.GCFG["admin_chats"])
+    bot.GCFG["admin_chats"]["1"] = 61000                            # старые общие настройки (до host-режима)
+    tO = bot.Theme("o96", "Ничья тема", "", None, {"channels": ["oldsrc"], "approval_on": True})
+    tD = bot.Theme("d96", "Потерянный кабинет", "", 9696, {"channels": ["lostsrc"]}, owner="deadbuyer96")
+    bot.THEMES += [tO, tD]
+    _, to96 = card96(tO, 3)
+    assert to96 == set(), to96                                      # «ничьей» теме некому слать
+    _, to96 = card96(tD, 4)
+    assert to96 == set() and not bot.theme_live(tD) and bot.tenant_mode("deadbuyer96") == "off", to96
+    bot.host_adopt_orphans()
+    assert tO.owner == bot.host_id() and tD.owner == "deadbuyer96", (tO.owner, tD.owner)   # чужую тему себе не берём
+    bot.GCFG["admin_chats"] = gc96
+finally:
+    bot.api_send = real_send96
+OUT.clear()
+press(1, 61000, f"ap:now:{it96['id']}")                             # хозяин жмёт на карточку покупателя
+assert "не из твоих тем" in OUT[-1][0] and not OUT[-1][1], OUT[-1]
+with bot.theme_ctx(t96):
+    assert it96 in bot.QUEUE and it96["status"] == "pending", it96   # чужой пост не тронут
+for ref96 in ("t999|src96:1", "src96:1"):                          # тема удалена / старая основная тема
+    press(1, 61000, f"ap:now:{ref96}")
+    assert "поста уже нет" in OUT[-1][0] and "не из твоих" not in OUT[-1][0] and not OUT[-1][1], (ref96, OUT[-1])
+th96 = bot.tenant_themes(bot.host_id())[0]
+with bot.theme_ctx(th96):
+    hit = {"id": f"{th96.prefix}hsrc:1", "ch": "hsrc", "status": "pending", "date": time.time(), "enq": time.time(),
+           "text": "мой пост", "photos": [], "vids": [], "docs": []}
+    bot.QUEUE.append(hit)
+press(1, 61000, f"ap:no:{hit['id']}")                               # свои посты хозяин одобряет как раньше
+with bot.theme_ctx(th96):
+    assert hit not in bot.QUEUE, "свой пост обработан"
+assert "не из твоих" not in OUT[-1][0], OUT[-1]
+print("h96 ok: ✋ карточки — только владельцу темы; «ничьим» и потерянным темам — никому; старые карточки не ломаются")
+
+# 97) 🗑 «Очистить старые каналы» (панель): все темы кабинета хозяина и «ничьи» — с очередью, тайником, карточками;
+#     покупатели не тронуты; потом — чистый кабинет; покупателю и чужому кабинету — нельзя
+legacy97 = bot.Theme("main", "Основная", "https://max.ru/old_main", None, {"channels": ["legacysrc"]},
+                     legacy=True, owner=bot.host_id())
+bot.THEMES.insert(0, legacy97)
+with bot.theme_ctx(legacy97):
+    bot.QUEUE.append({"id": "legacysrc:7", "ch": "legacysrc", "status": "pending", "date": time.time(),
+                      "enq": time.time(), "text": "старый пост", "photos": [], "vids": [], "docs": []})
+    bot.save_queue()
+bot.add_card(61000, "mid97", "legacysrc:7")
+buyers97 = {k: len(bot.tenant_themes(k)) for k in bot.TENANTS if k != bot.host_id()}
+mine97 = [t.name for t in bot.THEMES if t.owner == bot.host_id() or not t.owner]
+assert "Основная" in mine97 and "Ничья тема" in mine97, mine97
+press(1, 61000, "m:cl")
+assert panel_of(OUT[-1][1]) == PANEL88, panel_of(OUT[-1][1])
+press(1, 61000, "m:clwipe")
+assert "Основная" in OUT[-1][0] and "a:clwipeok" in shown() and "m:cl" in shown(), OUT[-1]
+assert legacy97 in bot.THEMES, "без подтверждения ничего не удаляю"
+press(1, 61000, "a:clwipeok")
+assert not [t for t in bot.THEMES if t.owner == bot.host_id() or not t.owner], [t.name for t in bot.THEMES]
+assert legacy97 not in bot.THEMES and not os.path.exists(legacy97.f["queue"]), "старая основная тема — тоже"
+assert {k: len(bot.tenant_themes(k)) for k in bot.TENANTS if k != bot.host_id()} == buyers97, "покупатели не тронуты"
+assert tD in bot.THEMES, "темы потерянных кабинетов не трогаю (это не твои)"
+assert any(c["ref"] == "legacysrc:7" and c.get("del_at") for c in bot.CARDS), "карточки на одобрение убраны"
+assert "Удалил" in OUT[-1][0] and panel_of(OUT[-1][1]) == PANEL88, OUT[-1]
+press(1, 61000, "ap:now:legacysrc:7")                               # старая карточка — без ошибки
+assert "поста уже нет" in OUT[-1][0], OUT[-1]
+paused97 = {k: c.get("paused") for k, c in bot.TENANTS.items() if k != bot.host_id()}
+press(1, 61000, "a:pause")                                          # тем у хозяина нет — чужие не задевает
+press(1, 61000, "m:q")
+assert {k: c.get("paused") for k, c in bot.TENANTS.items() if k != bot.host_id()} == paused97, "покупатели не на паузе"
+assert not any(t.name in OUT[-1][0] for t in bot.THEMES if t.owner != bot.host_id()), OUT[-1][0]
+press(1, 61000, "m:home")                                           # подключить новые — с чистого листа
+fresh97 = bot.tenant_themes(bot.host_id())
+assert len(fresh97) == 1 and not fresh97[0].own.get("channels") and not fresh97[0].chat_id, [t.name for t in fresh97]
+press(9500, 95000, "a:clwipeok")                                    # покупателю — нельзя
+press(9500, 95000, "m:clwipe")
+assert bot.tenant_themes(bot.host_id()) == fresh97 and bot.tenant_themes(k95) == [t95], "ничего не удалено"
+bot.ADMIN_IDS = {"558"}
+try:
+    msg(558, 55800, "/start")                                       # админ ADMIN_IDS чистит только СВОЙ кабинет
+    k558 = bot.tenant_key(558)
+    assert bot.tenant_themes(k558)
+    press(558, 55800, "a:clwipeok")
+    assert bot.tenant_themes(k558) == [] and bot.tenant_themes(bot.host_id()) == fresh97, "кабинет хозяина цел"
+finally:
+    bot.ADMIN_IDS = set()
+bot.THEMES.remove(tD)
+print("h97 ok: 🗑 «Очистить старые каналы» — кабинет хозяина и «ничьи» темы с очередью и карточками; покупатели целы")
+
+# 98) 💾 контакт и ключи ЮKassa из панели: бот подсказывает задать их и в переменных хостинга (переживут пересборку)
+press(1, 61000, "p:clcontact"); n98 = len(OUT); msg(1, 61000, "@hint_admin")
+assert any("SELLER_CONTACT" in o[0] for o in OUT[n98:]), [o[0][:120] for o in OUT[n98:]]
+os.environ["SELLER_CONTACT"] = "@hint_admin"                         # уже в переменных — подсказка не нужна
+press(1, 61000, "p:clcontact"); n98 = len(OUT); msg(1, 61000, "@hint_admin")
+assert not any("SELLER_CONTACT" in o[0] for o in OUT[n98:]), [o[0][:120] for o in OUT[n98:]]
+os.environ.pop("SELLER_CONTACT")
+yk98 = os.environ["YOOKASSA_SECRET_KEY"]
+os.environ["YOOKASSA_SECRET_KEY"] = "test_old_key"                   # в переменных — другой ключ
+try:
+    press(1, 61000, "p:clyk"); n98 = len(OUT); msg(1, 61000, "123456 test_secret")
+    txt98 = " ".join(o[0] for o in OUT[n98:])
+    assert "✅ ЮKassa" in txt98 and "YOOKASSA_SECRET_KEY" in txt98 and "test_secret" not in txt98, txt98
+    os.environ["YOOKASSA_SECRET_KEY"] = "test_secret"                # совпадают — подсказка не нужна
+    press(1, 61000, "p:clyk"); n98 = len(OUT); msg(1, 61000, "123456 test_secret")
+    assert "YOOKASSA_SECRET_KEY" not in " ".join(o[0] for o in OUT[n98:])
+finally:
+    os.environ["YOOKASSA_SECRET_KEY"] = yk98
+note98 = bot.storage_note()                                           # в лог при запуске: где данные и что задать
+assert "💾 Данные бота" in note98 and os.getcwd() in note98 and "SELLER_CONTACT" in note98, note98
+assert "test_secret" not in note98 and "YOOKASSA_SECRET_KEY" not in note98, "заданные переменные не просим"
+print("h98 ok: 💾 контакт и ключи ЮKassa из панели — подсказка задать их в переменных Bothost (без показа ключа)")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
