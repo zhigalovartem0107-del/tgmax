@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110601            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110602            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -647,18 +647,17 @@ def active_theme(uid):
     return theme_by_id(META["active"].get(str(uid))) or (THEMES[0] if THEMES else _VOID)
 
 
-def main_menu(uid):
-    """Главное меню — ровно 5 кнопок. «Поддержка» — прямая ссылка на профиль админа в MAX (контакт продавца).
-    Статистика и инструкция — в «⚙️ Настройках»; панель хозяина — в /admin."""
-    host = is_host(uid)
+def buyer_menu(uid):
+    """Главное меню покупателя — ровно 6 кнопок. «Поддержка» — прямая ссылка на профиль продавца в MAX.
+    У хозяина и админов ADMIN_IDS главное меню — панель кабинетов; это меню они видят через «👀»."""
     state = ("⏸ Бот на паузе — посты не выходят. Снять: «⚙️ Настройки»." if CFG["paused"]
              else "▶️ Бот работает — новые посты выходят сами.")
     text = "📋 Главное меню\n\n" + state + "\n\n" + subscription_line()
     link = seller_link()
     support = LB("❓ Поддержка", link) if link else B("❓ Поддержка", "m:hp")   # контакт не задан — без мёртвой ссылки
-    rows = [[B("🎭 Мои каналы", "m:home" if host else "m:th"), B("📅 Расписание", "m:q")],
-            [B("⚙️ Настройки", "m:more"), B("💳 Подписка", "m:pay", intent="positive")],
-            [support]]
+    rows = [[B("🎭 Мои каналы", "m:th"), B("📅 Расписание", "m:q")],
+            [B("⚙️ Настройки", "m:more"), B("📊 Статистика и Отчеты", "m:sr")],
+            [B("💳 Подписка", "m:pay", intent="positive"), support]]
     return text.strip(), rows
 
 
@@ -3030,13 +3029,39 @@ def screen(name, uid=None):
     return ((note + "\n\n" + text) if note else text), rows
 
 
+def status_text():
+    lines = [f"@{c}: последний пост {LAST_IDS.get(c, '—')}" for c in CFG["channels"]]
+    return ("\n".join(lines) +
+            f"\n\nОпубликовано: {STATS['published']}\nВ очереди: {len(QUEUE)}"
+            f"\nДублей пропущено: {STATS['dups']}\nОтсеяно стоп-словами: {STATS['blocked']}"
+            f"\nУстарело и удалено: {STATS['expired']}"
+            f"\nОшибок: {STATS['errors']}")
+
+
+def report_text():
+    return (f"📈 Ежедневный отчёт: {on_off(CFG['report_on'])}\n"
+            f"Присылаю в {CFG['report_hour']:02d}:00\n\n" + make_report())
+
+
+def report_rows():
+    return [[B(f"📈 Отчёт: {on_off(CFG['report_on'])}", "a:rep")],
+            [B("Час: −1", "a:rhour:-1"), B("Час: +1", "a:rhour:1")],
+            [B("📨 Прислать сейчас", "a:repnow")]]
+
+
 def _screen(name, uid=None):
     back = [B("◀️ В меню", "m:main")]
     got = buyer_admin_screen(name, uid)
     if got is not None:
         return got
-    if name == "main" and HOST_MODE:
-        return main_menu(uid)                           # главное меню: 5 кнопок; панель — /admin
+    if name == "bview" and HOST_MODE and can_panel(uid):   # 👀 админ смотрит меню глазами покупателя
+        text, rows = buyer_menu(uid)
+        return "👀 Так покупатели видят главное меню:\n\n" + text, rows + [[B("◀️ Панель", "m:cl")]]
+    if name in ("main", "bview") and HOST_MODE:
+        if can_panel(uid):
+            name = "cl"                                 # у хозяина/админа главное меню — панель кабинетов
+        else:
+            return buyer_menu(uid)                      # у покупателя — меню из 6 кнопок
     if HOST_MODE and is_host(uid) and name == "home":   # «Мои каналы» хозяина: заводим кабинет с темой, если его ещё нет
         t = ensure_host_cabinet()
         act = active_theme(uid)                         # открываем ту тему, что хозяин выбрал, а не всегда первую
@@ -3242,11 +3267,11 @@ def _screen(name, uid=None):
             rows.append([B(f"✅ Одобрить все по очереди ({pend})", "a:aprall")])
         rows.append(back)
     elif name == "rp":
-        text = (f"📈 Ежедневный отчёт: {on_off(CFG['report_on'])}\n"
-                f"Присылаю в {CFG['report_hour']:02d}:00\n\n" + make_report())
-        rows = [[B(f"📈 Отчёт: {on_off(CFG['report_on'])}", "a:rep")],
-                [B("Час: −1", "a:rhour:-1"), B("Час: +1", "a:rhour:1")],
-                [B("📨 Прислать сейчас", "a:repnow")], back]
+        text, rows = report_text(), report_rows() + [back]
+    elif name == "sr":                                   # 📊 Статистика и Отчеты (покупатель): статус + отчёт
+        text = "📊 Статистика и Отчеты\n\n" + status_text() + "\n\n" + report_text()
+        rows = [[B("🔄 Обновить", "m:sr")]] + report_rows() \
+            + ([[B("📊 Статистика просмотров", "m:anl")]] if feature_on("stats") and not on_free() else []) + [back]
     elif name == "ad":
         lines, rows = [], []
         for i, a in enumerate(CFG["admins"]):
@@ -3279,12 +3304,7 @@ def _screen(name, uid=None):
                 "Память о прошлых постах на время теста очищается.\n\nЗапустить?")
         rows = [[B("✅ Да, запустить", "a:test")], back]
     elif name == "st":
-        lines = [f"@{c}: последний пост {LAST_IDS.get(c, '—')}" for c in CFG["channels"]]
-        text = ("📊 Статус\n\n" + "\n".join(lines) +
-                f"\n\nОпубликовано: {STATS['published']}\nВ очереди: {len(QUEUE)}"
-                f"\nДублей пропущено: {STATS['dups']}\nОтсеяно стоп-словами: {STATS['blocked']}"
-                f"\nУстарело и удалено: {STATS['expired']}"
-                f"\nОшибок: {STATS['errors']}")
+        text = "📊 Статус\n\n" + status_text()
         rows = [[B("🔄 Обновить", "m:st")], back]
     elif name == "sh":
         ph = sum(1 for x in STASH if x.get("photos"))
@@ -3446,12 +3466,9 @@ def _screen(name, uid=None):
         text = ("⚙️ Ещё настройки\n\n"
                 "🎬 Видео — выкладывать ли видео и до какого размера\n"
                 "🔁 Повторы — не выкладывать один и тот же пост дважды\n"
-                "🧹 Реклама — слова: строки с ними бот вырезает из постов\n"
-                "⏱ Проверка каналов — как часто бот смотрит, есть ли новые посты\n"
+                "🛡 Фильтр рекламы — слова: строки с ними бот вырезает из постов\n"
+                "✍️ Подпись под постами — текст в конце каждого поста\n"
                 f"👥 Админы — дать управлять ботом ещё кому-то (до {LIMIT_ADMINS})\n"
-                "📈 Отчёт — сводка за день, раз в сутки\n"
-                "📊 Статус — что сейчас с ботом и каналами\n"
-                "🧪 Тест — выложить последний пост каждого канала прямо сейчас\n"
                 "🎭 Темы — несколько каналов MAX, у каждого свои источники\n"
                 "📜 Журнал — что бот сделал с каждым постом\n"
                 "🔎 Проверка связи — найти, почему посты не выходят\n"
@@ -3460,15 +3477,12 @@ def _screen(name, uid=None):
                 + "❓ Команды — быстрые команды через /\n"
                 + "📄 Условия — правила использования бота")
         rows = [[B("🎬 Видео", "m:vid"), B("🔁 Повторы", "m:dd")],
-                [B("🧹 Реклама", "m:fl"), B("⏱ Проверка каналов", "m:iv")],
-                [B("👥 Админы", "m:ad"), B("📈 Отчёт", "m:rp")],
-                [B("📊 Статистика", "m:st"), B("🧪 Тест", "m:ts")],
+                [B("🛡 Фильтр рекламы", "m:fl"), B("👥 Админы", "m:ad")],
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
                 [B("🔎 Проверка связи", "m:dg")] + ([B("🔑 Telegram", "tg:menu")] if show_tg(uid) else []),
                 [B("🧠 Умное", "m:ai"), B("❓ Команды", "m:hp")],
-                [B("✍️ Подпись", "m:sg"), B("⏳ Расписание", "m:q")],
-                [B("✋ Проверка постов", "m:ap")] + ([] if on_free() else [B("🗃 Тайник", "m:sh")]),
-                *([[B("📊 Статистика просмотров", "m:anl")]] if feature_on("stats") and not on_free() else []),
+                [B("✍️ Подпись под постами", "m:sg"), B("⏳ Расписание", "m:q")],
+                [B("✋ Проверка постов", "m:ap")],
                 [B("📖 Инструкция", "m:gd")],
                 *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
                 [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")],
@@ -4031,13 +4045,13 @@ def do_action(act, uid=None):
         scr = "ap"
     elif p[0] == "rep":
         CFG["report_on"] = not CFG["report_on"]
-        scr = "rp"
+        scr = "sr" if HOST_MODE and simple_menu(uid) else "rp"
     elif p[0] == "rhour":
         CFG["report_hour"] = (CFG["report_hour"] + int(p[1])) % 24
-        scr = "rp"
+        scr = "sr" if HOST_MODE and simple_menu(uid) else "rp"
     elif p[0] == "repnow":
         send_report()
-        scr = "rp"
+        scr = "sr" if HOST_MODE and simple_menu(uid) else "rp"
     elif p[0] == "test":
         FLAGS["test"] = True
         notify("🧪 Тест запущен: публикую последние посты каналов…")
@@ -4704,7 +4718,9 @@ def run_command(cmd, arg, uid, chat_id):
         return max(lo, min(hi, int(m.group()))) if m else None
 
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
-    if cmd in ("panel", "admin", "p"):
+    if HOST_MODE and can_panel(uid) and cmd in ("start", "menu", "m", "panel", "admin", "p"):
+        show("cl")
+    elif cmd in ("panel", "admin", "p"):
         if can_panel(uid) and not CLIENT_MODE:
             show("cl")
         else:
@@ -4715,8 +4731,7 @@ def run_command(cmd, arg, uid, chat_id):
     elif cmd in ("start", "menu", "m"):
         if cmd == "start":
             send_welcome(chat_id)                      # 🎬 короткое видео «как это работает», затем меню
-        admin_start = cmd == "start" and HOST_MODE and can_panel(uid)
-        show("cl" if admin_start else "main")          # админ ADMIN_IDS / хозяин — сразу панель /admin
+        show("main")
     elif cmd in ("help", "h", "commands"):
         show("hp")
     elif cmd in ("stats", "analytics", "an"):
@@ -4955,7 +4970,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
         host_adopt_orphans()
         new_host_code()                                 # старый код больше не действует
         print(f"HOST: хозяином стал user_id {uid} ({name}) по коду хозяина")
-        api_send(chat_id, "Готово, ты теперь ХОЗЯИН бота ✅ Панель — команда /admin.")
+        api_send(chat_id, "Готово, ты теперь ХОЗЯИН бота ✅ Открываю панель всех кабинетов.")
         m, rows = screen("main", uid)
         send_screen(chat_id, m, rows)
         return
@@ -10353,7 +10368,7 @@ def buyers_screen(page=0, query=""):
     keys.sort(key=lambda k: -(TENANTS[k].get("until") or 0))
     shown, page, pages = paginate(keys, page)
     lines = [f"{i}. {TENANTS[k].get('name') or k} · {buyer_status(k)}" for i, k in enumerate(shown, page * 8 + 1)]
-    text = (f"👥 Пользователи" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
+    text = (f"👥 Покупатели" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
             + ("\n".join(lines) if lines else "Никого не нашёл." if query else "Пока никого нет."))
     rows = [[B(f"{TENANTS[k].get('name') or k}"[:40], f"m:buyer:{k}")] for k in shown]
     nav = ([B("⬅️ Раньше", f"m:buyers:{page - 1}")] if page > 0 else []) \
@@ -10499,11 +10514,7 @@ def host_pay_online(rest, uid, email=None):
     text = (f"💳 «{t['name']}» на {days} дней — {price} ₽\n\nНажми кнопку и оплати картой или по СБП. "
             "Как только оплата пройдёт, доступ откроется сам (бот проверяет каждые ~20 секунд).")
     rows = [[LB(f"💳 Оплатить {price} ₽", url)], [B("🔄 Проверить оплату", "pc:check")]]
-    chat = user_chat(uid)
-    if chat is not None:                                  # ссылка — отдельным сообщением, чтобы точно пришла
-        with contextlib.suppress(Exception):
-            api_send(chat, text, rows)
-    return text, rows + [[B("◀️ Назад", "m:pay")]]
+    return text, rows + [[B("◀️ Назад", "m:pay")]]          # ссылка — одним сообщением: этим экраном
 
 
 def host_pay_manual(rest, uid):
@@ -11496,7 +11507,7 @@ def host_screen(name, uid):
                  + ("\n\n⚠️ Задай свой контакт для клиентов: кнопка ниже." if SELLER_CONTACT == "@ВАШ_КОНТАКТ" else ""))
         rows = [[B(f"💳 Проверить оплату: {TENANTS[k].get('name')}"[:60], f"m:clc:{k}")] for k in pend[:5]]
         n_cab = sum(1 for k, c in TENANTS.items() if k != host_id() and c.get("plan") != "Хозяин")
-        rows.append([B(f"👥 Пользователи ({n_cab})", "m:buyers")])
+        rows.append([B(f"👥 Все покупатели ({n_cab})", "m:cll:0")])
         rows.append([B("🎭 Мои каналы (мой кабинет)", "m:home")])   # хозяин настраивает свои темы (создаст, если их ещё нет)
         rows += [[B("💰 Тарифы и реквизиты", "m:cltar"), B(f"🎟 Промокоды ({len(promos())})", "m:clpr")],
                  [B("🧪 Бета-функции", "m:clbeta"), B("📊 Аналитика", "m:anl")],
@@ -11505,7 +11516,8 @@ def host_screen(name, uid):
                  [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")],
                  [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
                  [B("🔑 Ключи и доступы", "m:clkeys")],
-                 [B("🎟 Коды", "m:codes")]]
+                 [B("👥 Покупатели", "m:buyers"), B("🎟 Коды", "m:codes")],
+                 [B("👀 Посмотреть меню покупателя", "m:bview")]]
         return text, rows
     if name == "clkeys":                                  # 🔑 ключи: ЮKassa, VK, TikTok — вводятся прямо в чат
         return keys_screen()

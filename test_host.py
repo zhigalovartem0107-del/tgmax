@@ -81,7 +81,7 @@ assert "Тариф и оплата" in OUT[-1][0] and "py:0:30" in shown() and "
 n0 = len(OUT)
 buy(100, 5100, "0:30")                                  # нажал тариф — сразу ссылка ЮKassa, без лишних шагов
 assert "yoomoney.ru/checkout" in shown(), shown()
-assert any("yoomoney.ru/checkout" in json.dumps(o[1]) for o in OUT[n0:-1]), "ссылка — ещё и отдельным сообщением"
+assert sum("yoomoney.ru/checkout" in json.dumps(o[1]) for o in OUT[n0:]) == 1, "ссылка — одним сообщением, без дубля"
 pid = bot.TENANTS["100"].get("pay", {}).get("pid")
 assert pid and srv.payments[pid]["amount"]["value"] == "300.00", bot.TENANTS["100"]
 srv.payments[pid]["status"] = "succeeded"
@@ -564,20 +564,26 @@ print("h31 ok: ЮKassa — ключи чистятся от пробелов/к�
 
 # 32) отдельная кнопка «Все покупатели»: срок, тариф, дата регистрации, кнопка в кабинет; листание по 10
 press(1, 61000, "m:cl")
-assert "m:buyers" in shown() and "Пользователи" in shown(), shown()
-for n in range(12):                                          # ещё пользователи, чтобы было 2 страницы
+assert "m:cll:0" in shown() and "m:buyers" in shown(), shown()
+for n in range(12):                                          # ещё покупатели, чтобы было 2 страницы
     msg(8000 + n, 88000 + n, "/start")
-press(1, 61000, "m:buyers")
+press(1, 61000, "m:cll:0")
 txt = OUT[-1][0]
-assert "Пользователи" in txt and f"m:buyer:{ckey}" in shown() and "Дальше" in shown() and "m:buyers:1" in shown(), txt
+assert "Все покупатели" in txt and "стр. 1/2" in txt and "до " in txt and "с " in txt and "m:cll:1" in shown(), txt
+assert f"m:clc:{ckey}" in shown() and "«Старт»" in txt, txt    # активный покупатель — сверху, с тарифом
+press(1, 61000, "m:cll:1")
+assert "стр. 2/2" in OUT[-1][0] and "не оплачивал" in OUT[-1][0], OUT[-1][0]
+press(5001, 62000, "m:cll:0")                                # покупателю список недоступен
+assert "Все покупатели" not in shown()
+press(1, 61000, "m:buyers")                                  # 👥 «Покупатели»: поиск и карточки
+txt = OUT[-1][0]
+assert "Покупатели" in txt and f"m:buyer:{ckey}" in shown() and "Дальше" in shown() and "m:buyers:1" in shown(), txt
 press(1, 61000, f"m:buyer:{ckey}")                           # карточка: ID, тариф, каналы MAX, источники
 card32 = OUT[-1][0]
 assert f"ID: {ckey}" in card32 and "Тариф:" in card32 and "Каналы MAX" in card32 and "Источники Telegram" in card32, card32
-press(1, 61000, "m:buyers:1")
-assert "Пользователи" in OUT[-1][0] and "m:buyers" in shown(), OUT[-1][0]
 press(5001, 62000, "m:buyers")                               # покупателю список недоступен
-assert "Пользователи" not in shown()
-print("h32 ok: 👥 «Пользователи» — список со страницами, карточка с ID, тарифом, каналами MAX и источниками")
+assert "Покупатели:" not in shown()
+print("h32 ok: «Все покупатели» — срок, тариф, листание; «👥 Покупатели» — карточка с ID, тарифом, каналами")
 
 # 33) пробный период при «Старте»; личная ссылка на покупателя; 📌 закреп и 🗑 автоудаление
 bot.GCFG["trial_days"] = 3
@@ -685,7 +691,7 @@ finally:
 assert len(posts) == 18 and a["best_day"] == 3 and a["best_hour"] == 19 and a["slot"] == (3, 19), (len(posts), a["best_day"], a["best_hour"])
 cap = bot.analytics_caption("Канал", a)
 assert "четверг" in cap and "19:00" in cap, cap
-press(5001, 62000, "m:more")                                   # аналитика — в «⚙️ Настройках»
+press(5001, 62000, "m:sr")                                     # аналитика — в «📊 Статистика и Отчеты»
 assert "m:anl" in shown(), shown()
 press(5001, 62000, "m:anl")                                    # сначала понятное объяснение, потом кнопка
 assert "Когда выкладывать" in OUT[-1][0] and "7 дней" in OUT[-1][0] and "a:anl" in shown(), OUT[-1][0]
@@ -973,9 +979,9 @@ time.sleep(0.5)
 assert "5001" not in bot.ANL_BUSY
 bot.analytics_send = real_send
 press(5001, 62000, "m:main")
-assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 5, OUT[-1]   # главное меню — 5 кнопок
-press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — тайник, закреп, пауза
-assert "m:sh" in shown() and "a:pause" in shown(), shown()
+assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 6, OUT[-1]   # главное меню — 6 кнопок
+press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — закреп и пауза; тайника у покупателя нет
+assert "m:sh" not in shown() and "a:pause" in shown() and "m:pinset" in shown(), shown()
 print("h45 ok: аналитика — «подожди 1–2 минуты», без повторного запуска; главное меню — 6 кнопок, остальное в настройках")
 
 # 46) фильтр рекламы на реальных постах: розыгрыш «подпишись на чужие каналы» и «код, успей — активации ограничены» —
@@ -1155,7 +1161,7 @@ bot.handle_update({"update_type": "message_created", "message": {
 press(5001, 62000, "m:main")
 assert link_of(OUT[-1][1]) == "https://max.ru/boss_nick", OUT[-1][1]
 press(1, 61000, "m:main")
-assert link_of(OUT[-1][1]) == "https://max.ru/boss_nick"             # «❓ Поддержка» — всегда прямая ссылка, у всех
+assert link_of(OUT[-1][1]) is None                                   # самому хозяину кнопка не нужна (у него — панель)
 bot.TENANTS[k_exp]["until"] = 0                                      # и без подписки покупатель может написать
 msg(9102, 99102, "привет")
 assert link_of(OUT[-1][1]) == "https://max.ru/boss_nick", OUT[-1]
@@ -2362,40 +2368,35 @@ print("h82 ok: 📇 связь лично: username — ссылка MAX; без
 # ---------- главное меню из 6 кнопок · /admin · приветственное видео на /start ----------
 from reloader import config as APP_CONFIG
 
-MENU5 = ["🎭 Мои каналы", "⚙️ Настройки", "📊 Статистика", "💳 Подписка", "📖 Инструкция", "❓ Поддержка"]
-
-# 83) 📋 главное меню — ровно 5 кнопок: 🎭 Мои каналы, 📅 Расписание, ⚙️ Настройки, 💳 Подписка (зелёная),
-#     ❓ Поддержка — прямая ссылка на профиль админа в MAX (не кнопка-обработчик); статистика — в «⚙️ Настройках»
-MENU5 = ["🎭 Мои каналы", "📅 Расписание", "⚙️ Настройки", "💳 Подписка", "❓ Поддержка"]
+# 83) 📋 главное меню покупателя — ровно 6 кнопок: 🎭 Мои каналы, 📅 Расписание, ⚙️ Настройки,
+#     📊 Статистика и Отчеты, 💳 Подписка (зелёная), ❓ Поддержка — прямая ссылка на профиль продавца в MAX
+BUYER6 = ["🎭 Мои каналы", "📅 Расписание", "⚙️ Настройки", "📊 Статистика и Отчеты", "💳 Подписка", "❓ Поддержка"]
 contact83 = bot.SELLER_CONTACT
 bot.SELLER_CONTACT = "@reloader_admin"
 press(7800, 78000, "m:main")
 bl83 = buttons_of(OUT[-1][1])
-assert [b_["text"] for b_ in bl83] == MENU5 and len(bl83) == 5, [b_["text"] for b_ in bl83]
+assert [b_["text"] for b_ in bl83] == BUYER6 and len(bl83) == 6, [b_["text"] for b_ in bl83]
 by83 = {b_["text"]: b_ for b_ in bl83}
 assert by83["🎭 Мои каналы"]["payload"] == "m:th" and by83["📅 Расписание"]["payload"] == "m:q"
 assert by83["⚙️ Настройки"]["payload"] == "m:more" and by83["💳 Подписка"]["payload"] == "m:pay"
+assert by83["📊 Статистика и Отчеты"]["payload"] == "m:sr"
 assert by83["💳 Подписка"].get("intent") == "positive", by83["💳 Подписка"]          # зелёная
-assert all(by83[t].get("intent") in (None, "default") for t in MENU5 if t != "💳 Подписка"), bl83
+assert all(by83[t].get("intent") in (None, "default") for t in BUYER6 if t != "💳 Подписка"), bl83
 sup83 = by83["❓ Поддержка"]
 assert sup83["type"] == "link" and sup83["url"] == "https://max.ru/reloader_admin" and "payload" not in sup83, sup83
 assert not {"m:st", "m:gd", "m:anl", "m:hp", "m:cl"} & {b_.get("payload") for b_ in bl83}, bl83
-press(1, 61000, "m:main")
-bh83 = buttons_of(OUT[-1][1])
-assert [b_["text"] for b_ in bh83] == MENU5, [b_["text"] for b_ in bh83]
-assert bh83[0]["payload"] == "m:home" and bh83[4]["type"] == "link", bh83
-press(7800, 78000, "m:more")                                              # статистика переехала в «Настройки»
-more83 = buttons_of(OUT[-1][1])
-assert any(b_["text"].startswith("📊 Статистика") and b_.get("payload") in ("m:anl", "m:st") for b_ in more83), more83
+press(1, 61000, "m:main")                                                 # у хозяина «main» — панель кабинетов
+assert "m:cll:0" in shown() and "m:bview" in shown(), shown()
+press(7800, 78000, "m:more")
 assert "a:pause" in json.dumps(OUT[-1][1]) and "m:sg" in json.dumps(OUT[-1][1])
 bot.SELLER_CONTACT, nick83 = "@ВАШ_КОНТАКТ", bot.GCFG.pop("host_nick", None)   # контакт не задан — без мёртвой ссылки
 press(7800, 78000, "m:main")
 bl83b = buttons_of(OUT[-1][1])
-assert [b_["text"] for b_ in bl83b] == MENU5 and not any(b_.get("url") == "https://max.ru/None" for b_ in bl83b)
+assert [b_["text"] for b_ in bl83b] == BUYER6 and not any(b_.get("url") == "https://max.ru/None" for b_ in bl83b)
 bot.SELLER_CONTACT = contact83
 if nick83:
     bot.GCFG["host_nick"] = nick83
-print("h83 ok: 📋 главное меню — 5 кнопок; «Подписка» зелёная; «Поддержка» — прямая ссылка на профиль MAX; статистика — в настройках")
+print("h83 ok: 📋 меню покупателя — 6 кнопок; «Подписка» зелёная; «Поддержка» — прямая ссылка на профиль MAX")
 
 # 84) 👥 /admin: панель для хозяина и для ADMIN_IDS; покупатель — отказ; «Пользователи» показывают карточку
 #     (ID, тариф, каналы MAX, источники Telegram)
@@ -2404,7 +2405,7 @@ bot.ADMIN_IDS = {555}
 assert APP_CONFIG.parse_ids("12, 34 ,x,56") == [12, 34, 56]
 msg(555, 55500, "/admin")
 p84 = buttons_of(OUT[-1][1])
-assert any(b_.get("payload") == "m:buyers" and "Пользователи" in b_["text"] for b_ in p84), OUT[-1][1]
+assert any(b_.get("payload") == "m:buyers" and "Покупатели" in b_["text"] for b_ in p84), OUT[-1][1]
 press(555, 55500, "m:buyers")
 assert "7800" in json.dumps(OUT[-1][1]) or "Пользователи" in OUT[-1][0] or "Покупатели" in OUT[-1][0], OUT[-1][0]
 press(555, 55500, f"m:buyer:{k78}")
@@ -2413,9 +2414,9 @@ assert f"ID: {k78}" in card84 and "Тариф:" in card84 and "Каналы MAX"
 msg(7800, 78000, "/admin")
 assert "только для администраторов" in OUT[-1][0] and not any(b_.get("payload") == "m:buyers" for b_ in buttons_of(OUT[-1][1])), OUT[-1]
 press(1, 61000, "m:cl")
-assert any(b_.get("payload") == "m:buyers" for b_ in buttons_of(OUT[-1][1])), "хозяин: кнопка «👥 Пользователи»"
+assert any(b_.get("payload") == "m:buyers" for b_ in buttons_of(OUT[-1][1])), "хозяин: кнопка «👥 Покупатели»"
 bot.ADMIN_IDS = ADMIN_BEFORE84
-print("h84 ok: 👥 /admin — панель хозяина и ADMIN_IDS; покупатель — отказ; «Пользователи» — карточка с ID, тарифом, каналами")
+print("h84 ok: 👥 /admin — панель хозяина и ADMIN_IDS; покупатель — отказ; «Покупатели» — карточка с ID, тарифом, каналами")
 
 # 85) 🎬 приветственное видео на /start: сначала видео (если есть), потом меню из 6 кнопок;
 #     нет файла / сбой отправки / нет сети — текст и меню всё равно
@@ -2429,18 +2430,18 @@ try:
     n85 = len(OUT)
     msg(7800, 78000, "/start")
     assert SENT85 and SENT85[-1][0] == 78000 and SENT85[-1][2] == vid85, SENT85
-    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, OUT[-1]
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, OUT[-1]
     APP_CONFIG.WELCOME_VIDEO_PATH = "/no/such/welcome.mp4"
     n85b = len(SENT85)
     msg(7800, 78000, "/start")
     assert len(SENT85) == n85b, "файла нет — видео не пытаемся слать"
-    assert any(o[0].startswith("👋") for o in OUT[n85:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5
+    assert any(o[0].startswith("👋") for o in OUT[n85:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6
     APP_CONFIG.WELCOME_VIDEO_PATH = vid85
     def _boom85(*a, **k):
         raise RuntimeError("MAX не принял видео")
     bot.send_max = _boom85
     msg(7800, 78000, "/start")
-    assert any(o[0].startswith("👋") for o in OUT[-4:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, OUT[-4:]
+    assert any(o[0].startswith("👋") for o in OUT[-4:]) and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, OUT[-4:]
     bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: (SENT85.append((chat, text, video_path)), "m")[1]
     APP_CONFIG.WELCOME_VIDEO_PATH = ""
     APP_CONFIG.WELCOME_VIDEO_URL = "https://example.invalid/welcome.mp4"
@@ -2449,7 +2450,7 @@ try:
     try:
         n85c = len(SENT85)
         msg(7800, 78000, "/start")
-        assert len(SENT85) == n85c and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, "ссылка не скачалась — текст и меню"
+        assert len(SENT85) == n85c and [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, "ссылка не скачалась — текст и меню"
     finally:
         bot.S.get = real_get85
     class _Resp85:
@@ -2475,10 +2476,10 @@ finally:
     bot.send_max = real_send85
     APP_CONFIG.WELCOME_VIDEO_PATH = ""
     APP_CONFIG.WELCOME_VIDEO_URL = ""
-print("h85 ok: 🎬 /start: видео, затем меню из 5 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
+print("h85 ok: 🎬 /start: видео, затем меню из 6 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
 
 # 86) покупатель без кабинета (новый id MAX, сбой): без «Нет доступа» и кодов — кабинет заводится сразу,
-#     /start — меню из 5 кнопок; меню и кнопки — только СВОЕГО кабинета (чужая тема №1 не видна и не меняется)
+#     /start — меню из 6 кнопок; меню и кнопки — только СВОЕГО кабинета (чужая тема №1 не видна и не меняется)
 first = bot.THEMES[0]
 with bot.theme_ctx(first):
     bot.CFG["paused"] = True                                   # чужая тема на паузе — покупатель этого не видит
@@ -2489,7 +2490,7 @@ try:
     texts = " ".join(o[0] for o in OUT)
     assert "Нет доступа" not in texts and "код" not in texts.lower(), texts[:300]
     assert bot.tenant_key(777) == "777", "кабинет заведён сразу"
-    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
     assert "на паузе" not in OUT[-1][0], OUT[-1][0]             # состояние своего кабинета, не чужой темы
     OUT.clear()
     bot.TENANTS.pop("778", None)
@@ -2506,7 +2507,7 @@ try:
 finally:
     with bot.theme_ctx(first):
         bot.CFG["paused"] = False
-print("h86 ok: покупатель без кабинета — без гейта и кодов: кабинет сразу, /start — 5 кнопок, только свой кабинет")
+print("h86 ok: покупатель без кабинета — без гейта и кодов: кабинет сразу, /start — 6 кнопок, только свой кабинет")
 
 # 87) администратор из ADMIN_IDS: /start и /admin — сразу панель; кнопки и ввод в панели работают (не «Нет доступа»)
 OUT.clear()
@@ -2514,7 +2515,7 @@ bot.ADMIN_IDS = {"555"}
 try:
     bot.handle_message(555, 5550, "Админ", "/start")
     panel = [b_["text"] for b_ in buttons_of(bot.screen("cl", 555)[1])]
-    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == panel and panel != MENU5, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == panel and panel != BUYER6, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
     OUT.clear()
     bot.handle_message(555, 5550, "Админ", "/admin")
     assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == panel, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
@@ -2526,6 +2527,86 @@ try:
 finally:
     bot.ADMIN_IDS = set()
 print("h87 ok: администратор ADMIN_IDS — /start и /admin открывают панель; её кнопки и ввод работают")
+
+# 88) 🛠 меню админа — как раньше (до 6/5-кнопочных меню): /start, /menu, «◀️ В меню» — панель кабинетов
+#     с теми же кнопками; плюс одна новая — «👀 Посмотреть меню покупателя»
+import re as _re
+PANEL88 = [("👥 Все покупатели", "m:cll:0"), ("🎭 Мои каналы (мой кабинет)", "m:home"),
+           ("💰 Тарифы и реквизиты", "m:cltar"), ("🎟 Промокоды", "m:clpr"), ("🧪 Бета-функции", "m:clbeta"),
+           ("📊 Аналитика", "m:anl"), ("📞 Изменить мой контакт", "p:clcontact"), ("📣 Написать всем", "p:clmsg"),
+           ("📢 Сделать рассылку", "p:cladpost"), ("📌 Обязательная подписка", "m:clfs"),
+           ("👤 Telegram Аккаунты", "m:cltgacc"), ("🔑 Ключи и доступы", "m:clkeys"), ("👥 Покупатели", "m:buyers"),
+           ("🎟 Коды", "m:codes"), ("👀 Посмотреть меню покупателя", "m:bview")]
+def panel_of(rows):
+    return [(_re.sub(r" \(\d+\)$", "", b_["text"]), b_.get("payload")) for b_ in buttons_of(rows)
+            if not (b_.get("payload") or "").startswith("m:clc:")]       # «💳 Проверить оплату» — по ситуации
+assert panel_of(bot.screen("cl", 1)[1]) == PANEL88, panel_of(bot.screen("cl", 1)[1])
+assert panel_of(bot.screen("main", 1)[1]) == PANEL88, "у хозяина «main» — панель кабинетов"
+for cmd88 in ("/start", "/menu", "/admin"):
+    OUT.clear()
+    msg(1, 61000, cmd88)
+    assert panel_of(OUT[-1][1]) == PANEL88, (cmd88, panel_of(OUT[-1][1]))
+OUT.clear()
+press(1, 61000, "m:main")                                       # «◀️ В меню» в любом экране — панель
+assert panel_of(OUT[-1][1]) == PANEL88, panel_of(OUT[-1][1])
+press(1, 61000, "m:home")                                       # «Мои каналы» хозяина — полное меню бота, как раньше
+assert "⚙️ Меню бота" in OUT[-1][0] and "m:ch" in shown() and "m:cl" in shown(), shown()
+press(1, 61000, "m:buyers")
+assert OUT[-1][0].startswith("👥 Покупатели"), OUT[-1][0]
+print("h88 ok: 🛠 меню админа — как раньше: панель кабинетов на /start, /menu, /admin и «В меню»; кнопки те же")
+
+# 89) 👀 «Посмотреть меню покупателя» — ровно те кнопки, что видит покупатель, и возврат в панель
+msg(9100, 91000, "/start")
+buyer_rows = buttons_of(bot.screen("main", 9100)[1])
+OUT.clear()
+press(1, 61000, "m:bview")
+pv = buttons_of(OUT[-1][1])
+assert pv[:6] == buyer_rows and [b_["text"] for b_ in pv[:6]] == BUYER6, pv
+assert pv[6:] and all(b_.get("payload") == "m:cl" for b_ in pv[6:]), pv[6:]
+assert "покупател" in OUT[-1][0].lower(), OUT[-1][0]
+press(4242, 42420, "m:bview")                                   # покупателю — не панельный экран
+assert "m:cl" not in shown(), shown()
+print("h89 ok: 👀 «Посмотреть меню покупателя» — те же 6 кнопок, что у покупателя, и «◀️» в панель")
+
+# 90) 🧑 меню покупателя — ровно 6 кнопок; в настройках «🛡 Фильтр рекламы» и «✍️ Подпись под постами»,
+#     без «Тайника», «Проверки каналов» и «Теста»; «📊 Статистика и Отчеты» — одна кнопка (статистика + отчёт)
+contact90, bot.SELLER_CONTACT = bot.SELLER_CONTACT, "@reloader_admin"
+OUT.clear()
+msg(9100, 91000, "/start")
+bot.SELLER_CONTACT = contact90
+b90 = buttons_of(OUT[-1][1])
+assert [b_["text"] for b_ in b90] == BUYER6, [b_["text"] for b_ in b90]
+assert [b_.get("payload") for b_ in b90[:5]] == ["m:th", "m:q", "m:more", "m:sr", "m:pay"], b90
+assert b90[4].get("intent") == "positive" and b90[5]["type"] == "link" and b90[5]["url"] == "https://max.ru/reloader_admin", b90
+press(9100, 91000, "m:more")
+st90 = {b_["text"]: b_.get("payload") for b_ in buttons_of(OUT[-1][1])}
+assert st90.get("🛡 Фильтр рекламы") == "m:fl" and st90.get("✍️ Подпись под постами") == "m:sg", st90
+assert not {"m:sh", "m:iv", "m:ts", "m:st", "m:rp"} & set(st90.values()), st90
+assert "🧹 Реклама" not in st90 and "Тайник" not in OUT[-1][0] and "Проверка каналов" not in OUT[-1][0] \
+    and "🧪 Тест" not in OUT[-1][0], OUT[-1][0]
+press(9100, 91000, "m:sr")
+assert "📊 Статистика и Отчеты" in OUT[-1][0] and "Опубликовано" in OUT[-1][0] and "Ежедневный отчёт" in OUT[-1][0], OUT[-1][0]
+assert "a:rep" in shown() and "a:repnow" in shown(), shown()
+press(9100, 91000, "a:rep")                                     # переключил отчёт — остаюсь на том же экране
+assert "📊 Статистика и Отчеты" in OUT[-1][0], OUT[-1][0]
+print("h90 ok: 🧑 меню покупателя — 6 кнопок; настройки переименованы, лишнее убрано; статистика и отчёт — вместе")
+
+# 91) 💳 ЮKassa: ссылка на оплату — ОДНИМ сообщением (и по кнопке тарифа, и после почты для чека)
+bot.GCFG["yk_key"] = "test_secret"
+def pay_msgs(since):
+    return [o for o in OUT[since:] if "yoomoney.ru/checkout" in json.dumps(o[1])]
+bot.TENANTS[bot.tenant_key(9100)].pop("pay", None)
+n91 = len(OUT)
+press(9100, 91000, "pk:0:30")
+assert len(pay_msgs(n91)) == 1, OUT[n91:]
+bot.TENANTS[bot.tenant_key(9100)].pop("pay", None)
+n91 = len(OUT)
+press(9100, 91000, "py:0:30")
+if "pe:0:30" in shown():
+    msg(9100, 91000, "buyer91@mail.ru")
+assert len(pay_msgs(n91)) == 1, OUT[n91:]
+bot.TENANTS[bot.tenant_key(9100)].pop("pay", None)
+print("h91 ok: 💳 ЮKassa — ссылка на оплату приходит одним сообщением, без дубля")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
