@@ -48,7 +48,8 @@ def _write(path, data, private, sync):
         json.dump(data, f, ensure_ascii=False)
         if sync:                                        # важное — на диск до замены: сбой не оставит пустой файл
             f.flush()
-            os.fsync(f.fileno())
+            with suppress(OSError):                     # диск/хостинг без fsync — запись всё равно в силе
+                os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
@@ -59,7 +60,10 @@ def save_json(path, data, private=False, backup=False):
     with _WRITE_LOCK:
         _write(path, data, private, sync=backup)
         if backup:
-            _write(path + ".bak", data, private, sync=True)
+            try:
+                _write(path + ".bak", data, private, sync=True)
+            except OSError as e:                        # копия не записалась — основной файл уже сохранён
+                print(f"💾 {path}.bak: резервная копия не записалась ({type(e).__name__}: {e})")
 
 
 DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",

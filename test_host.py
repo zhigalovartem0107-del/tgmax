@@ -2734,7 +2734,8 @@ assert t95.own["channels"] == ["durov"] and any("тариф" in o[0] for o in OU
 assert not any("уже в списке" in o[0] for o in OUT[n95:]), "не влез в лимит — это не «уже в списке»"
 press(9500, 95000, "a:chdel:0")                                    # убрал сам
 assert t95.own["channels"] == [], t95.own["channels"]
-srv.chats["buyer95chan"] = 9501                                    # привязал канал MAX — бот спрашивает источники
+srv.chats["buyer95chan"] = 9501                                    # привязал свой канал MAX — бот спрашивает источники
+srv.chat_admins[9501] = [9500]
 bot.PENDING[9500] = "thlink"
 msg(9500, 95000, "https://max.ru/buyer95chan")
 assert t95.chat_id == 9501 and bot.PENDING.get(9500) == "chadd", (t95.chat_id, bot.PENDING.get(9500))
@@ -2930,6 +2931,96 @@ note98 = bot.storage_note()                                           # в ло�
 assert "💾 Данные бота" in note98 and os.getcwd() in note98 and "SELLER_CONTACT" in note98, note98
 assert "test_secret" not in note98 and "YOOKASSA_SECRET_KEY" not in note98, "заданные переменные не просим"
 print("h98 ok: 💾 контакт и ключи ЮKassa из панели — подсказка задать их в переменных Bothost (без показа ключа)")
+
+# 99) 🔗 привязка канала MAX и источников: после «🗑 Очистить старые каналы», после удаления последней темы и
+#     с «ожиданием ввода» с прошлого раза — не «в пустоту»; права админа канала проверяются при привязке по
+#     ссылке; всё ложится в themes.json; новая тема не получает id (и файлы) удалённой
+def disk_theme(tid):
+    return next((d for d in json.load(open(bot.THEMES_FILE, encoding="utf-8"))["themes"] if d["id"] == tid), None)
+# A) хозяин очистил старые каналы и добавил бота админом нового канала — канал привязался к новой теме
+bot.PENDING[1] = "chadd"                                          # ждал ввода для старой темы
+press(1, 61000, "a:clwipeok")
+assert not bot.tenant_themes(bot.host_id()) and bot.PENDING.get(1) is None, "после очистки — ни тем, ни старого ввода"
+srv.chats["host99a"] = 9901
+bot.handle_update({"update_type": "bot_added", "chat_id": 9901, "is_channel": True,
+                   "user": {"user_id": 1, "first_name": "Хозяин"}})
+th99 = bot.tenant_themes(bot.host_id())
+assert len(th99) == 1 and th99[0].chat_id == 9901, [(t.name, t.chat_id) for t in th99]
+assert disk_theme(th99[0].id)["chat_id"] == 9901, "и в themes.json"
+# B) «ожидание ссылки» осталось с прошлого раза, тему удалили — ссылка ложится в новую тему, а не «в пустоту»
+press(1, 61000, "a:clwipeok")
+bot.PENDING[1] = "thlink"
+srv.chats["host99b"] = 9902
+n99 = len(OUT)
+msg(1, 61000, "https://max.ru/host99b")
+th99 = bot.tenant_themes(bot.host_id())
+assert len(th99) == 1 and th99[0].chat_id == 9902 and disk_theme(th99[0].id)["chat_id"] == 9902, \
+    ([(t.name, t.chat_id) for t in th99], [o[0][:80] for o in OUT[n99:]])
+# C) покупатель удалил свою единственную тему — выбор канала и источники снова работают и сохраняются
+msg(9900, 99000, "/start")
+k99 = bot.tenant_key(9900)
+press(9900, 99000, "m:thd"); press(9900, 99000, "a:thdel")
+assert not bot.tenant_themes(k99), "последняя тема удалена"
+srv.chats["buyer99c"] = 9903
+srv.chat_admins[9903] = [9900]
+press(9900, 99000, "m:chpick")
+assert "a:chbind:9903" in shown(), shown()
+press(9900, 99000, "a:chbind:9903")
+ts99 = bot.tenant_themes(k99)
+assert len(ts99) == 1 and ts99[0].chat_id == 9903 and disk_theme(ts99[0].id)["chat_id"] == 9903, \
+    [(t.name, t.chat_id) for t in ts99]
+bot.record_consent(9900)
+press(9900, 99000, "p:chadd"); msg(9900, 99000, "@src99")
+assert disk_theme(ts99[0].id)["own"]["channels"] == ["src99"], disk_theme(ts99[0].id)["own"].get("channels")
+# D) новая тема не получает id удалённой (её файлы, карточки и задачи — не её)
+gone99 = ts99[0].id
+press(9900, 99000, "a:thdel")
+press(9900, 99000, "m:th")
+assert bot.tenant_themes(k99) and bot.tenant_themes(k99)[0].id != gone99, [t.id for t in bot.tenant_themes(k99)]
+nxt99 = f"t{int(bot.GCFG['theme_seq']) + 1}"
+json.dump([{"id": f"{nxt99}|zombie:1", "ch": "zombie", "status": "ok"}], open(f"queue_{nxt99}.json", "w"))
+t_new99 = bot.create_theme("Новая")
+assert t_new99.id != nxt99 and not t_new99.queue, (t_new99.id, t_new99.queue)
+bot.delete_theme(t_new99)
+# E) привязка по ссылке — только своего канала (в MAX ты админ этого канала)
+t99 = bot.tenant_themes(k99)[0]
+before99 = (t99.chat_id, t99.link)
+srv.chats["stranger99"] = 9904
+srv.chat_admins[9904] = [424242]
+bot.PENDING[9900] = "thlink"
+n99 = len(OUT)
+msg(9900, 99000, "https://max.ru/stranger99")
+assert (t99.chat_id, t99.link) == before99, (t99.chat_id, t99.link)
+assert any("не админ" in o[0] for o in OUT[n99:]) and not any("привязан ✅" in o[0] for o in OUT[n99:]), \
+    [o[0][:120] for o in OUT[n99:]]
+srv.chat_admins[9904] = [9900]                                   # стал админом — привязка проходит
+bot.PENDING[9900] = "thlink"
+msg(9900, 99000, "https://max.ru/stranger99")
+assert t99.chat_id == 9904 and disk_theme(t99.id)["chat_id"] == 9904, t99.chat_id
+# F) тема ждёт канал по ссылке; пост в канале без автора — привязываем, только если владелец — админ канала
+w99 = bot.create_theme("Ждёт канал", owner=k99)
+w99.link = "https://max.ru/stranger99b"
+srv.chats["stranger99b"] = 9905
+srv.chat_admins[9905] = [424242]
+chanpost = {"update_type": "message_created", "message": {"recipient": {"chat_id": 9905, "chat_type": "channel"},
+                                                           "body": {"text": "пост"}}}
+bot.handle_update(chanpost)
+assert w99.chat_id is None, "чужой канал по совпавшей ссылке не привязываем"
+srv.chat_admins[9905] = [9900]
+bot.handle_update(chanpost)
+assert w99.chat_id == 9905, w99.chat_id
+bot.delete_theme(w99)
+# F2) бота добавили в новый канал, а у всех тем уже есть каналы — не молчим: подсказываем, как перепривязать
+srv.chats["buyer99new"] = 9906
+n99 = len(OUT)
+bot.handle_update({"update_type": "bot_added", "chat_id": 9906, "is_channel": True,
+                   "user": {"user_id": 9900, "first_name": "U9900"}})
+assert t99.chat_id == 9904 and any("Бот добавлен в канал «buyer99new»" in o[0] for o in OUT[n99:]), OUT[n99:]
+# G) без темы бот не пишет «привязан ✅» (раньше ссылка тихо уходила в пустую тему)
+with bot.theme_ctx(None):
+    ans99, _ = bot.apply_text("thlink", "https://max.ru/host99b", 77777)
+assert "привязан ✅" not in ans99, ans99
+print("h99 ok: 🔗 привязка канала и источников — после очистки/удаления темы и со старым вводом; права канала; themes.json")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

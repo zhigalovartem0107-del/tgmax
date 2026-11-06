@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110605            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110606            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -502,6 +502,15 @@ GLOBAL_KEYS = {"paused", "interval", "admins", "admin_names", "admin_chats",
 STAT_KEYS = ("published", "dups", "errors", "expired", "blocked", "rejected", "urgent", "stash", "ads")
 
 
+def theme_files(tid):
+    """Файлы данных темы tid (не первой основной): очередь, публикации, тайник, последние посты, история, реклама."""
+    def sfx(base):
+        root, ext = os.path.splitext(base)
+        return f"{root}_{tid}{ext}"
+    return {"queue": sfx(QUEUE_FILE), "pub": sfx(PUB_FILE), "stash": sfx(STASH_FILE),
+            "state": sfx(STATE_FILE), "history": sfx(HISTORY_FILE), "adheld": sfx("ads_held.json")}
+
+
 class Theme:
     """Тема = свои каналы-источники + свой канал MAX + своя очередь, тайник, расписание и фильтры.
     Все темы работают одновременно; в меню ты выбираешь, какую настраиваешь."""
@@ -515,11 +524,7 @@ class Theme:
             self.f = {"queue": QUEUE_FILE, "pub": PUB_FILE, "stash": STASH_FILE,
                       "state": STATE_FILE, "history": HISTORY_FILE, "adheld": "ads_held.json"}
         else:
-            def sfx(base):
-                root, ext = os.path.splitext(base)
-                return f"{root}_{tid}{ext}"
-            self.f = {"queue": sfx(QUEUE_FILE), "pub": sfx(PUB_FILE), "stash": sfx(STASH_FILE),
-                      "state": sfx(STATE_FILE), "history": sfx(HISTORY_FILE), "adheld": sfx("ads_held.json")}
+            self.f = theme_files(tid)
         self.prefix = "" if legacy else f"{tid}|"   # в id постов и пачек (чтобы кнопки находили тему)
         self.fs = "" if legacy else f"{tid}_"       # в именах временных файлов
         self.queue = load_json(self.f["queue"], [])
@@ -846,11 +851,19 @@ def signature():
     return f"[{CFG['signature_text']}]({link})" if link else CFG["signature_text"]
 
 
+def new_theme_id():
+    """id новой темы — больше всех, что уже были (GCFG["theme_seq"]): новая тема не получает файлы, карточки
+    и задачи удалённой (после «🗑 Очистить старые каналы» старые данные не всплывают в новых каналах)."""
+    nums = [int(t.id[1:]) for t in THEMES if re.fullmatch(r"t\d+", t.id)]
+    n = max([int(GCFG.get("theme_seq") or 1)] + nums) + 1
+    while any(t.id == f"t{n}" for t in THEMES) or any(os.path.exists(p) for p in theme_files(f"t{n}").values()):
+        n += 1                                          # файлы остались от удалённой темы — номер пропускаем
+    GCFG["theme_seq"] = n
+    return f"t{n}"
+
+
 def create_theme(name, owner=""):
-    n = 2
-    while any(t.id == f"t{n}" for t in THEMES):
-        n += 1
-    t = Theme(f"t{n}", name, "", owner=str(owner or ""))
+    t = Theme(new_theme_id(), name, "", owner=str(owner or ""))
     t.own["channels"] = []
     t.own["old_signatures"] = []
     t.own["signature_text"] = name[:60]
@@ -1591,6 +1604,21 @@ def chat_admin_ids(chat_id):
         return None
 
 
+def cabinet_admin_of(key, cid, extra=()):
+    """Админ ли канала MAX cid кто-то из админов кабинета key (или extra). None — MAX не ответил."""
+    adm = chat_admin_ids(cid)
+    if adm is None:
+        return None
+    mine = list((TENANTS.get(key) or {}).get("admins") or []) + ([key] if key else []) + list(extra)
+    return any(same_uid(a, m) for a in adm for m in mine)
+
+
+def may_bind(uid, cid):
+    """Можно ли пользователю привязать канал MAX cid к своей теме: хозяину и админам бота — да;
+    покупателю — только свой канал (он админ этого канала в MAX)."""
+    return True if not HOST_MODE or can_panel(uid) else bool(cabinet_admin_of(tenant_key(uid), cid, [uid]))
+
+
 def pick_channels(uid):
     """Каналы, которые пользователь может привязать: бот там есть; (в host-режиме у покупателя) он сам админ
     этого канала — чужой канал не привязать. У каждого c["theme"] — тема, к которой канал привязан сейчас (или None):
@@ -1602,13 +1630,7 @@ def pick_channels(uid):
     if not HOST_MODE or is_host(uid):
         return chans
     key = tenant_key(uid)
-    mine = list((TENANTS.get(key) or {}).get("admins") or []) + [uid]
-    ok = []
-    for c in chans:
-        adm = chat_admin_ids(c["chat_id"]) or []
-        if any(same_uid(a, m) for a in adm for m in mine):
-            ok.append(c)
-    return ok
+    return [c for c in chans if cabinet_admin_of(key, c["chat_id"], [uid])]
 
 
 def channel_test(chat_id):
@@ -2853,6 +2875,8 @@ def card_chats():
     out = set(chats.values())
     if HOST_MODE and cur().owner != host_id():
         out -= {c for u, c in chats.items() if is_host(u)} | ({HOST_CHAT.get("chat")} - {None})
+    elif HOST_MODE and cur().owner and HOST_CHAT.get("chat"):
+        out.add(HOST_CHAT["chat"])                        # своя тема хозяина — и в его личный чат
     return out
 
 
@@ -3040,9 +3064,14 @@ def drop_source(i):
     return gone
 
 
+NO_THEME = "Сначала нужна тема: «🎭 Мои каналы» → «➕ Новая тема» — к ней привяжешь канал MAX и источники."
+
+
 def add_sources(text, admin=False):
     """Добавляет каналы-источники (Telegram, соцсети) в текущую тему. (ответ, экран после).
     admin — добавляет продавец из панели: про лимит — подсказка ему, а не «перейди на тариф»."""
+    if cur() is _VOID:                                    # темы нет — не «добавил» в пустоту
+        return NO_THEME, "th"
     names, bad = [], []
     for tok in re.split(r"[\s,;]+", text.strip()):
         if not tok:
@@ -3872,11 +3901,16 @@ def apply_text(action, text, uid=None):
         if "max.ru" not in link:
             return "Нужна ссылка вида https://max.ru/название_канала", "thm"
         t = cur()
-        t.link = link
-        t.chat_id = resolve_chat_id(link)
-        if not t.chat_id:                                 # закрытый канал (max.ru/join/…) — ищем среди каналов бота
+        if t is _VOID:                                    # темы нет — не пишем «привязан», а ведём к темам
+            return NO_THEME, "th"
+        cid = resolve_chat_id(link)
+        if not cid:                                       # закрытый канал (max.ru/join/…) — ищем среди каналов бота
             want = _norm_link(link)
-            t.chat_id = next((c["chat_id"] for c in pick_channels(uid) if want and _norm_link(c["link"]) == want), None)
+            cid = next((c["chat_id"] for c in pick_channels(uid) if want and _norm_link(c["link"]) == want), None)
+        if cid and not may_bind(uid, cid):                # бот в канале есть, а ты там не админ — чужой канал
+            return ("⛔ Это не твой канал: в MAX ты не админ этого канала, привязать его нельзя. Привязать можно "
+                    "только свой канал — где ты админ."), "thm"
+        t.link, t.chat_id = link, cid
         other = next((x for x in THEMES if x is not t and t.chat_id and x.chat_id == t.chat_id), None)
         if other is not None:                             # канал у другой темы — переносим, если он «твой»
             if any(c["chat_id"] == t.chat_id for c in pick_channels(uid)):
@@ -3987,6 +4021,9 @@ def do_action(act, uid=None):
             FLASH[uid] = "Этот канал недоступен: бот там не админ, канал уже привязан или он не твой."
             return "chpick"
         t = cur()
+        if t is _VOID:
+            FLASH[uid] = NO_THEME
+            return "th"
         old = c.get("theme")
         if old is not None and old is not t:               # канал был у другой темы — переносим сюда
             old.chat_id = None
@@ -5277,15 +5314,20 @@ def rights_note(chat_id):
     return ""
 
 
-def on_channel_message(rec, who=None):
+def on_channel_message(rec, who=None, added=False):
     """Сообщение/добавление в канале MAX: привязываем канал к теме, которая его ждёт.
-    В host-режиме — к активной теме написавшего (его кабинет), чтобы у каждого свой канал."""
+    В host-режиме — к активной теме написавшего (его кабинет), чтобы у каждого свой канал.
+    added — бота только что добавили в канал: не вышло привязать — говорим добавившему, что делать."""
     cid = rec.get("chat_id")
     if not isinstance(cid, int) or any(x.chat_id == cid for x in THEMES):
         return
     if rec.get("chat_type") not in (None, "channel"):
         return
     if HOST_MODE:
+        try:
+            ensure_own_theme(who)                         # тем нет (очистил старые, удалил) — заведём и привяжем к ней
+        except Exception:
+            log_exc("тема кабинета")
         key = tenant_key(who) or (host_id() if is_host(who) else None)
         t = None
         if key is not None:
@@ -5298,7 +5340,16 @@ def on_channel_message(rec, who=None):
                 r = S.get(f"{MAX_API}/chats/{cid}", headers=HEADERS, timeout=20)
                 link = _norm_link(r.json().get("link")) if r.status_code == 200 else ""
             t = next((x for x in THEMES if not x.chat_id and x.link and link and _norm_link(x.link) == link), None)
+            if t is not None and t.owner != host_id() and not cabinet_admin_of(t.owner, cid):
+                t = None                                  # ссылка совпала, но канал не владельца темы — не берём
         if t is None:
+            chat = user_chat(who) if added and key is not None else None
+            if chat:                                      # все темы уже с каналом — не молчим, а подсказываем
+                title = chat_info(cid).get("title") or "этот канал"
+                with contextlib.suppress(Exception):
+                    api_send(chat, f"📢 Бот добавлен в канал «{title}». У твоих тем уже есть каналы MAX — чтобы "
+                                   "публиковать сюда, открой «🎭 Мои каналы» → «⚙️ Эта тема» → «📢 Канал MAX» "
+                                   "и выбери этот канал.")
             return
     else:
         tid = BIND.get("theme")
@@ -5356,6 +5407,10 @@ def handle_update(u):
             return
         with contextlib.suppress(Exception):
             host_prepare(uid, _chat, u, kind)
+        try:
+            ensure_own_theme(uid)
+        except Exception:
+            log_exc("тема кабинета")
     with theme_ctx(active_theme(uid)):           # меню работает с темой, выбранной этим админом
         try:
             _handle_update(u, kind)
@@ -5406,7 +5461,7 @@ def _handle_update(u, kind):
                     journal("✅ Бота вернули в канал MAX — продолжаю публиковать")
                     owner_alert(f"✅ Бота вернули в канал темы «{back.name}» — продолжаю публиковать.")
         elif (u.get("is_channel") or u.get("chat_type") == "channel") and (HOST_MODE or not CFG["admins"] or is_admin(adder)):
-            on_channel_message({"chat_id": u.get("chat_id"), "chat_type": "channel"}, adder)
+            on_channel_message({"chat_id": u.get("chat_id"), "chat_type": "channel"}, adder, added=True)
     elif kind == "bot_started":
         user = u.get("user") or {}
         handle_message(user.get("user_id"), u.get("chat_id"),
@@ -9812,10 +9867,7 @@ def free_media_hint(now=None):
 
 def new_cabinet_theme(key, name):
     """Создаёт тему (канал) для кабинета key и возвращает её."""
-    n = 2
-    while any(t.id == f"t{n}" for t in THEMES):
-        n += 1
-    t = Theme(f"t{n}", name, "", owner=str(key))
+    t = Theme(new_theme_id(), name, "", owner=str(key))
     if HOST_MODE and str(key) != host_id():               # покупателю — посты выходят сами, без нажатий и долгих пауз
         t.own["approval_on"] = False
         t.own["gap_min"] = 20
@@ -10391,6 +10443,20 @@ def wipe_themes(themes):
         BIND["theme"] = None
     save_cfg()
     return len(themes), n_src, n_posts
+
+
+def ensure_own_theme(uid):
+    """У того, кто пишет боту, в кабинете всегда есть тема: иначе привязка канала MAX и источники уходят
+    «в пустоту» (после «🗑 Очистить старые каналы», после удаления последней темы)."""
+    if not HOST_MODE or uid is None:
+        return
+    if is_host(uid):
+        if host_id() and not tenant_themes(host_id()):
+            ensure_host_cabinet()
+        return
+    key = tenant_key(uid)
+    if key is not None and not tenant_themes(key):
+        new_cabinet_theme(key, "Мой канал")
 
 
 def host_set_plan(key, i):
@@ -12032,6 +12098,7 @@ def host_action(p, uid):
                 journal(f"📡 Продавец убрал источник {ch_label(gone)}")
         return f"clsrt:{t.id}"
     if p[0] == "clwipeok":                                  # 🗑 очистить старые каналы своего кабинета
+        PENDING.pop(uid, None)                              # и «ожидание ввода» для удалённых тем — тоже
         n, n_src, n_posts = wipe_themes(wipe_scope(uid))
         if n:
             journal(f"🗑 Очистка старых каналов: тем {n}, источников {n_src}, постов в очереди {n_posts}")

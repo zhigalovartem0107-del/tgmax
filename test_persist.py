@@ -28,6 +28,19 @@ assert load_json_safe(os.path.join(d, "nothing.json"), {"x": 1}) == {"x": 1}, "�
 q = os.path.join(d, "queue.json")
 save_json(q, [1, 2])
 assert not os.path.exists(q + ".bak"), "очереди и прочее — без копии (часто пишутся)"
+real_fsync = os.fsync                                                # диск/хостинг без fsync — сохраняем всё равно
+def _no_fsync(fd):
+    raise OSError(22, "Invalid argument")
+os.fsync = _no_fsync
+try:
+    save_json(p, {"seller_contact": "@three"}, private=True, backup=True)
+finally:
+    os.fsync = real_fsync
+assert load_json(p, {}) == {"seller_contact": "@three"}
+os.remove(p + ".bak"); os.mkdir(p + ".bak")                          # копия не пишется — основной файл всё равно
+save_json(p, {"seller_contact": "@four"}, private=True, backup=True)
+assert load_json(p, {}) == {"seller_contact": "@four"}
+os.rmdir(p + ".bak")
 from reloader.services.codes.store import CodeStore  # noqa: E402
 cs_path = os.path.join(d, "codes.json")
 code = CodeStore(cs_path).generate(1, "Старт", 30)[0]
