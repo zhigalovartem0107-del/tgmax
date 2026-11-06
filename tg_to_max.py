@@ -4715,7 +4715,8 @@ def run_command(cmd, arg, uid, chat_id):
     elif cmd in ("start", "menu", "m"):
         if cmd == "start":
             send_welcome(chat_id)                      # 🎬 короткое видео «как это работает», затем меню
-        show("main")
+        admin_start = cmd == "start" and HOST_MODE and can_panel(uid)
+        show("cl" if admin_start else "main")          # админ ADMIN_IDS / хозяин — сразу панель /admin
     elif cmd in ("help", "h", "commands"):
         show("hp")
     elif cmd in ("stats", "analytics", "an"):
@@ -4971,7 +4972,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
         if key and not tenant_live(key) and PENDING.get(uid) != "promo":
             send_screen(chat_id, *host_lock_screen(uid))
             return
-    if not is_admin(uid):
+    if not HOST_MODE and not is_admin(uid):                          # host-режим: покупатели без кодов и гейта
         env_code = (os.environ.get("ADMIN_CODE") or "").strip()      # свой код из настроек хостинга
         tries = CODE_TRIES.get(uid, (0, 0))
         if tries[0] >= 5 and time.time() - tries[1] < 600:           # подбор кода: 5 ошибок — пауза 10 минут
@@ -5246,7 +5247,7 @@ def _handle_update(u, kind):
     if kind == "message_callback":
         cb = dict(u.get("callback") or {})
         cb["_chat"] = ((u.get("message") or {}).get("recipient") or {}).get("chat_id")
-        if is_admin((cb.get("user") or {}).get("user_id")):
+        if HOST_MODE or is_admin((cb.get("user") or {}).get("user_id")):   # host-режим: кнопки покупателя работают сразу
             handle_callback(cb)
     elif kind == "message_created":
         msg = u.get("message") or {}

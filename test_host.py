@@ -2477,5 +2477,28 @@ finally:
     APP_CONFIG.WELCOME_VIDEO_URL = ""
 print("h85 ok: 🎬 /start: видео, затем меню из 5 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
 
+# 86) покупатель без кабинета: никаких «Нет доступа» и просьб о коде; /start — сразу меню из 5 кнопок
+OUT.clear()
+bot.TENANTS.pop("777", None)
+bot.handle_message(777, 7777, "Покупатель", "/start")
+texts = " ".join(o[0] for o in OUT)
+assert "Нет доступа" not in texts and "код" not in texts.lower(), texts[:300]
+assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+print("h86 ok: покупатель без кабинета — без гейта и кодов, /start сразу даёт меню из 5 кнопок")
+
+# 87) администратор из ADMIN_IDS: /start и /admin — сразу панель, а не покупательское меню
+OUT.clear()
+bot.ADMIN_IDS = {"555"}
+try:
+    bot.handle_message(555, 5550, "Админ", "/start")
+    panel = [b_["text"] for b_ in buttons_of(bot.screen("cl", 555)[1])]
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == panel and panel != MENU5, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+    OUT.clear()
+    bot.handle_message(555, 5550, "Админ", "/admin")
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == panel, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+finally:
+    bot.ADMIN_IDS = set()
+print("h87 ok: администратор ADMIN_IDS — /start и /admin открывают панель со всеми кабинетами")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
