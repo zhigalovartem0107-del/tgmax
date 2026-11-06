@@ -62,11 +62,6 @@ def buttons_of(rows):
     return [b_ for r in rows for b_ in r]
 
 
-def admin_add(t, text):
-    """Источники покупателю подключает продавец: карточка покупателя → «📡 Источники Telegram» → «➕ Добавить канал»."""
-    press(1, 61000, f"p:clsrcadd:{t.id}")
-    msg(1, 61000, text)
-
 # 1) новый пользователь -> свой кабинет на бесплатном тарифе (1 канал MAX, 2 источника, навсегда) — сразу меню
 msg(100, 5100, "/start")
 assert "100" in bot.TENANTS and bot.tenant_mode("100") == "free" and len(bot.tenant_themes("100")) == 1
@@ -76,8 +71,8 @@ print("h1 ok: новый пользователь — сразу свой каб
 
 # 2) на бесплатном тарифе меню открыто (раньше без подписки — только экран оплаты)
 press(100, 5100, "m:ch")
-assert "Оплатить доступ" not in shown() and "Каналы-источники" in OUT[-1][0] and "подключает продавец" in OUT[-1][0], shown()
-print("h2 ok: на бесплатном тарифе меню открыто (источники подключает продавец)")
+assert "Оплатить доступ" not in shown() and "p:chadd" in shown(), shown()
+print("h2 ok: на бесплатном тарифе меню открыто")
 
 # 3) оплата на 30 дней через ЮKassa -> доступ открывается сам
 bot.GCFG["tariffs"] = [{"name": "Старт", "themes": 1, "sources": 5, "price": 300},
@@ -98,13 +93,16 @@ print("h3 ok: оплата на 30 дней картой через ЮKassa от
 assert bot.price90(300) == 750
 print("h3б ok: 90 дней = цена ×2.5 (300 -> 750)")
 
-# 4) с подпиской покупателю каналы-источники подключает продавец (из карточки покупателя)
+# 4) с подпиской пользователь добавляет свои каналы (после подтверждения прав)
 t100 = bot.tenant_themes("100")[0]
 t100.chat_id = 9100
-admin_add(t100, "robloxers roblox1")
+press(100, 5100, "p:chadd")
+assert "права на контент" in shown().lower() or "Подтверди" in shown(), shown()
+press(100, 5100, "rk:ok")
+msg(100, 5100, "robloxers roblox1")
 with bot.theme_ctx(t100):
     assert bot.CFG["channels"] == ["robloxers", "roblox1"], bot.CFG["channels"]
-print("h4 ok: с подпиской продавец подключает покупателю каналы-источники")
+print("h4 ok: с подпиской пользователь добавляет свои каналы-источники")
 
 # 5) второй пользователь — отдельный изолированный кабинет
 msg(200, 5200, "/start")
@@ -759,18 +757,18 @@ atom = """<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.y
 <media:thumbnail url="https://i.ytimg.com/vi/abc/hqdefault.jpg"/><media:description>Описание ролика</media:description></media:group></entry></feed>"""
 yt = bot.parse_feed("yt~x", atom)
 assert yt[0][3] == ["https://i.ytimg.com/vi/abc/hqdefault.jpg"] and "watch?v=abc" in yt[0][2] and "Описание" in yt[0][2], yt
-# покупателю-тестеру продавец подключает TikTok и RSS по ссылке; Instagram — честный отказ
+# покупатель-тестер добавляет TikTok и RSS по ссылке; Instagram — честный отказ
 press(5001, 62000, "p:chadd")
-assert "подключает продавец" in OUT[-1][0], OUT[-1][0]                 # сам покупатель не добавляет
+assert "tiktok" in OUT[-1][0].lower() or "Подтверди" in OUT[-1][0] or "прав" in OUT[-1][0].lower(), OUT[-1][0]
+bot.PENDING[5001] = "chadd"
+bot.record_consent(5001)
+msg(5001, 62000, "https://www.tiktok.com/@cool.guy https://site.ru/feed instagram.com/x")
 tb = bot.active_theme(5001)
-admin_add(tb, "https://www.tiktok.com/@cool.guy https://site.ru/feed instagram.com/x")
 with bot.theme_ctx(tb):
     chs = list(bot.CFG["channels"])
 assert "tt~cool.guy" in chs and any(c.startswith("rss~") for c in chs), chs
 said = " ".join(o[0] for o in OUT[-3:])
 assert "Instagram" in said and "TikTok: cool.guy" in said, said
-with bot.theme_ctx(tb):
-    assert any("Продавец подключил источники" in x and "TikTok: cool.guy" in x for x in bot.JOURNAL), list(bot.JOURNAL)[-3:]
 rkey = next(c for c in chs if c.startswith("rss~"))
 # чтение RSS-источника: старое не постим, новое — в очередь, фото по ссылке
 feed = {"x": rss}
@@ -1408,7 +1406,7 @@ finally:
     bot.publish_item = real_pub58
 assert pub58 == [58100], pub58                                       # второй канал MAX на паузе
 bot.META["active"][str(5800)] = t58a.id
-admin_add(t58a, "@newsource5")
+press(5800, 58000, "p:chadd"); msg(5800, 58000, "@newsource5")
 with bot.theme_ctx(t58a):
     assert "newsource5" not in bot.CFG["channels"]
 assert "тариф" in " ".join(o[0] for o in OUT[-3:]), OUT[-3:]
@@ -1421,7 +1419,7 @@ with bot.theme_ctx(t58a):
 bot.host_apply_paid(k58, "Старт", 30, 300, "тест")                   # «Старт»: до 5 источников — 6-й не добавить
 with bot.theme_ctx(t58a):
     bot.CFG["channels"][:] = ["a1", "a2", "a3", "a4", "a5"]
-admin_add(t58a, "@newsource6")
+press(5800, 58000, "p:chadd"); msg(5800, 58000, "@newsource6")
 with bot.theme_ctx(t58a):
     assert "newsource6" not in bot.CFG["channels"], bot.CFG["channels"]
 bot.TENANTS[k58]["enabled"] = False                                  # хозяин выключил — молчит и на бесплатном
@@ -1676,7 +1674,7 @@ with bot.theme_ctx(t65):
     bot.CFG["signature_text"] = ""
     body = bot.compose_text("Просто пост", "src")
     assert "Reloader" not in body and "max.ru" not in body, body                     # без водяного знака
-admin_add(t65, "@secondsource")
+press(6500, 65000, "p:chadd"); bot.record_consent(6500); press(6500, 65000, "p:chadd"); msg(6500, 65000, "@secondsource")
 with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]
 press(6500, 65000, "m:main")
@@ -1736,7 +1734,7 @@ with bot.theme_ctx(t65):
     assert bot.live_channels() == ["realsrc"], bot.live_channels()               # соцсеть на бесплатном не читается
     bot.CFG["channels"][:] = ["firstsrc"]
 soc66, bot.beta_rec("social")["state"] = bot.beta_rec("social")["state"], "all"      # соцсети открыты всем…
-admin_add(t65, "https://www.tiktok.com/@artist")
+press(6500, 65000, "p:chadd"); msg(6500, 65000, "https://www.tiktok.com/@artist")
 bot.beta_rec("social")["state"] = soc66
 with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]              # …но не бесплатному
@@ -2219,7 +2217,7 @@ assert len(bot.tenant_themes(k76)) == 2 and len(bot.GCFG["pay_log"]) == pay76 + 
 assert bot.GCFG["pay_log"][-1]["key"] == k76 and bot.GCFG["pay_log"][-1]["plan"] == "Старт"
 with bot.theme_ctx(bot.tenant_themes(k76)[0]):
     assert len(bot.CFG["channels"]) == 6, "источники не удалены"
-admin_add(bot.tenant_themes(k76)[0], "@onemore76")
+press(7600, 76000, "p:chadd"); msg(7600, 76000, "@onemore76")
 with bot.theme_ctx(bot.tenant_themes(k76)[0]):
     assert "onemore76" not in bot.CFG["channels"] and len(bot.CFG["channels"]) == 6
 assert "до 5" in OUT[-1][0] or "в тарифе" in OUT[-1][0], OUT[-1][0]
@@ -2337,11 +2335,9 @@ n81 = len(OUT)
 msg(7800, 78000, "Спасибо, понятно")
 assert not any("Код недействителен" in o[0] for o in OUT[n81:]), OUT[n81:]
 code81 = bot.codes_generate(1, "Старт", 30)[0][0]
-name81 = bot.active_theme(7800).name
-press(7800, 78000, "p:thname")
+press(7800, 78000, "p:chadd")
 msg(7800, 78000, code81)
-bot.active_theme(7800).name = name81
-assert bot.CODES.get(code81) is not None, "код не съеден вводом (название темы)"
+assert bot.CODES.get(code81) is not None, "код не съеден вводом канала"
 assert bot.TENANTS[k78]["plan"] == "Про", "тариф не сменился"
 bot.CODES.delete(code81)
 print("h81 ok: 🧩 покупатель: без кнопки «Ввести код» и Playerok; подсказка есть; код во время ввода — не перехватывается")
@@ -2707,41 +2703,53 @@ assert "buyer94chan" not in shown() and "durov" not in shown(), shown()
 assert panel_of(bot.screen("cl", 1)[1]) == PANEL88, "панель админа не тронута"
 print("h94 ok: 👥 покупатель в «Все покупатели»: каналы MAX ссылками (куда реально выкладывает бот), источники Telegram")
 
-# 95) 📡 источники Telegram подключает продавец: у покупателя нет «➕ Добавить канал» и «❌ убрать» нигде
-#     (экраны, инструкция, условия, приветствие, цепочка «канал MAX → источники», старые кнопки, ввод текстом);
-#     админ добавляет и убирает источники покупателя из его карточки
+# 95) 📡 источники Telegram и свой канал MAX покупатель подключает САМ (аккаунты-читатели Telegram — у
+#     хозяина): «➕ Добавить канал» и «❌» в «📡 Каналы-источники», в пределах тарифа; приветствие и
+#     инструкция — об этом; экран с 30+ источниками влезает в MAX; админ может поправить источники из карточки
 OUT.clear()
 msg(9500, 95000, "/start")
 k95 = bot.tenant_key(9500)
 t95 = bot.tenant_themes(k95)[0]
 hello95 = " ".join(o[0] for o in OUT)
-assert "подключит продавец" in hello95 and "Откуда брать посты" not in hello95, hello95
+assert "«📡 Каналы-источники»" in hello95 and "подключит продавец" not in hello95, hello95
 assert "Продлить доступ" not in hello95 and "«💳 Тарифы»" not in hello95 and "«💳 Подписка»" in hello95, hello95
-for scr95 in ("m:th", "m:thm", "m:ch", "m:gd", "m:terms", "m:more", "m:main", "m:home"):
-    press(9500, 95000, scr95)
-    assert "p:chadd" not in shown() and "a:chdel" not in shown() and "➕ Добавить канал" not in shown(), (scr95, shown())
+assert "Подключи ему каналы-источники" not in hello95, "хозяину не пишем «подключи ему источники»"
+press(9500, 95000, "m:thm")                                        # «🎭 Мои каналы» → «⚙️ Эта тема» → источники
+assert "m:ch" in [b_.get("payload") for b_ in buttons_of(OUT[-1][1])], OUT[-1][1]
 press(9500, 95000, "m:ch")
-assert "подключает продавец" in OUT[-1][0], OUT[-1][0]
+assert "p:chadd" in shown() and "подключает продавец" not in OUT[-1][0], OUT[-1]
 press(9500, 95000, "m:gd")
-assert "подключает продавец" in OUT[-1][0] and "Перед первым добавлением" not in OUT[-1][0], OUT[-1]
-assert "m:ch" not in [b_.get("payload") for b_ in buttons_of(OUT[-1][1])], OUT[-1][1]
-for p95 in ("p:chadd", "rk:ok"):                                   # старые кнопки в чате
-    press(9500, 95000, p95)
-    assert bot.PENDING.get(9500) != "chadd" and "Пришли каналы Telegram" not in OUT[-1][0], (p95, OUT[-1])
-bot.PENDING[9500] = "chadd"                                        # ввод «как будто» после старой кнопки
-msg(9500, 95000, "@durov")
-assert t95.own.get("channels") == [], t95.own.get("channels")
-assert any("подключает продавец" in o[0] for o in OUT[-3:]), [o[0][:80] for o in OUT[-3:]]
-srv.chats["buyer95chan"] = 9501                                    # «канал MAX → источники»: источники не спрашиваем
+assert "➕ Добавить канал" in OUT[-1][0] and "подключает продавец" not in OUT[-1][0], OUT[-1][0]
+assert "m:ch" in [b_.get("payload") for b_ in buttons_of(OUT[-1][1])], OUT[-1][1]
+press(9500, 95000, "m:terms")
+assert "m:ch" in [b_.get("payload") for b_ in buttons_of(OUT[-1][1])], OUT[-1][1]
+press(9500, 95000, "p:chadd")                                      # сначала — подтверждение прав на контент
+assert "прав" in OUT[-1][0].lower() or "Подтверди" in OUT[-1][0], OUT[-1][0]
+press(9500, 95000, "rk:ok")
+assert bot.PENDING.get(9500) == "chadd" and "Пришли каналы Telegram" in OUT[-1][0], OUT[-1]
+msg(9500, 95000, "t.me/durov")                                     # добавил сам
+assert t95.own["channels"] == ["durov"], t95.own["channels"]
+press(9500, 95000, "p:chadd"); n95 = len(OUT); msg(9500, 95000, "@second_src")   # бесплатный тариф: 1 источник
+assert t95.own["channels"] == ["durov"] and any("тариф" in o[0] for o in OUT[n95:]), OUT[n95:]
+assert not any("уже в списке" in o[0] for o in OUT[n95:]), "не влез в лимит — это не «уже в списке»"
+press(9500, 95000, "a:chdel:0")                                    # убрал сам
+assert t95.own["channels"] == [], t95.own["channels"]
+srv.chats["buyer95chan"] = 9501                                    # привязал канал MAX — бот спрашивает источники
 bot.PENDING[9500] = "thlink"
 msg(9500, 95000, "https://max.ru/buyer95chan")
-assert t95.chat_id == 9501 and bot.PENDING.get(9500) != "chadd", (t95.chat_id, bot.PENDING.get(9500))
-assert not any("Пришли каналы Telegram" in o[0] for o in OUT[-3:]), [o[0][:80] for o in OUT[-3:]]
+assert t95.chat_id == 9501 and bot.PENDING.get(9500) == "chadd", (t95.chat_id, bot.PENDING.get(9500))
+bot.PENDING.pop(9500, None)
+pro95 = next(i for i, t_ in enumerate(bot.tariffs()) if t_["name"] == "Про")
+bot.host_set_plan(k95, pro95); bot.host_extend(k95, 30)           # тариф «Про»: до 30 источников
+assert bot.tariffs()[pro95]["sources"] == 30
+t95.own["channels"] = [f"pro_source_{i:02d}" for i in range(30)]
+press(9500, 95000, "m:ch")                                         # 30 источников — экран влезает в MAX
+assert len(OUT[-1][1]) <= 30 and sum(1 for b_ in buttons_of(OUT[-1][1]) if (b_.get("payload") or "").startswith("a:chdel:")) == 30, len(OUT[-1][1])
+assert len(OUT[-1][0]) < bot.MAX_TEXT and "p:chadd" in shown()
+press(9500, 95000, "a:chdel:29")
+assert len(t95.own["channels"]) == 29 and "pro_source_29" not in t95.own["channels"]
+bot.TENANTS[k95].update(until=0, plan="")                          # снова бесплатный — как в тестах ниже
 t95.own["channels"] = ["keepme"]
-press(9500, 95000, "a:chdel:0")                                    # убрать источник покупатель не может
-assert t95.own["channels"] == ["keepme"], t95.own["channels"]
-press(9500, 95000, "m:ch")
-assert "@keepme" in OUT[-1][0], OUT[-1][0]                         # видит, откуда берутся посты
 # админ: карточка покупателя → «📡 Источники Telegram» → добавить / убрать
 host95 = list(bot.tenant_themes(bot.host_id())[0].own.get("channels") or [])
 press(1, 61000, f"m:clc:{k95}")
@@ -2761,11 +2769,12 @@ n95 = len(OUT)
 msg(1, 61000, "@third_src")                                        # бесплатный тариф: 1 источник
 assert t95.own["channels"] == ["durov"] and any("Лимиты" in o[0] for o in OUT[n95:]), OUT[n95:]
 assert list(bot.tenant_themes(bot.host_id())[0].own.get("channels") or []) == host95, "темы хозяина не тронуты"
-press(9500, 95000, f"a:clsrcdel:{t95.id}:0")                       # покупателю — нельзя
+press(9500, 95000, f"a:clsrcdel:{t95.id}:0")                       # админские кнопки покупателю не работают
 bot.PENDING[9500] = f"clsrcadd:{t95.id}"
 msg(9500, 95000, "@hacker_src")
 press(9500, 95000, f"m:clsrc:{k95}")
 assert t95.own["channels"] == ["durov"] and "p:clsrcadd" not in shown(), (t95.own["channels"], shown())
+assert "Нет доступа" not in " ".join(o[0] for o in OUT[-4:]), "покупателю — без «Нет доступа»"
 with bot.theme_ctx(t95):                                           # журнал покупателя: что сделал продавец
     log95 = [x for x in bot.JOURNAL if "Продавец" in x and getattr(x, "owner", "") == k95]
 assert any("durov" in x for x in log95) and any("keepme" in x for x in log95), log95
@@ -2774,7 +2783,7 @@ t95.own["channels"] = [f"many_source_{i:02d}" for i in range(70)]  # прода�
 press(1, 61000, f"m:clsrc:{k95}")
 assert len(OUT[-1][0]) < bot.MAX_TEXT and len(OUT[-1][1]) <= 30 and "и ещё" in OUT[-1][0], (len(OUT[-1][0]), len(OUT[-1][1]))
 press(9500, 95000, "m:ch")
-assert len(OUT[-1][0]) < bot.MAX_TEXT and "и ещё" in OUT[-1][0], len(OUT[-1][0])
+assert len(OUT[-1][0]) < bot.MAX_TEXT and "и ещё" in OUT[-1][0] and len(OUT[-1][1]) <= 30, (len(OUT[-1][0]), len(OUT[-1][1]))
 t95.own["channels"] = saved95
 bot.ADMIN_IDS = {"557"}
 try:
@@ -2782,7 +2791,7 @@ try:
     assert f"p:clsrcadd:{t95.id}" in shown(), shown()
 finally:
     bot.ADMIN_IDS = set()
-print("h95 ok: 📡 источники подключает продавец: у покупателя нет добавления/удаления нигде, админ — из карточки покупателя")
+print("h95 ok: 📡 источники и канал MAX покупатель подключает сам (в пределах тарифа); экран влезает в MAX; админ — из карточки")
 
 # 96) ✋ карточки на одобрение — только владельцу темы: не хозяину чужих тем, не «ничьим» темам из старых настроек,
 #     не темам пропавших кабинетов; старые карточки удалённых тем — «поста уже нет», а не «не из твоих тем»
