@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110606            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110607            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1613,10 +1613,29 @@ def cabinet_admin_of(key, cid, extra=()):
     return any(same_uid(a, m) for a in adm for m in mine)
 
 
+def not_admin_of(key, cid, extra=()):
+    """True — MAX ТОЧНО говорит, что канал чужой: список админов получен, в нём есть люди, но никого из
+    этого кабинета. Список пуст или не получен (ошибка, нет прав, другие id) — False: тогда не мешаем
+    (привязать чужой канал всё равно не выйдет: его админ должен написать в нём или добавить бота)."""
+    adm = chat_admin_ids(cid)
+    return bool(adm) and cabinet_admin_of(key, cid, extra) is False
+
+
 def may_bind(uid, cid):
     """Можно ли пользователю привязать канал MAX cid к своей теме: хозяину и админам бота — да;
-    покупателю — только свой канал (он админ этого канала в MAX)."""
-    return True if not HOST_MODE or can_panel(uid) else bool(cabinet_admin_of(tenant_key(uid), cid, [uid]))
+    покупателю — если MAX не говорит, что канал чужой."""
+    return True if not HOST_MODE or can_panel(uid) else not not_admin_of(tenant_key(uid), cid, [uid])
+
+
+CHAN_HINTS = {}          # (chat_id канала, о чём сказали) -> когда: подсказки владельцу — не чаще раза в час
+
+
+def chan_hint_due(cid, kind, now=None):
+    now = now or time.time()
+    if now - CHAN_HINTS.get((cid, kind), 0) < 3600:
+        return False
+    CHAN_HINTS[(cid, kind)] = now
+    return True
 
 
 def pick_channels(uid):
@@ -5334,20 +5353,27 @@ def on_channel_message(rec, who=None, added=False):
             t = active_theme(who)
             if t is None or t.owner != key or t.chat_id:
                 t = next((x for x in tenant_themes(key) if not x.chat_id), None)
+        link = ""
         if t is None:                                     # автор неизвестен (у постов канала его часто нет):
-            link = ""                                     # ищем тему, которая ждёт канал с этой же ссылкой
-            with contextlib.suppress(Exception):
-                r = S.get(f"{MAX_API}/chats/{cid}", headers=HEADERS, timeout=20)
-                link = _norm_link(r.json().get("link")) if r.status_code == 200 else ""
+            info = chat_info(cid)                         # ищем тему, которая ждёт канал с этой же ссылкой
+            link = _norm_link(info.get("link"))
             t = next((x for x in THEMES if not x.chat_id and x.link and link and _norm_link(x.link) == link), None)
-            if t is not None and t.owner != host_id() and not cabinet_admin_of(t.owner, cid):
-                t = None                                  # ссылка совпала, но канал не владельца темы — не берём
+            if t is not None and t.owner != host_id() and not_admin_of(t.owner, cid):
+                with theme_ctx(t):                        # MAX точно говорит «канал чужой» — не берём, но не молчим
+                    print(f"Канал MAX {cid} ({link}): тема «{t.name}» ждёт эту ссылку, но её владелец не админ канала — не привязываю")
+                    if chan_hint_due(cid, "notmine"):
+                        owner_alert(f"⚠️ Вижу сообщение в канале MAX {info.get('title') or link}, но ты не админ "
+                                    "этого канала в MAX — привязать его не могу. Привязывать можно только свой "
+                                    "канал: стань админом канала или выбери другой.")
+                t = None
         if t is None:
-            chat = user_chat(who) if added and key is not None else None
-            if chat:                                      # все темы уже с каналом — не молчим, а подсказываем
-                title = chat_info(cid).get("title") or "этот канал"
+            title = chat_info(cid).get("title") or link or str(cid)
+            print(f"Канал MAX {cid} «{title}»: {'бота добавили' if added else 'есть сообщение'}, но не нашлось темы, "
+                  f"которая его ждёт (автор: {who or 'неизвестен'}, ссылка канала: {link or 'нет'}) — не привязываю")
+            chat = user_chat(who) if key is not None else None
+            if chat and (added or chan_hint_due(cid, "nofree")):   # все темы уже с каналом — не молчим, подсказываем
                 with contextlib.suppress(Exception):
-                    api_send(chat, f"📢 Бот добавлен в канал «{title}». У твоих тем уже есть каналы MAX — чтобы "
+                    api_send(chat, f"📢 Вижу канал «{title}». У твоих тем уже есть каналы MAX — чтобы "
                                    "публиковать сюда, открой «🎭 Мои каналы» → «⚙️ Эта тема» → «📢 Канал MAX» "
                                    "и выбери этот канал.")
             return
@@ -5360,6 +5386,8 @@ def on_channel_message(rec, who=None, added=False):
     if t is None or t.chat_id:
         return
     t.chat_id = cid
+    DENIED.pop(cid, None)
+    DENY_N.pop(cid, None)
     if t is THEMES[0]:
         _save_channel_id(cid)
     save_cfg()

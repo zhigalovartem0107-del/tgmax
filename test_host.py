@@ -3015,12 +3015,105 @@ srv.chats["buyer99new"] = 9906
 n99 = len(OUT)
 bot.handle_update({"update_type": "bot_added", "chat_id": 9906, "is_channel": True,
                    "user": {"user_id": 9900, "first_name": "U9900"}})
-assert t99.chat_id == 9904 and any("Бот добавлен в канал «buyer99new»" in o[0] for o in OUT[n99:]), OUT[n99:]
+assert t99.chat_id == 9904 and any("Вижу канал «buyer99new»" in o[0] for o in OUT[n99:]), OUT[n99:]
 # G) без темы бот не пишет «привязан ✅» (раньше ссылка тихо уходила в пустую тему)
 with bot.theme_ctx(None):
     ans99, _ = bot.apply_text("thlink", "https://max.ru/host99b", 77777)
 assert "привязан ✅" not in ans99, ans99
 print("h99 ok: 🔗 привязка канала и источников — после очистки/удаления темы и со старым вводом; права канала; themes.json")
+
+# 100) 📢 привязка канала MAX «напиши в канале любое сообщение»: тема ждёт канал по ссылке — пост без автора
+#      привязывает его и бот сообщает «привязан»; MAX не отдал список админов / отдал пустой — всё равно
+#      привязываем; чужой канал (в списке админов есть люди, но не владелец) — нет, и владельцу объясняем;
+#      когда ничего не подошло — не молчим (лог и подсказка автору)
+msg(10000, 100000, "/start")
+k100 = bot.tenant_key(10000)
+t100b = bot.tenant_themes(k100)[0]
+def channel_post(chat, who=None):
+    body = {"recipient": {"chat_id": chat, "chat_type": "channel"}, "body": {"text": "привет"}}
+    if who is not None:
+        body["sender"] = {"user_id": who, "first_name": f"U{who}"}
+    bot.handle_update({"update_type": "message_created", "message": body})
+def told(since, word):
+    return any(word in o[0] for o in OUT[since:])
+# A) ссылка введена, бота в канале ещё нет; потом бота добавили и написали пост — список админов MAX пустой
+bot.PENDING[10000] = "thlink"
+msg(10000, 100000, "https://max.ru/wait100")
+assert t100b.chat_id is None and t100b.link == "https://max.ru/wait100", (t100b.chat_id, t100b.link)
+srv.chats["wait100"] = 10001
+n100 = len(OUT)
+channel_post(10001)
+assert t100b.chat_id == 10001 and disk_theme(t100b.id)["chat_id"] == 10001, t100b.chat_id
+assert told(n100, "Канал MAX привязан"), [o[0][:80] for o in OUT[n100:]]
+# B) то же, но MAX вообще не ответил про админов (ошибка сети/прав)
+t100b.chat_id = None
+srv.chats["wait100"] = 10001
+real_adm100 = bot.chat_admin_ids
+bot.chat_admin_ids = lambda cid: None
+try:
+    n100 = len(OUT)
+    channel_post(10001)
+    assert t100b.chat_id == 10001 and told(n100, "Канал MAX привязан"), [o[0][:80] for o in OUT[n100:]]
+finally:
+    bot.chat_admin_ids = real_adm100
+# C) чужой канал: в списке админов есть люди, но не владелец темы — не привязываем, владельцу объясняем
+t100b.chat_id = None
+srv.chat_admins[10001] = [424242]
+n100 = len(OUT)
+channel_post(10001)
+assert t100b.chat_id is None and told(n100, "не админ"), [o[0][:100] for o in OUT[n100:]]
+n100 = len(OUT)
+channel_post(10001)                                              # повтор не засыпает владельца
+assert not told(n100, "не админ"), "подсказка — не чаще раза в час"
+# D) владелец — в списке админов (под любым из своих id) — привязывается
+srv.chat_admins[10001] = [10000]
+channel_post(10001)
+assert t100b.chat_id == 10001
+# E) пост от самого владельца (автор известен), тема без ссылки — привязывается к его теме без ссылки
+t100b.chat_id, t100b.link = None, ""
+srv.chat_admins[10001] = [10000]
+channel_post(10001, who=10000)
+assert t100b.chat_id == 10001
+# F) все темы уже с каналом — пост от известного автора: не молчим, говорим, как перепривязать (раз в час)
+srv.chats["extra100"] = 10002
+n100 = len(OUT)
+channel_post(10002, who=10000)
+assert told(n100, "У твоих тем уже есть каналы MAX"), [o[0][:100] for o in OUT[n100:]]
+n100 = len(OUT)
+channel_post(10002, who=10000)
+assert not told(n100, "У твоих тем уже есть каналы MAX"), "не чаще раза в час"
+# G) тот же случай без автора и без подходящей темы — тихо для людей, но в логе причина
+import io, contextlib as _cl
+buf100 = io.StringIO()
+with _cl.redirect_stdout(buf100):
+    channel_post(10002)
+    bot.CHAN_HINTS.clear()
+    channel_post(10002)
+assert "не нашлось темы" in buf100.getvalue() or "нет темы" in buf100.getvalue(), buf100.getvalue()
+# H) ссылкой в боте: список админов пуст/недоступен — привязка проходит; чужой канал с людьми — нет (h99-E)
+t100b.chat_id, t100b.link = None, ""
+srv.chats["typed100"] = 10003
+srv.chat_admins.pop(10003, None)
+bot.PENDING[10000] = "thlink"
+msg(10000, 100000, "https://max.ru/typed100")
+assert t100b.chat_id == 10003, t100b.chat_id
+t100b.chat_id = None
+bot.chat_admin_ids = lambda cid: None
+try:
+    bot.PENDING[10000] = "thlink"
+    msg(10000, 100000, "https://max.ru/typed100")
+    assert t100b.chat_id == 10003, t100b.chat_id
+finally:
+    bot.chat_admin_ids = real_adm100
+# I) хозяин: своя тема ждёт канал по ссылке, пост без автора — привязывается, сообщение приходит в личный чат хозяина
+host100 = bot.new_cabinet_theme(bot.host_id(), "Хозяин 100")
+host100.link = "https://max.ru/hostwait100"
+srv.chats["hostwait100"] = 10004
+srv.chat_admins[10004] = [424242]                                 # у хозяина права не сверяем
+n100 = len(OUT)
+channel_post(10004)
+assert host100.chat_id == 10004 and told(n100, "Канал MAX привязан"), [o[0][:80] for o in OUT[n100:]]
+print("h100 ok: 📢 привязка канала по посту/ссылке — работает и без списка админов MAX, чужой канал нельзя, не молчим")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
