@@ -2477,16 +2477,38 @@ finally:
     APP_CONFIG.WELCOME_VIDEO_URL = ""
 print("h85 ok: 🎬 /start: видео, затем меню из 5 кнопок; нет файла, сбой отправки или сети — текст и меню; «Старт» — так же")
 
-# 86) покупатель без кабинета: никаких «Нет доступа» и просьб о коде; /start — сразу меню из 5 кнопок
-OUT.clear()
-bot.TENANTS.pop("777", None)
-bot.handle_message(777, 7777, "Покупатель", "/start")
-texts = " ".join(o[0] for o in OUT)
-assert "Нет доступа" not in texts and "код" not in texts.lower(), texts[:300]
-assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
-print("h86 ok: покупатель без кабинета — без гейта и кодов, /start сразу даёт меню из 5 кнопок")
+# 86) покупатель без кабинета (новый id MAX, сбой): без «Нет доступа» и кодов — кабинет заводится сразу,
+#     /start — меню из 5 кнопок; меню и кнопки — только СВОЕГО кабинета (чужая тема №1 не видна и не меняется)
+first = bot.THEMES[0]
+with bot.theme_ctx(first):
+    bot.CFG["paused"] = True                                   # чужая тема на паузе — покупатель этого не видит
+try:
+    OUT.clear()
+    bot.TENANTS.pop("777", None)
+    bot.handle_message(777, 7777, "Покупатель", "/start")
+    texts = " ".join(o[0] for o in OUT)
+    assert "Нет доступа" not in texts and "код" not in texts.lower(), texts[:300]
+    assert bot.tenant_key(777) == "777", "кабинет заведён сразу"
+    assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == MENU5, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+    assert "на паузе" not in OUT[-1][0], OUT[-1][0]             # состояние своего кабинета, не чужой темы
+    OUT.clear()
+    bot.TENANTS.pop("778", None)
+    with bot.theme_ctx(first):
+        bot.CFG["paused"] = False
+    bot._handle_update({"update_type": "message_callback", "callback": {          # кнопка без кабинета
+        "callback_id": "c", "payload": "a:pause", "user": {"user_id": 778, "first_name": "U778"}},
+        "message": {"recipient": {"chat_id": 7778}}}, "message_callback")
+    with bot.theme_ctx(first):
+        assert not bot.CFG["paused"], "кнопка покупателя без кабинета не трогает чужую тему"
+    assert bot.tenant_key(778) == "778", "по кнопке кабинет тоже заводится"
+    texts = " ".join(o[0] for o in OUT)
+    assert "Нет доступа" not in texts and "код" not in texts.lower(), texts[:300]
+finally:
+    with bot.theme_ctx(first):
+        bot.CFG["paused"] = False
+print("h86 ok: покупатель без кабинета — без гейта и кодов: кабинет сразу, /start — 5 кнопок, только свой кабинет")
 
-# 87) администратор из ADMIN_IDS: /start и /admin — сразу панель, а не покупательское меню
+# 87) администратор из ADMIN_IDS: /start и /admin — сразу панель; кнопки и ввод в панели работают (не «Нет доступа»)
 OUT.clear()
 bot.ADMIN_IDS = {"555"}
 try:
@@ -2496,9 +2518,14 @@ try:
     OUT.clear()
     bot.handle_message(555, 5550, "Админ", "/admin")
     assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == panel, [b_["text"] for b_ in buttons_of(OUT[-1][1])]
+    k87 = next(k for k in bot.TENANTS if k != "555")
+    assert bot.host_action(["clask", k87], 555) is not None, "кнопки панели работают у ADMIN_IDS"
+    ans87, _ = bot.apply_text("buysearch", "U100", 555)
+    assert "Нет доступа" not in ans87, ans87
+    assert bot.host_action(["clask", k87], 4242) is None, "не админ — панель не работает"
 finally:
     bot.ADMIN_IDS = set()
-print("h87 ok: администратор ADMIN_IDS — /start и /admin открывают панель со всеми кабинетами")
+print("h87 ok: администратор ADMIN_IDS — /start и /admin открывают панель; её кнопки и ввод работают")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

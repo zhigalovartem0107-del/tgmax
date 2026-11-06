@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110501            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110601            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -3433,7 +3433,7 @@ def _screen(name, uid=None):
                 f"Каналов: {len(chans)} — по картинке на каждый.\n"
                 "Бот должен быть админом канала, иначе MAX не покажет просмотры.")
         rows = [[B("📊 Прислать картинку сейчас", "a:anl")],
-                [B("◀️ Панель", "m:cl") if HOST_MODE and is_host(uid) else back[0]]]
+                [B("◀️ Панель", "m:cl") if HOST_MODE and can_panel(uid) else back[0]]]
     elif name == "pay" and (CLIENT_MODE or HOST_MODE):
         text, rows = pay_screen()
     elif name.split(":")[0] == "myt" and HOST_MODE and feature_on("mytariff"):
@@ -3582,7 +3582,7 @@ def split_words(text):
 def apply_text(action, text, uid=None):
     """Применяет присланный текст. Возвращает (ответ, экран)."""
     if action in ("buysearch", "coderevoke") or (action or "").startswith("codegen:"):
-        if not is_host(uid):
+        if not can_panel(uid):
             return "Нет доступа.", "main"
         if action == "buysearch":
             q = text.strip()[:40]
@@ -3608,7 +3608,7 @@ def apply_text(action, text, uid=None):
             return str(e), "codes"
         return f"✅ Добавил код {code} на «{t['name']}» (30 дн.).", "codes"
     if action == "clyk":
-        if not is_host(uid):
+        if not can_panel(uid):
             return "Нет доступа.", "main"
         tail = secret_tail(uid)
         parts = [x for x in re.split(r"[\s,;:]+", text.strip()) if x]
@@ -3622,8 +3622,8 @@ def apply_text(action, text, uid=None):
         ok, why = yk_check()
         return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
-    if (action or "").startswith("claikeys:"):            # 🤖 ключи ИИ списком — только хозяин
-        if not is_host(uid):
+    if (action or "").startswith("claikeys:"):            # 🤖 ключи ИИ списком — панель
+        if not can_panel(uid):
             return "Нет доступа.", "main"
         tail = secret_tail(uid)
         prov = action.split(":", 1)[1]
@@ -3638,8 +3638,8 @@ def apply_text(action, text, uid=None):
         title = AI_PROVIDERS[prov][1]
         return (f"✅ Ключи {title} сохранены: {len(keys)} ({mask_keys(keys)}). Работают сразу, без перезапуска; "
                 "упёрся в лимит — бот берёт следующий." + tail), "clkeys"
-    if action in ("clvk", "cltt"):                        # 🔑 ключ VK / 🎵 cookies TikTok — только хозяин
-        if not is_host(uid):
+    if action in ("clvk", "cltt"):                        # 🔑 ключ VK / 🎵 cookies TikTok — панель
+        if not can_panel(uid):
             return "Нет доступа.", "main"
         tail = secret_tail(uid)
         if action == "clvk":
@@ -3665,7 +3665,7 @@ def apply_text(action, text, uid=None):
             return "Промокоды здесь не работают.", "main"
         return promo_apply(tenant_key(uid) or cur().owner, text, uid), "pay"
     if action.startswith("clpromo:"):
-        if not is_host(uid):
+        if not can_panel(uid):
             return "Нет доступа.", "main"
         code = promo_norm(text)
         if len(code) < 3:
@@ -3863,7 +3863,7 @@ def do_action(act, uid=None):
     """Кнопки-действия. Возвращает экран, который показать после."""
     p = act.split(":")
     scr = "main"
-    if p[0] in ("buyerask", "buyercard", "codesexp") and HOST_MODE and is_host(uid):   # 👥 🎟 — в панели хозяина
+    if p[0] in ("buyerask", "buyercard", "codesexp") and HOST_MODE and can_panel(uid):   # 👥 🎟 — в панели хозяина
         return host_action(p, uid) or "cl"
     if p[0].startswith("cl"):
         if HOST_MODE:
@@ -4967,12 +4967,20 @@ def handle_message(uid, chat_id, name, text, msg=None):
     if HOST_MODE and not is_host(uid) and (phone := msg_contact(msg)) is not None:
         save_contact(uid, chat_id, name, phone, contact_vcf(msg))   # поделился контактом кнопкой — хозяину
         return
-    if HOST_MODE and not is_host(uid):                  # кабинет без активной подписки — только оплата (и промокод)
+    if HOST_MODE and not can_panel(uid):                # кабинет без активной подписки — только оплата (и промокод)
         key = tenant_by_chat(chat_id) or tenant_key(uid)
         if key and not tenant_live(key) and PENDING.get(uid) != "promo":
             send_screen(chat_id, *host_lock_screen(uid))
             return
-    if not HOST_MODE and not is_admin(uid):                          # host-режим: покупатели без кодов и гейта
+    if HOST_MODE and not is_admin(uid):                 # нет кабинета (новый id MAX, сбой): без кодов и гейта —
+        track_cabinet(uid, chat_id, name)               # заводим сразу и дальше работаем только в СВОЁМ кабинете
+        if is_admin(uid):
+            with theme_ctx(active_theme(uid)):
+                return handle_message(uid, chat_id, name, text, msg)
+        return
+    if not is_admin(uid) and is_global_admin(uid):      # ADMIN_IDS из переменных хостинга — админ сразу, без кодов
+        add_admin(uid, chat_id, name)
+    if not is_admin(uid):
         env_code = (os.environ.get("ADMIN_CODE") or "").strip()      # свой код из настроек хостинга
         tries = CODE_TRIES.get(uid, (0, 0))
         if tries[0] >= 5 and time.time() - tries[1] < 600:           # подбор кода: 5 ошибок — пауза 10 минут
@@ -5084,15 +5092,15 @@ def handle_message(uid, chat_id, name, text, msg=None):
         return
     if action in ("cladpost", "cladmark"):                # 📢 рекламная рассылка — только хозяин
         PENDING.pop(uid, None)
-        if is_host(uid):
+        if can_panel(uid):
             ad_input(uid, chat_id, action, content, atts)
         else:
             send_screen(chat_id, *screen("main", uid))
         return
-    if action == "clsess" or (HOST_MODE and is_host(uid) and session_atts(atts)):   # 👤 .session — в пул
+    if action == "clsess" or (HOST_MODE and can_panel(uid) and session_atts(atts)):   # 👤 .session — в пул
         if action == "clsess":                            # (и без «➕»: файл .session от хозяина — не в тайник)
             PENDING.pop(uid, None)
-        if not is_host(uid):
+        if not can_panel(uid):
             send_screen(chat_id, *screen("main", uid))
             return
         gone = True
@@ -5106,7 +5114,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
                     "«Удалить». В нём полный доступ к аккаунту.\n\n" + text)
         send_screen(chat_id, text, rows)
         return
-    if (action in ("clyk", "clvk", "cltt") or (action or "").startswith("claikeys:")) and is_host(uid):   # ключи: из чата
+    if (action in ("clyk", "clvk", "cltt") or (action or "").startswith("claikeys:")) and can_panel(uid):   # ключи: из чата
         gone = False
         with contextlib.suppress(Exception):
             gone = delete_msg(((msg or {}).get("body") or {}).get("mid"))
@@ -5247,7 +5255,13 @@ def _handle_update(u, kind):
     if kind == "message_callback":
         cb = dict(u.get("callback") or {})
         cb["_chat"] = ((u.get("message") or {}).get("recipient") or {}).get("chat_id")
-        if HOST_MODE or is_admin((cb.get("user") or {}).get("user_id")):   # host-режим: кнопки покупателя работают сразу
+        user = cb.get("user") or {}
+        if HOST_MODE and not is_admin(user.get("user_id")):   # нет кабинета — заводим, кнопка работает в СВОЁМ
+            track_cabinet(user.get("user_id"), cb["_chat"], user.get("first_name") or user.get("name") or "")
+            if is_admin(user.get("user_id")):
+                with theme_ctx(active_theme(user.get("user_id"))):
+                    handle_callback(cb)
+        elif is_admin(user.get("user_id")):
             handle_callback(cb)
     elif kind == "message_created":
         msg = u.get("message") or {}
@@ -9924,8 +9938,14 @@ def host_prepare(uid, chat, u, kind):
     if kind == "message_created" and rec.get("chat_type") not in (None, "dialog"):
         return
     sender = who_pressed(u)
-    name = sender.get("first_name") or sender.get("name") or ""
-    nick = (sender.get("username") or "").lstrip("@")
+    track_cabinet(uid, chat, sender.get("first_name") or sender.get("name") or "",
+                  (sender.get("username") or "").lstrip("@"))
+
+
+def track_cabinet(uid, chat, name="", nick=""):
+    """Host-режим: у каждого, кто пишет боту, свой кабинет. Нет — заводим; есть — запоминаем id/чат/имя/ник."""
+    if uid is None:
+        return
     key = tenant_key(uid) or tenant_by_chat(chat)        # ищем кабинет по id ИЛИ по чату (MAX шлёт разные id)
     if key is None:
         if chat is None:
@@ -11652,7 +11672,7 @@ def host_screen(name, uid):
 
 
 def host_action(p, uid):
-    if not is_host(uid):
+    if not can_panel(uid):
         return None
     if p[0].startswith("clb"):
         return beta_action(p) or "clbeta"

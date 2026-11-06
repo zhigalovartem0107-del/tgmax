@@ -534,5 +534,19 @@ assert r == "ok" and len(t5) == 1 and t5[0].startswith("пост **жирный*
 bot.send_max(5000, "плохая BADMD **разметка**", [])
 assert srv.texts(5000)[-1] == "плохая BADMD разметка", srv.texts(5000)
 print("g13 ok: MAX временно лежит — пост ждёт и выходит потом (не выброшен); непонятая разметка — уходит текстом")
+# 22) администратор из ADMIN_IDS (переменная хостинга): админ сразу, без кодов и «Нет доступа»
+saved22 = list(bot.CFG["admins"])
+bot.ADMIN_IDS = {"4321"}
+try:
+    API.clear()
+    bot.handle_message(4321, 43210, "Админ", "/start", None)
+    texts22 = " ".join(str(a) for a in API)
+    assert bot.is_admin(4321) and "Нет доступа" not in texts22 and "код" not in texts22.lower(), texts22[:300]
+    API.clear()
+    bot.handle_message(4322, 43220, "Чужак", "привет", None)   # не в ADMIN_IDS — без изменений: не админ
+    assert not bot.is_admin(4322)
+finally:
+    bot.ADMIN_IDS = set(); bot.CFG["admins"][:] = saved22
+print("g22 ok: ADMIN_IDS — админ сразу по /start, без кодов; посторонний — по-прежнему не админ")
 print("ВСЕ ТЕСТЫ ПОДКЛЮЧЕНИЯ ИЗ MAX ПРОШЛИ")
 os._exit(0)
