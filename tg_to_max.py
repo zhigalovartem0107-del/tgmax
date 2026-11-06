@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110602            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110603            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -654,7 +654,7 @@ def buyer_menu(uid):
              else "▶️ Бот работает — новые посты выходят сами.")
     text = "📋 Главное меню\n\n" + state + "\n\n" + subscription_line()
     link = seller_link()
-    support = LB("❓ Поддержка", link) if link else B("❓ Поддержка", "m:hp")   # контакт не задан — без мёртвой ссылки
+    support = LB("❓ Поддержка", link) if link else B("❓ Поддержка", "m:sup")   # не ссылка (телефон) — показать контакт
     rows = [[B("🎭 Мои каналы", "m:th"), B("📅 Расписание", "m:q")],
             [B("⚙️ Настройки", "m:more"), B("📊 Статистика и Отчеты", "m:sr")],
             [B("💳 Подписка", "m:pay", intent="positive"), support]]
@@ -3054,6 +3054,8 @@ def _screen(name, uid=None):
     got = buyer_admin_screen(name, uid)
     if got is not None:
         return got
+    if name == "dg" and simple_menu(uid):
+        name = "main"                                   # 🔎 проверки связи у покупателя нет — его меню
     if name == "bview" and HOST_MODE and can_panel(uid):   # 👀 админ смотрит меню глазами покупателя
         text, rows = buyer_menu(uid)
         return "👀 Так покупатели видят главное меню:\n\n" + text, rows + [[B("◀️ Панель", "m:cl")]]
@@ -3424,10 +3426,15 @@ def _screen(name, uid=None):
         lines = [x for x in JOURNAL if not HOST_MODE or (own and getattr(x, "owner", "") == own)
                  or (is_host(uid) and not getattr(x, "owner", ""))][-25:]   # каждый видит только свой журнал
         text = "📜 Журнал (последние события)\n\n" + ("\n".join(lines) if lines else "пока пусто")
-        rows = [[B("🔄 Обновить", "m:lg"), B("🔎 Проверка", "m:dg")], back]
+        rows = [[B("🔄 Обновить", "m:lg")] + ([] if simple_menu(uid) else [B("🔎 Проверка", "m:dg")]), back]
     elif name == "dg":
         text = run_diag()
         rows = [[B("🔄 Проверить снова", "m:dg")], back]
+    elif name == "sup":                                  # ❓ Поддержка, когда контакт продавца — не ссылка (телефон)
+        link = seller_link()
+        known = contact_ok(SELLER_CONTACT) and SELLER_CONTACT != "@ВАШ_КОНТАКТ"
+        text = "❓ Поддержка\n\n" + (f"Напиши продавцу: {SELLER_CONTACT}" if known else "Продавец ещё не указал контакт.")
+        rows = ([[LB("❓ Поддержка", link)]] if link else []) + [back]
     elif name == "hp":
         text = help_text() + "\n\nМожно просто скинуть боту фото/видео/пересланное — улетит в тайник."
         rows = [back]
@@ -3471,7 +3478,6 @@ def _screen(name, uid=None):
                 f"👥 Админы — дать управлять ботом ещё кому-то (до {LIMIT_ADMINS})\n"
                 "🎭 Темы — несколько каналов MAX, у каждого свои источники\n"
                 "📜 Журнал — что бот сделал с каждым постом\n"
-                "🔎 Проверка связи — найти, почему посты не выходят\n"
                 + ("" if not show_tg(uid) else "🔑 Telegram — твой аккаунт Telegram: файлы, закрытые каналы, большие видео\n")
                 + "🧠 Умное — умное время, хэштеги, авто-оценка, строгие дубли и реклама\n"
                 + "❓ Команды — быстрые команды через /\n"
@@ -3479,7 +3485,7 @@ def _screen(name, uid=None):
         rows = [[B("🎬 Видео", "m:vid"), B("🔁 Повторы", "m:dd")],
                 [B("🛡 Фильтр рекламы", "m:fl"), B("👥 Админы", "m:ad")],
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
-                [B("🔎 Проверка связи", "m:dg")] + ([B("🔑 Telegram", "tg:menu")] if show_tg(uid) else []),
+                *([[B("🔑 Telegram", "tg:menu")]] if show_tg(uid) else []),
                 [B("🧠 Умное", "m:ai"), B("❓ Команды", "m:hp")],
                 [B("✍️ Подпись под постами", "m:sg"), B("⏳ Расписание", "m:q")],
                 [B("✋ Проверка постов", "m:ap")],
@@ -4579,10 +4585,10 @@ def guide_text():
             + ("" if NO_TG else "🔑 Telegram (в «⚙️ Ещё настройки») — подключи свой аккаунт Telegram, чтобы "
                "переносились файлы (PDF и т.п.), большие видео и посты закрытых каналов. Нужны только номер и код.\n")
             + 
-            "⚙️ Ещё настройки — видео, повторы, удаление рекламы, админы, журнал, проверка, 📄 условия.\n\n"
+            "⚙️ Ещё настройки — видео, повторы, удаление рекламы, админы, журнал, 📄 условия.\n\n"
             "⚖️ Добавляй только свои каналы или те, на копирование которых у тебя есть разрешение владельца. "
             "Перед первым добавлением бот попросит это подтвердить.\n\n"
-            "❓ Посты не выходят? ⚙️ Ещё настройки → 🔎 Проверка связи — бот покажет, что не так.\n"
+            "❓ Посты не выходят? Напиши продавцу — контакт ниже.\n"
             f"Вопросы и оплата: {SELLER_CONTACT}")
 
 
@@ -9757,16 +9763,25 @@ CONTACT_ASK = ("📇 Хочешь, чтобы продавец помог с н�
                "твой номер, и он напишет тебе в MAX. Не хочешь — просто пропусти.")
 
 
-def seller_link():
-    """Ссылка на личный чат хозяина в MAX: контакт «@ник» или «max.ru/…», иначе ник хозяина. None — открыть нечем."""
-    c = (SELLER_CONTACT or "").strip()
-    m = re.match(r"(?i)^(?:https?://)?max\.ru/(\S+)$", c)
+def max_url(text):
+    """Ссылка из контакта или ссылки на канал: https://… — как есть (и внутри текста), «max.ru/…» и «web.max.ru/…»
+    без https, «@ник» или просто ник (латиницей) — https://max.ru/ник. Телефон и прочее — None."""
+    c = (text or "").strip()
+    m = re.search(r"(?i)\bhttps?://[^\s<>«»\"']+", c)
     if m:
-        return "https://max.ru/" + m.group(1)
-    if re.fullmatch(r"@[A-Za-z][\w.]{2,}", c):
-        return "https://max.ru/" + c[1:]
+        return m.group(0).rstrip(".,;:!?)")
+    m = re.search(r"(?i)(?<![\w./@])((?:web\.)?max\.ru/[^\s<>«»\"']+)", c)
+    if m:
+        return "https://" + m.group(1).rstrip(".,;:!?)")
+    m = re.search(r"(?<![\w.])@([A-Za-z][\w.]{2,})", c) or re.fullmatch(r"([A-Za-z][\w.]{2,})", c)
+    return "https://max.ru/" + m.group(1).rstrip(".") if m else None
+
+
+def seller_link():
+    """Ссылка на личный чат хозяина в MAX — из контакта «📞 Изменить мой контакт», иначе ник хозяина.
+    None — открыть нечем (например, контакт — телефон)."""
     nick = GCFG.get("host_nick")
-    return f"https://max.ru/{nick}" if nick else None
+    return max_url(SELLER_CONTACT) or (f"https://max.ru/{nick}" if nick else None)
 
 
 def contact_vcf(msg):
@@ -10079,6 +10094,42 @@ def chat_info(chat_id):
         return {}
 
 
+CHAN_LINKS = {}          # chat_id канала MAX -> (ссылка, когда спросили MAX): карточки не спрашивают MAX каждый раз
+
+
+def theme_channel_url(t):
+    """Ссылка на канал MAX, куда выкладывает тема: как её отдаёт MAX по chat_id (сам канал, а не то, что
+    когда-то вводили), иначе — ссылка из настроек темы. "" — канал не привязан или ссылки нет (закрытый)."""
+    if not t.chat_id:
+        return ""
+    got = CHAN_LINKS.get(t.chat_id)
+    if got is None or time.time() - got[1] > 3600:
+        info = chat_info(t.chat_id)
+        got = (max_url(info.get("link")) or "", time.time())
+        if info:                                          # MAX не ответил — не запоминаем, спросим в следующий раз
+            CHAN_LINKS[t.chat_id] = got
+    return got[0] or max_url(t.link) or ""
+
+
+def cabinet_channels(key):
+    """Карточка кабинета в панели: каналы MAX (ссылки — ещё и кнопками) и источники Telegram по темам."""
+    themes = tenant_themes(key)
+    bound = [t for t in themes if t.chat_id]
+    lines, rows = ["📺 Каналы MAX:" + ("" if bound else " —")], []
+    for t in bound:
+        url = theme_channel_url(t)
+        lines.append(f"• {t.name} — {url or 'ссылки нет (закрытый канал)'}")
+        if url and len(rows) < 10:
+            rows.append([LB(f"📺 {t.name}"[:60], url)])
+    lines.append("📡 Источники Telegram:" + ("" if themes else " —"))
+    for t in themes:
+        src = [ch_label(c) for c in t.own.get("channels") or []]
+        more = f" и ещё {len(src) - 15}" if len(src) > 15 else ""   # сообщение MAX — до 4000 символов
+        lines.append(f"• {t.name}: " + (", ".join(src[:15]) + more if src else "—"))
+    text = "\n".join(lines)
+    return (text if len(text) <= 2500 else text[:2500].rsplit("\n", 1)[0] + "\n…"), rows
+
+
 def fsub_add(text):
     """Хозяин прислал ссылку или ID канала для обязательной подписки. (ответ, экран)"""
     t = text.strip()
@@ -10332,7 +10383,7 @@ def buyer_profile(key, now=None):
     themes = []
     if key:
         for t in tenant_themes(key):
-            themes.append({"name": t.name, "chat_id": t.chat_id, "link": t.link,
+            themes.append({"name": t.name, "chat_id": t.chat_id, "link": theme_channel_url(t),
                            "sources": list(t.own.get("channels") or []), "published": t.stats.get("published", 0),
                            "last_pub": t.pub.get("last_pub", 0)})
         if tenant_mode(key) == "free":                    # на бесплатном лимиты — бесплатного тарифа
@@ -11638,6 +11689,8 @@ def host_screen(name, uid):
                 + (f"Подписка до: {fmt_date(c['until'])} ({left} дн.)\n" if c.get("until") else "Не оплачивал\n")
                 + f"Тем: {info['themes']} из {c.get('lim_themes', LIMIT_THEMES)} — {', '.join(info['names'])}\n"
                 f"Каналов-источников: {info['sources']} · опубликовано: {info['published']} · ошибок: {info['errors']}")
+        chan_text, chan_rows = cabinet_channels(key)
+        text += "\n\n" + chan_text
         if c.get("payreq"):
             pr = c["payreq"]
             text += f"\n\n💳 Ждёт подтверждения оплаты: «{pr['plan']}» {pr['days']} дн. — {pr['price']} ₽"
@@ -11659,6 +11712,7 @@ def host_screen(name, uid):
             rows.append([LB("💬 Написать ему лично", f"https://max.ru/{nick}")])
         elif not phone:
             rows.append([B("📇 Попросить контакт", f"a:clask:{key}")])
+        rows += chan_rows                                   # 📺 открыть канал покупателя — как там выходят посты
         rows += [[B("⛔ Выключить", f"a:cloff:{key}") if mode != "off" else B("✅ Включить", f"a:clon:{key}")],
                  [B("📦 Тариф", f"m:clpl:{key}"), B("📏 Лимиты", f"m:cllim:{key}")],
                  [B("✉️ Написать", f"p:clsay:{key}"), B("🧪 Бета-функции", f"m:clbt:{key}")],
@@ -12082,7 +12136,11 @@ def clients_text(action, text, uid):
         for cid in list(CLIENTS):
             with contextlib.suppress(Exception):
                 write_subscription(cid)
-        return f"Готово, мой контакт: {SELLER_CONTACT}", "cltar"
+        url = seller_link()
+        return (f"Готово, мой контакт: {SELLER_CONTACT}\n\n" + (
+            f"Кнопка «❓ Поддержка» у покупателей открывает: {url}" if url else
+            "⚠️ Это не ссылка — кнопка «❓ Поддержка» не откроет чат с тобой. Пришли ссылку на свой профиль MAX "
+            "(https://max.ru/…) или @ник.")), "cltar"
     if action == "clpayset":
         GCFG["pay_info"] = text.strip()[:500]
         save_cfg()

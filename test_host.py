@@ -1139,9 +1139,9 @@ bot.TENANTS[k_exp]["enabled"] = False
 lines = " | ".join(t_ for _, t_ in bot.pipeline_status(bot.tenant_themes(k_exp)[0], now))
 bot.TENANTS[k_exp]["enabled"] = True
 assert "приостановлен" in lines and "не читаются" in lines, lines
-press(5001, 62000, "m:dg")
+press(1, 61000, "m:dg")                                             # у покупателя проверки нет (h92), у админа — есть
 assert "в очереди" in OUT[-1][0] or "последний пост" in OUT[-1][0], OUT[-1][0][-400:]
-print("h51 ok: 🔎 проверка показывает, где застряли посты: ждут ✅, «Что делать?», реклама, нет подписки, последний пост")
+print("h51 ok: 🔎 проверка (у админа) показывает, где застряли посты: ждут ✅, реклама, нет подписки, последний пост")
 
 # 52) у покупателя — кнопка-ссылка «💬 Написать мне лично»: открывает личный чат с хозяином в MAX (не сообщение от бота)
 def link_of(rows):
@@ -2607,6 +2607,87 @@ if "pe:0:30" in shown():
 assert len(pay_msgs(n91)) == 1, OUT[n91:]
 bot.TENANTS[bot.tenant_key(9100)].pop("pay", None)
 print("h91 ok: 💳 ЮKassa — ссылка на оплату приходит одним сообщением, без дубля")
+
+# 92) 🔎 «Проверка связи» у покупателя убрана совсем: в «Настройках», в «Журнале», в инструкции; старая кнопка
+#     ведёт в меню; у админа (полное меню «Мои каналы») — как было
+msg(9300, 93000, "/start")
+assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, OUT[-1][1]          # меню покупателя — то же
+press(9300, 93000, "m:more")
+assert "m:dg" not in shown() and "Проверка связи" not in shown(), shown()
+press(9300, 93000, "m:lg")
+assert "m:dg" not in shown(), shown()
+press(9300, 93000, "m:gd")
+assert "Проверка связи" not in OUT[-1][0], OUT[-1][0]
+press(9300, 93000, "m:dg")                                       # старая кнопка в чате — меню, а не проверка
+assert [b_["text"] for b_ in buttons_of(OUT[-1][1])] == BUYER6, OUT[-1]
+press(1, 61000, "m:home")                                        # у админа — как было
+assert "m:dg" in shown(), shown()
+print("h92 ok: 🔎 «Проверка связи» у покупателя убрана везде; меню покупателя и админа не изменились")
+
+# 93) ❓ «Поддержка» — прямая ссылка на контакт из «📞 Изменить мой контакт» (в любом виде), не команда бота
+def support_of(uid, chat):
+    press(uid, chat, "m:main")
+    return next(b_ for b_ in buttons_of(OUT[-1][1]) if b_["text"] == "❓ Поддержка")
+contact93, nick93 = bot.SELLER_CONTACT, bot.GCFG.pop("host_nick", None)
+try:
+    for given, url in (("https://web.max.ru/12345678", "https://web.max.ru/12345678"),
+                       ("Пиши мне: https://max.ru/u/AbC123", "https://max.ru/u/AbC123"),
+                       ("max.ru/admin_x", "https://max.ru/admin_x"),
+                       ("@admin.nick", "https://max.ru/admin.nick"),
+                       ("admin_nick", "https://max.ru/admin_nick")):
+        press(1, 61000, "p:clcontact"); n93 = len(OUT); msg(1, 61000, given)
+        assert any(f"открывает: {url}" in o[0] for o in OUT[n93:]), (given, [o[0][:200] for o in OUT[n93:]])   # хозяину — куда ведёт
+        sup = support_of(9300, 93000)
+        assert sup["type"] == "link" and sup["url"] == url and "payload" not in sup, (given, sup)
+    press(1, 61000, "m:bview")                                   # 👀 у админа — та же ссылка
+    assert any(b_.get("url") == "https://max.ru/admin_nick" for b_ in buttons_of(OUT[-1][1])), OUT[-1][1]
+    press(1, 61000, "p:clcontact"); n93 = len(OUT); msg(1, 61000, "+79991234567")   # телефон: ссылкой не открыть
+    assert any("не ссылка" in o[0] for o in OUT[n93:]), [o[0][:200] for o in OUT[n93:]]   # хозяину — предупреждение
+    sup = support_of(9300, 93000)
+    assert sup.get("payload") != "m:hp", sup                     # не «❓ Команды»
+    press(9300, 93000, sup["payload"])
+    assert "+79991234567" in OUT[-1][0] and "Команды" not in OUT[-1][0] and "/start" not in OUT[-1][0], OUT[-1][0]
+finally:
+    bot.SELLER_CONTACT = contact93
+    if nick93:
+        bot.GCFG["host_nick"] = nick93
+print("h93 ok: ❓ «Поддержка» — прямая ссылка на контакт хозяина (ссылка, max.ru/…, @ник, ник); телефон — без команд бота")
+
+# 94) 👥 «Все покупатели» → покупатель: его каналы MAX кнопками-ссылками (туда, куда реально выкладывает бот)
+#     и источники Telegram
+for u94 in (9400, 9410, 9420):
+    msg(u94, u94 * 10, "/start")
+t94, t94b, t94c = (bot.tenant_themes(bot.tenant_key(u))[0] for u in (9400, 9410, 9420))
+srv.chats["buyer94chan"] = 9401
+t94.chat_id, t94.link, t94.own["channels"] = 9401, "https://max.ru/old_wrong", ["durov", "telegram"]
+t94b.chat_id, t94b.link, t94b.own["channels"] = 9411, "https://max.ru/buyer94b", ["rbc_news"]   # MAX ссылку не дал
+t94c.chat_id, t94c.link = 9421, ""                                                              # ссылки нет нигде
+press(1, 61000, "m:cll:0")
+assert any((b_.get("payload") or "").startswith("m:clc:") for b_ in buttons_of(OUT[-1][1])), OUT[-1][1]
+press(1, 61000, f"m:clc:{bot.tenant_key(9400)}")
+txt94, links94 = OUT[-1][0], [b_ for b_ in buttons_of(OUT[-1][1]) if b_.get("type") == "link"]
+assert "📺 Каналы MAX" in txt94 and "https://max.ru/buyer94chan" in txt94 and "old_wrong" not in txt94, txt94
+assert "📡 Источники Telegram" in txt94 and "@durov" in txt94 and "@telegram" in txt94, txt94
+assert any(b_["url"] == "https://max.ru/buyer94chan" for b_ in links94), links94
+press(1, 61000, f"m:clc:{bot.tenant_key(9410)}")
+assert any(b_.get("url") == "https://max.ru/buyer94b" for b_ in buttons_of(OUT[-1][1])), OUT[-1][1]
+assert "@rbc_news" in OUT[-1][0], OUT[-1][0]
+t94c.own["channels"] = [f"long_source_channel_{i}" for i in range(40)]                     # очень много источников
+press(1, 61000, f"m:clc:{bot.tenant_key(9420)}")
+assert "ссылки нет" in OUT[-1][0] and not any(b_.get("type") == "link" for b_ in buttons_of(OUT[-1][1])), OUT[-1]
+assert len(OUT[-1][0]) < bot.MAX_TEXT and "и ещё 25" in OUT[-1][0], (len(OUT[-1][0]), OUT[-1][0][-200:])   # влезает в MAX
+press(1, 61000, f"m:buyer:{bot.tenant_key(9400)}")              # и в карточке «👥 Покупатели» — та же ссылка
+assert "https://max.ru/buyer94chan" in OUT[-1][0], OUT[-1][0]
+bot.ADMIN_IDS = {"556"}
+try:
+    press(556, 55600, f"m:clc:{bot.tenant_key(9400)}")           # админ ADMIN_IDS — тоже видит
+    assert "https://max.ru/buyer94chan" in OUT[-1][0], OUT[-1][0]
+finally:
+    bot.ADMIN_IDS = set()
+press(9420, 94200, f"m:clc:{bot.tenant_key(9400)}")             # покупателю чужой кабинет не открыть
+assert "buyer94chan" not in shown() and "durov" not in shown(), shown()
+assert panel_of(bot.screen("cl", 1)[1]) == PANEL88, "панель админа не тронута"
+print("h94 ok: 👥 покупатель в «Все покупатели»: каналы MAX ссылками (куда реально выкладывает бот), источники Telegram")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
