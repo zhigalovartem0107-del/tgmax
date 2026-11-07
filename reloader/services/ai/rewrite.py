@@ -31,13 +31,13 @@ def _clean(text):
     return text
 
 
-def call_provider(provider, key, text, http, url, model, timeout=60):
+def call_provider(provider, key, text, http, url, model, timeout=60, prompt=PROMPT):
     if provider == "gemini":
         r = http.post(f"{url}/models/{model}:generateContent", headers={"x-goog-api-key": key},
-                      json={"contents": [{"parts": [{"text": PROMPT + text}]}]}, timeout=timeout)
+                      json={"contents": [{"parts": [{"text": prompt + text}]}]}, timeout=timeout)
     else:
         r = http.post(f"{url}/chat/completions", headers={"Authorization": f"Bearer {key}"},
-                      json={"model": model, "messages": [{"role": "user", "content": PROMPT + text}]}, timeout=timeout)
+                      json={"model": model, "messages": [{"role": "user", "content": prompt + text}]}, timeout=timeout)
     if r.status_code == 429:
         raise RateLimited(_retry_after(r))
     if r.status_code in (401, 403):
@@ -56,8 +56,9 @@ def call_provider(provider, key, text, http, url, model, timeout=60):
     return out
 
 
-def rewrite(text, rotators, http, settings, log=print):
-    """Пересказ: провайдеры по очереди ORDER, у каждого — ключи по кругу (429 — следующий ключ)."""
+def rewrite(text, rotators, http, settings, log=print, prompt=PROMPT, timeout=60):
+    """Пересказ: провайдеры по очереди ORDER, у каждого — ключи по кругу (429 — следующий ключ).
+    prompt — другое задание тем же ключам (например, короткий совет к посту), timeout — сколько ждать ответа."""
     reasons = []
     for provider in ORDER:
         rot = rotators.get(provider)
@@ -65,8 +66,19 @@ def rewrite(text, rotators, http, settings, log=print):
             continue
         cfg = settings.get(provider) or DEFAULTS[provider]
         try:
-            return rot.run(lambda key, p=provider, c=cfg: call_provider(p, key, text, http, c["url"], c["model"]))
+            return rot.run(lambda key, p=provider, c=cfg: call_provider(p, key, text, http, c["url"], c["model"],
+                                                                        timeout, prompt))
         except AllKeysExhausted as e:
             log(f"🤖 ИИ {provider}: все ключи исчерпаны — {e}")
             reasons.append(str(e))
     raise AiUnavailable("; ".join(reasons) or "ключей ИИ нет")
+
+
+ADVICE = ("Ты — редактор каналов в мессенджере MAX. Оцени черновик поста коротко, по-русски, 2–3 пункта: что "
+          "зацепит читателя и что улучшить (заголовок, первая строка, призыв, длина). Без вступлений и без "
+          "переписывания поста целиком, не больше 400 знаков.\n\nЧерновик:\n")
+
+
+def ask(text, rotators, http, settings, log=print, prompt=ADVICE, timeout=25):
+    """Короткий ответ ИИ на своё задание (по умолчанию — совет к черновику поста). Нет ключей — AiUnavailable."""
+    return rewrite(text, rotators, http, settings, log, prompt=prompt, timeout=timeout)

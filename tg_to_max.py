@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import queue
 import random
 import secrets
 import re
@@ -25,6 +26,7 @@ import threading
 import time
 import traceback
 import types
+import zlib
 from collections import Counter, deque
 from difflib import SequenceMatcher
 
@@ -38,7 +40,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110610            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110611            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -437,6 +439,76 @@ except TypeError:
 WS.mount("https://", HTTPAdapter(max_retries=_wretry, pool_connections=10, pool_maxsize=20))
 WS.mount("http://", HTTPAdapter(max_retries=_wretry, pool_connections=10, pool_maxsize=20))
 TG_HOSTS = ["t.me", "telegram.me"]                   # если t.me не отвечает — то же самое через telegram.me
+
+
+# ---------- ⏱ СКОРОСТЬ: где бот тратит время (запросы к MAX/ЮKassa/ИИ/t.me, нажатия, запись файлов) ----------
+PERF_LOCK = threading.Lock()
+PERF = {"since": time.time(), "http": {}, "upd": {}, "ai": {}, "json": {}, "tg": {}, "slow": deque(maxlen=15)}
+PERF_SLOW_SEC = 1.5          # нажатие обрабатывалось дольше — строка в лог с тем, на что ушло время
+_PERF_LOCAL = threading.local()   # запросы, сделанные во время текущего нажатия (для строки «медленно»)
+
+
+def perf_add(kind, key, sec):
+    """Учёт: сколько раз, сколько всего секунд, самый долгий раз."""
+    with PERF_LOCK:
+        rec = PERF[kind].setdefault(key, [0, 0.0, 0.0])
+        rec[0] += 1
+        rec[1] += sec
+        rec[2] = max(rec[2], sec)
+    calls = getattr(_PERF_LOCAL, "calls", None)
+    if calls is not None and kind != "upd":
+        calls.append((key if kind == "http" else f"{kind}:{key}", sec))
+
+
+def perf_endpoint(method, url):
+    """«GET /chats/{id}» вместо адреса с числами и параметрами — одинаковые запросы складываем вместе.
+    У чужих сервисов (ЮKassa, ИИ, t.me) впереди имя сайта."""
+    from urllib.parse import urlsplit
+    sp = urlsplit(url or "")
+    path = re.sub(r"/-?\d+(?=/|$|:)", "/{id}", sp.path or "/")
+    path = re.sub(r"/[A-Za-z0-9_.\-]{24,}(?=/|$|:)", "/{x}", path)
+    host = sp.hostname or ""
+    return f"{method} {'' if host == urlsplit(MAX_API).hostname else host}{path}"
+
+
+def _perf_hook(r, *a, **k):
+    with contextlib.suppress(Exception):
+        key = perf_endpoint(r.request.method, r.url)
+        if not key.endswith("/updates"):                # долгое ожидание событий MAX — так и задумано
+            perf_add("http", key, r.elapsed.total_seconds())
+    return r
+
+
+S.hooks["response"].append(_perf_hook)
+WS.hooks["response"].append(_perf_hook)
+_save_json_raw = save_json
+
+
+def save_json(path, data, private=False, backup=False):
+    """Запись файла данных (reloader.core.files.save_json) + учёт времени. Словарь поменяли из другого потока
+    прямо во время записи — пишем ещё раз (меню обрабатывает нажатия разных людей одновременно)."""
+    t0 = time.perf_counter()
+    try:
+        for n in range(3):
+            try:
+                return _save_json_raw(path, data, private, backup)
+            except RuntimeError:
+                if n == 2:
+                    raise
+    finally:
+        perf_add("json", os.path.basename(str(path)), time.perf_counter() - t0)
+
+
+CL_LOCK = threading.RLock()  # кабинеты и темы: новый кабинет / тема заводится строго по одному
+
+
+def cabinet_locked(fn):
+    """Заводит кабинет или тему под CL_LOCK: два новых покупателя в одну секунду не получат один номер темы."""
+    @functools.wraps(fn)
+    def wrap(*a, **k):
+        with CL_LOCK:
+            return fn(*a, **k)
+    return wrap
 
 
 if __name__ == "__main__":
@@ -862,6 +934,7 @@ def new_theme_id():
     return f"t{n}"
 
 
+@cabinet_locked
 def create_theme(name, owner=""):
     t = Theme(new_theme_id(), name, "", owner=str(owner or ""))
     t.own["channels"] = []
@@ -1282,7 +1355,11 @@ def ai_llm_ready():
 
 def ai_rewrite(text):
     """🤖 Пересказ поста через ИИ (Gemini → OpenRouter → DeepSeek). Все ключи исчерпаны — AiUnavailable."""
-    return ai_rewrite_text(text, AI_ROTATORS, S, ai_settings(), journal)
+    t0 = time.perf_counter()
+    try:
+        return ai_rewrite_text(text, AI_ROTATORS, S, ai_settings(), journal)
+    finally:
+        perf_add("ai", "пересказ поста", time.perf_counter() - t0)
 
 
 def compose_text(raw, ch="", rewritten=False):
@@ -3718,9 +3795,20 @@ def _screen(name, uid=None):
                 "бот сам будет придерживать посты до «горячих» часов.\n\n"
                 "⏳ Подсчёт занимает до 1–2 минут — нажми кнопку один раз и подожди, картинки придут сами.\n\n"
                 f"Каналов: {len(chans)} — по картинке на каждый.\n"
-                "Бот должен быть админом канала, иначе MAX не покажет просмотры.")
+                "Бот должен быть админом канала, иначе MAX не покажет просмотры.\n\n"
+                "🖼 Карточка канала — подписчики и прирост (сегодня / 7 / 30 дней), график роста, просмотры "
+                "на пост за 24 / 48 / 72 часа и ER.\n"
+                "🌐 Сводка по всем каналам — вся сеть одной картинкой: подписчики, просмотры, общий ER, топ-3.\n"
+                "🔮 Прогноз поста — пришли черновик, бот оценит его до публикации.")
         rows = [[B("📊 Прислать картинку сейчас", "a:anl")],
+                [B("🖼 Карточка канала", "a:anlcard")],
+                [B("🌐 Сводка по всем каналам", "a:anlnet")],
+                [B("🔮 Прогноз поста", "a:predict")],
+                [B(f"Фон карточек: {ANL_BG_NAMES[anl_bg_mode(uid)]}", "a:anlbg")],
                 [B("◀️ Панель", "m:cl") if HOST_MODE and can_panel(uid) else back[0]]]
+    elif name == "predict" and feature_on("stats"):
+        text = PREDICT_ASK
+        rows = [[B("◀️ Аналитика", "m:anl")]]
     elif name == "pay" and (CLIENT_MODE or HOST_MODE):
         text, rows = pay_screen()
     elif name.split(":")[0] == "myt" and HOST_MODE and feature_on("mytariff"):
@@ -3903,7 +3991,7 @@ def apply_text(action, text, uid=None):
                     "через пробел. Пример: 123456 live_AbCd…"), "cltar"
         GCFG["yk_shop"], GCFG["yk_key"] = sid, key        # ключи из панели главнее переменных хостинга
         save_cfg()
-        ok, why = yk_check()
+        ok, why = yk_check(fresh=True)
         keep = ("" if yk_env_keys() == (sid, key) else
                 "\n\n💾 Чтобы ключи не пропали при пересборке бота на хостинге, задай их и в переменных Bothost: "
                 "YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY (тот же shopId и ключ).")
@@ -4132,6 +4220,9 @@ def do_action(act, uid=None):
     scr = "main"
     if p[0] in ("buyerask", "buyercard", "codesexp") and HOST_MODE and can_panel(uid):   # 👥 🎟 — в панели хозяина
         return host_action(p, uid) or "cl"
+    if p[0] == "ykchk":                                    # 🔎 Проверить ЮKassa — спросить заново, не из памяти
+        YK_CHECK_CACHE.clear()
+        return "cltar"
     if p[0].startswith("cl"):
         if HOST_MODE:
             return host_action(p, uid) or "cl"
@@ -4213,6 +4304,20 @@ def do_action(act, uid=None):
     elif p[0] == "anl":
         FLASH[uid] = analytics_start(uid)
         scr = "anl"
+    elif p[0] in ("anlcard", "anlnet") and feature_on("stats"):
+        FLASH[uid] = anl_cards_start(uid, "net" if p[0] == "anlnet" else "chan")
+        scr = "anl"
+    elif p[0] == "anlbg":
+        mode = ANL_BG[(ANL_BG.index(anl_bg_mode(uid)) + 1) % len(ANL_BG)]
+        GCFG.setdefault("anl_bg", {})[str(uid)] = mode
+        save_cfg()
+        FLASH[uid] = f"Фон карточек: {ANL_BG_NAMES[mode]}" + (
+            "" if mode != "ai" or ai_keys("openrouter") else
+            " — нужен ключ OpenRouter (🤖 ключи ИИ); пока ключа нет, рисую узор сам")
+        scr = "anl"
+    elif p[0] == "predict" and feature_on("stats"):
+        PENDING[uid] = "predict"
+        scr = "predict"
     elif p[0] in ("aismart", "aitags", "aiqual", "aidup", "aiads"):
         key = {"aismart": "smart_time", "aitags": "smart_tags", "aiqual": "smart_quality",
                "aidup": "dedupe_strict", "aiads": "ads_strict"}[p[0]]
@@ -4813,6 +4918,8 @@ COMMAND_HELP = [
     ("log", "Журнал: что бот делал с постами"),
     ("report", "Прислать отчёт"),
     ("stats", "📊 Аналитика просмотров за 7 дней — прямо сейчас"),
+    ("card", "🖼 Карточка канала; /card all — сводка по всем каналам"),
+    ("predict", "🔮 Прогноз поста: оценка черновика до публикации"),
     ("help", "Список команд"),
 ]
 
@@ -5089,6 +5196,16 @@ def run_command(cmd, arg, uid, chat_id):
                 show("main")
     elif cmd in ("channels", "kanaly") and can_panel(uid):
         say(channels_report())                          # 📢 каналы бота, привязки и события из каналов
+    elif cmd in ("perf", "speed", "skorost") and can_panel(uid):
+        say(perf_report(reset=arg.lower() in ("reset", "сброс")))   # ⏱ где бот тратит время
+    elif cmd in ("predict", "prognoz") and feature_on("stats"):
+        if arg:
+            predict_start(uid, chat_id, arg)            # /predict текст поста — сразу прогноз
+        else:
+            PENDING[uid] = "predict"
+            say(PREDICT_ASK, [[B("◀️ Аналитика", "m:anl")]])
+    elif cmd in ("card", "kartochka") and feature_on("stats"):
+        say(anl_cards_start(uid, "net" if arg.lower() in ("net", "all", "сеть", "все") else "chan"))
     elif cmd == "check" and simple_menu(uid):
         show("main")                                   # 🔎 проверки связи у покупателя нет — его меню
     elif cmd == "check":
@@ -5352,6 +5469,10 @@ def handle_message(uid, chat_id, name, text, msg=None):
         run_command(cmd.split("@")[0].strip().lower(), arg.strip(), uid, chat_id)
         return
     action = PENDING.get(uid)
+    if action == "predict":                                # 🔮 черновик на оценку — не в тайник и не в очередь
+        PENDING.pop(uid, None)
+        predict_start(uid, chat_id, content, atts)
+        return
     if action == "stashadd":                               # режим добавления: всё присланное — в тайник
         if not atts and t.lower() in ("готово", "done", "хватит"):
             PENDING.pop(uid, None)
@@ -5623,6 +5744,168 @@ def _handle_update(u, kind):
                        user.get("first_name") or user.get("name") or "", "/start")
 
 
+# ---------- ⚡ МЕНЮ БЕЗ ОЧЕРЕДИ: нажатия разных людей обрабатываются одновременно ----------
+# Раньше события MAX шли строго по одному: пока бот ждал ЮKassa, MAX или ИИ для одного покупателя (до 20–60 с),
+# кнопки не отвечали никому. Теперь у каждого пользователя своя «полоса»: его нажатия — по порядку, а чужие
+# медленные дела его не держат.
+MENU_LANES = max(1, min(16, int(os.environ.get("MENU_LANES") or 4)))
+LANES = []                   # [queue.Queue] — по одной на полосу
+LANES_LOCK = threading.Lock()
+TYPING_AFTER_SEC = 1.0       # нажатие обрабатывается дольше — в чате «печатает…», чтобы было видно, что бот занят
+
+
+def update_who(u):
+    """(пользователь, личный чат с ним) из события MAX — по пользователю выбираем полосу."""
+    kind = u.get("update_type")
+    msg = u.get("message") or {}
+    rec = msg.get("recipient") or {}
+    if kind == "message_callback":
+        return ((u.get("callback") or {}).get("user") or {}).get("user_id"), rec.get("chat_id")
+    if kind == "message_created":
+        dialog = rec.get("chat_type") in (None, "dialog")
+        return (msg.get("sender") or {}).get("user_id"), (rec.get("chat_id") if dialog else None)
+    if kind == "bot_started":
+        return (u.get("user") or {}).get("user_id"), u.get("chat_id")
+    return None, None
+
+
+def update_label(u):
+    """Короткое имя события для учёта скорости: «кнопка m:anl», «сообщение /perf», «бот добавлен»."""
+    kind = u.get("update_type")
+    if kind == "message_callback":
+        pl = str((u.get("callback") or {}).get("payload") or "")
+        return "кнопка " + ":".join(pl.split(":")[:2])[:24]
+    if kind == "message_created":
+        rec = (u.get("message") or {}).get("recipient") or {}
+        if rec.get("chat_type") not in (None, "dialog"):
+            return "сообщение в канале"
+        t = ((u.get("message") or {}).get("body") or {}).get("text") or ""
+        return "сообщение " + (t.split()[0][:16] if t.startswith("/") and t.split() else "текст")
+    return {"bot_started": "старт", "bot_added": "бот добавлен", "bot_removed": "бот убран"}.get(kind, str(kind))
+
+
+def send_action(chat, action="typing_on"):
+    """Значок в чате: «печатает…» (typing_on), «отправляет фото…» (sending_photo). Не вышло — не страшно."""
+    if not chat:
+        return False
+    try:
+        r = S.post(f"{MAX_API}/chats/{chat}/actions", headers=HEADERS, json={"action": action}, timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+@contextlib.contextmanager
+def chat_busy(chat, action="typing_on", every=4.0, after=0.0):
+    """Пока бот занят долгим делом (ИИ, картинка, MAX) — в чате «печатает…». MAX гасит значок через
+    несколько секунд, поэтому повторяем. after — показать, только если дело затянулось дольше."""
+    stop = threading.Event()
+
+    def loop():
+        if after and stop.wait(after):
+            return
+        while not stop.is_set():
+            send_action(chat, action)
+            stop.wait(every)
+
+    if chat:
+        threading.Thread(target=loop, daemon=True, name="typing").start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
+def run_update(u):
+    """Одно событие меню с учётом времени: дольше 1 с — «печатает…», дольше 1,5 с — строка «🐢 Медленно» в лог
+    с самыми долгими запросами (так видно, что тормозит: MAX, ЮKassa, ИИ или запись файлов)."""
+    _PERF_LOCAL.calls = []
+    t0 = time.perf_counter()
+    try:
+        with chat_busy(update_who(u)[1], after=TYPING_AFTER_SEC):
+            handle_update(u)
+    except Exception:
+        log_exc("обработка сообщения в меню")
+    finally:
+        dt = time.perf_counter() - t0
+        calls, _PERF_LOCAL.calls = _PERF_LOCAL.calls or [], None
+        label = update_label(u)
+        perf_add("upd", label, dt)
+        if dt >= PERF_SLOW_SEC:
+            top = sorted(calls, key=lambda c: -c[1])[:3]
+            line = (f"🐢 Медленно: {label} — {dt:.1f} с" + ("; дольше всего: " + ", ".join(
+                f"{k} {sec:.1f} с" for k, sec in top) if top else ""))
+            with PERF_LOCK:
+                PERF["slow"].append((time.time(), line))
+            print(line)
+
+
+def _lane_worker(q):
+    while True:
+        u = q.get()
+        try:
+            run_update(u)
+        finally:
+            q.task_done()
+
+
+def dispatch_update(u):
+    """Событие — в полосу его личного чата с ботом (MAX бывает шлёт одному человеку разные id, а чат один);
+    нет личного чата — по пользователю, нет и его — по каналу."""
+    with LANES_LOCK:
+        if not LANES:
+            for i in range(MENU_LANES):
+                q = queue.Queue()
+                LANES.append(q)
+                threading.Thread(target=_lane_worker, args=(q,), daemon=True, name=f"menu-lane-{i}").start()
+    who, chat = update_who(u)
+    key = str(chat if chat is not None else who if who is not None else u.get("chat_id") or "")
+    LANES[zlib.crc32(key.encode("utf-8")) % len(LANES)].put(u)
+
+
+def lanes_wait(timeout=10.0):
+    """Для проверок: дождаться, пока все полосы обработают события."""
+    end = time.time() + timeout
+    while time.time() < end and any(q.unfinished_tasks for q in LANES):
+        time.sleep(0.02)
+    return not any(q.unfinished_tasks for q in LANES)
+
+
+def perf_report(reset=False):
+    """/perf — где бот тратит время (с запуска или с прошлого «/perf сброс»)."""
+    with PERF_LOCK:
+        snap = {k: (dict(v) if isinstance(v, dict) else list(v)) for k, v in PERF.items() if k != "since"}
+        mins = max(1, int((time.time() - PERF["since"]) / 60))
+        if reset:
+            for k, v in PERF.items():
+                if k != "since":
+                    v.clear()
+            PERF["since"] = time.time()
+
+    def top(kind, n, title):
+        rows = sorted(snap[kind].items(), key=lambda kv: -kv[1][1])[:n]
+        return ([title] + [f"• {k} — {c} раз, в среднем {tot / c:.2f} с, самый долгий {mx:.1f} с"
+                           for k, (c, tot, mx) in rows] + [""]) if rows else []
+
+    upd = snap["upd"].values()
+    n, tot = sum(r[0] for r in upd), sum(r[1] for r in upd)
+    lines = [f"⏱ Скорость бота за {mins} мин", "",
+             f"Нажатий и сообщений: {n}" + (f", в среднем {tot / n:.2f} с" if n else "")
+             + f"; меню обрабатывает {len(LANES) or MENU_LANES} пользователей одновременно", ""]
+    lines += top("upd", 6, "🖱 Дольше всего (всего секунд):")
+    lines += top("http", 8, "🌐 Запросы (MAX, ЮKassa, ИИ, t.me):")
+    lines += top("ai", 4, "🤖 ИИ:")
+    lines += top("tg", 3, "📡 Telegram:")
+    lines += top("json", 4, "💾 Запись файлов:")
+    slow = snap["slow"][-5:]
+    lines += ([f"🐢 Медленные нажатия (дольше {PERF_SLOW_SEC:.1f} с), последние:"]
+              + [f"{time.strftime('%H:%M', time.localtime(t))} {line[2:]}" for t, line in slow]
+              if slow else ["🐢 Медленных нажатий нет ✅"])
+    if reset:
+        lines += ["", "Счётчики обнулены."]
+    return "\n".join(lines)
+
+
 def menu_loop():
     """Слушает события бота MAX (кнопки и сообщения) — работает в отдельном потоке."""
     global CLAIM_CODE
@@ -5686,10 +5969,7 @@ def menu_loop():
                 print("Меню: связь с MAX восстановлена ✅")
             fails = 0
             for u in data.get("updates", []):
-                try:
-                    handle_update(u)
-                except Exception:
-                    log_exc("обработка сообщения в меню")
+                dispatch_update(u)                       # у каждого пользователя — своя «полоса»
         except (requests.ConnectionError, requests.Timeout) as e:
             # мобильный интернет рвёт долгие соединения — это нормально, просто переподключаемся
             fails += 1
@@ -6249,6 +6529,8 @@ async def publish_item(client, chat_id, it):
         journal(f"⏱ [{it['ch']}] пост {it['id']} публиковался больше {PUBLISH_TIMEOUT // 60} мин (зависло) — "
                 "прервал, повторю через 10 мин; остальные посты выходят")
         return "retry"
+    finally:
+        perf_add("tg", "публикация поста в MAX (с файлами)", time.monotonic() - t0)
 
 
 async def _publish_item(client, chat_id, it):
@@ -6666,6 +6948,7 @@ async def background_loop():
             if time.time() >= RIGHTS_CHECK["next"]:
                 RIGHTS_CHECK["next"] = time.time() + 3600
                 await asyncio.to_thread(check_rights_all)
+                await asyncio.to_thread(subs_snapshot_all)   # 📈 подписчики каналов — для графика роста
             if HOST_MODE and n % 4 == 0:                 # каждые ~20 сек проверяем онлайн-оплаты кабинетов
                 await asyncio.to_thread(host_pay_poll)
             if HOST_MODE and n % 180 == 0:               # ~раз в 15 мин — напоминания о сроке кабинетам
@@ -6730,10 +7013,11 @@ def video_info(m):
 
 async def process_channel(client, ch, fails):
     """Новые посты канала текущей темы. Карточки одобрения уходят ПАЧКОЙ после обхода (см. send_previews)."""
-    fresh = []
+    fresh, t0 = [], time.perf_counter()
     try:
         await _process_channel(client, ch, fails, fresh)
     finally:
+        perf_add("tg", "чтение канала Telegram", time.perf_counter() - t0)
         if fresh:
             await asyncio.to_thread(send_previews, fresh)
 
@@ -8111,15 +8395,22 @@ def user_chat(uid):
     return (CFG.get("admin_chats") or {}).get(str(uid))
 
 
-def analytics_start(uid):
-    """Кнопка «📊 Аналитика»: считает в фоне, картинки придут в чат."""
-    chat = user_chat(uid)
+def my_channels():
+    """[(название темы, chat_id канала MAX, [(mid, время) постов, выложенных ботом])] — каналы этого
+    пользователя (в host-режиме — только его кабинета)."""
     chans = []
     for t in (scope_themes() if HOST_MODE else THEMES):
         if t.chat_id:
             with theme_ctx(t):
                 known = [(p.get("mid"), p.get("t", 0)) for p in PUB.get("day_posts", []) if p.get("mid")]
             chans.append((t.name, t.chat_id, known))
+    return chans
+
+
+def analytics_start(uid):
+    """Кнопка «📊 Аналитика»: считает в фоне, картинки придут в чат."""
+    chat = user_chat(uid)
+    chans = my_channels()
     if chat is None:
         return "Не нашёл твой чат с ботом — напиши боту /start и нажми ещё раз."
     if not chans:
@@ -8142,6 +8433,283 @@ def analytics_start(uid):
 
     threading.Thread(target=run, daemon=True).start()
     return wait
+
+
+# ---------- 🖼 ПРЕМИУМ-КАРТОЧКИ: статистика канала и всей сети каналов ----------
+from reloader.services import analytics_image as anlimg  # noqa: E402
+from reloader.services.ai import image as ai_image  # noqa: E402
+from reloader.services.ai.rewrite import ask as ai_ask_text  # noqa: E402
+from reloader.services.analytics import predict as anlpredict  # noqa: E402
+
+SUBS_FILE = "subs_history.json"
+SUBS_HIST = load_json(SUBS_FILE, {})     # chat_id канала MAX -> {"ГГГГ-ММ-ДД": подписчиков (последнее за день)}
+SUBS_KEEP_DAYS = 62
+SUBS_LOCK = threading.Lock()
+ANL_BG = ("pattern", "off", "ai")        # фон карточек: узор (по умолчанию) → без фона → рисует ИИ → узор…
+ANL_BG_NAMES = {"pattern": "🎨 узор", "off": "⬜ без фона", "ai": "🤖 рисует ИИ"}
+ANL_CARD_BUSY = {}                       # «uid:вид» -> когда начали рисовать (второе нажатие не запускает заново)
+PRED_HIST = {}                           # chat_id -> (когда, посты канала) — история для прогноза, на 30 мин
+_CARD_FONTS = threading.local()          # шрифты — у каждого потока свои (FreeType не любит общий шрифт)
+
+
+@functools.lru_cache(maxsize=2)
+def _font_bytes(bold):
+    import base64
+    return zlib.decompress(base64.b64decode("".join(_FONT_B if bold else _FONT_R)))
+
+
+def card_font(bold, size):
+    """Встроенный Inter (с кириллицей) для карточек; распакован один раз, размеры — из памяти потока."""
+    import io
+    from PIL import ImageFont
+    cache = getattr(_CARD_FONTS, "c", None)
+    if cache is None:
+        cache = _CARD_FONTS.c = {}
+    f = cache.get((bold, size))
+    if f is None:
+        f = cache[(bold, size)] = ImageFont.truetype(io.BytesIO(_font_bytes(bool(bold))), size)
+    return f
+
+
+def channel_subs(info):
+    """Подписчиков канала из ответа MAX GET /chats/{id} (participants_count). None — MAX не сказал."""
+    n = (info or {}).get("participants_count")
+    return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else None
+
+
+def subs_snapshot(cid, n, now=None):
+    """Запоминаем подписчиков канала на сегодня: MAX историю не отдаёт — копим сами (для графика и прироста)."""
+    if not cid or n is None:
+        return
+    now = now or time.time()
+    key, old = anlimg.day_key(now), anlimg.day_key(time.time() - SUBS_KEEP_DAYS * 86400)
+    with SUBS_LOCK:
+        h = SUBS_HIST.setdefault(str(cid), {})
+        if h.get(key) == n:
+            return
+        h[key] = n
+        for k in [k for k in h if k < old]:
+            del h[k]
+        snap = copy.deepcopy(SUBS_HIST)
+    with contextlib.suppress(OSError):
+        save_json(SUBS_FILE, snap)
+
+
+def subs_history(cid):
+    with SUBS_LOCK:
+        return dict(SUBS_HIST.get(str(cid)) or {})
+
+
+def subs_snapshot_all():
+    """Раз в час (с проверкой прав): подписчики каждого привязанного канала MAX."""
+    for cid in dict.fromkeys(t.chat_id for t in list(THEMES) if t.chat_id):
+        info = chat_info(cid)
+        subs_snapshot(cid, channel_subs(info))
+
+
+def anl_channel(name, cid, known=()):
+    """Цифры карточки канала: подписчики (+ снимок в историю), просмотры постов за неделю, ER24."""
+    info = chat_info(cid)
+    subs = channel_subs(info)
+    subs_snapshot(cid, subs)
+    diag = {}
+    posts = fetch_channel_msgs(cid, days=7, limit=300, known=known, diag=diag)
+    n = anlimg.channel_numbers(info.get("title") or name, subs, posts, subs_history(cid))
+    icon = info.get("icon")
+    n.update(chat_id=cid, diag=diag, posts=posts, icon=(icon or {}).get("url") if isinstance(icon, dict) else None)
+    return n
+
+
+def anl_bg_mode(uid):
+    m = (GCFG.get("anl_bg") or {}).get(str(uid))
+    return m if m in ANL_BG else "pattern"
+
+
+def ai_background(topic):
+    """Фон, нарисованный ИИ (OpenRouter, модель с картинками), — раз в неделю на тему, дальше из файла.
+    None — ключей OpenRouter нет или не вышло (тогда рисуем узор сами)."""
+    from PIL import Image
+    import io
+    path = f"anl_bg_{anlimg.seed_of(topic) % 10 ** 8}.png"
+    with contextlib.suppress(Exception):
+        if time.time() - os.path.getmtime(path) < 7 * 86400:
+            return Image.open(path).convert("RGB")
+    cfg = ai_settings().get("openrouter") or {}
+    model = os.environ.get("OPENROUTER_IMAGE_MODEL") or ai_image.MODEL
+    for key in ai_keys("openrouter")[:3]:
+        t0 = time.perf_counter()
+        raw = ai_image.generate(topic, key, S, cfg.get("url") or AI_DEFAULTS["openrouter"]["url"], model)
+        perf_add("ai", "фон для карточки", time.perf_counter() - t0)
+        if not raw:
+            continue
+        try:
+            img = Image.open(io.BytesIO(raw)).convert("RGB")
+        except Exception:
+            continue
+        with contextlib.suppress(OSError):
+            img.save(path)
+        return img
+    return None
+
+
+def anl_background(mode, topic, w, h, style):
+    """Картинка-фон по выбору пользователя; ИИ не смог — узор (у каждого канала свой, по названию)."""
+    if mode == "off":
+        return None
+    if mode == "ai":
+        img = ai_background(topic)
+        if img is not None:
+            return img
+    return anlimg.procedural_background(w, h, anlimg.seed_of(topic), style)
+
+
+def card_caption(n):
+    f = anlimg
+    if n["subs"] is None:
+        who = "👥 Подписчиков MAX не показал — бот должен быть админом канала"
+    else:
+        who = (f"👥 {f.fmt_int(n['subs'])} подписчиков · сегодня {f.fmt_delta(n['today'])}, "
+               f"за 7 дней {f.fmt_delta(n['d7'])}")
+    lines = [f"📈 «{n['title']}»", who,
+             f"👁 Просмотры на пост: 24 ч — {f.fmt_int(n['v24'])}, 48 ч — {f.fmt_int(n['v48'])}, "
+             f"72 ч — {f.fmt_int(n['v72'])} · ER24 {f.fmt_pct(n['er24'])}"]
+    if n.get("diag", {}).get("error"):
+        lines.append(f"⚠️ {n['diag']['error']}")
+    if len(subs_history(n.get("chat_id"))) < 2:
+        lines.append("📅 График роста заполнится сам: бот каждый день запоминает число подписчиков.")
+    return "\n".join(lines)
+
+
+def net_caption(net):
+    f = anlimg
+    return (f"🌐 Сеть из {net['n']} {n_word(net['n'], 'канала', 'каналов', 'каналов')}: "
+            f"{f.fmt_int(net['subs'])} подписчиков, {f.fmt_int(net['v24'])} просмотров за сутки, "
+            f"общий ER {f.fmt_pct(net['er'])}")
+
+
+def send_card(chat, img, caption):
+    """Картинка в чат (через загрузку в MAX); не загрузилась — хотя бы цифры текстом."""
+    path, tok = f"card_{abs(hash((chat, time.time()))) % 10 ** 10}.png", None
+    try:
+        img.save(path)
+        tok = upload_image(path)
+    except Exception as e:
+        print("Аналитика: карточка не загрузилась:", e)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    return api_send(chat, caption, None, tok) if tok else api_send(chat, caption)
+
+
+def anl_cards_send(chat, chans, mode, bg="pattern"):
+    """chans — my_channels(). mode "chan": карточка на каждый канал, "net": одна сводка по всей сети.
+    Данные каналов собираем одновременно; всё это — в фоновом потоке, меню не ждёт."""
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            nums = list(pool.map(lambda ch: anl_channel(*ch), chans))
+        t1 = time.perf_counter()
+        with chat_busy(chat, "sending_photo"):
+            if mode == "net":
+                net = anlimg.network_numbers(nums)
+                topic = " ".join(n["title"] for n in nums)[:80]
+                bg_img = anl_background(bg, topic, 1280, 330, "waves")
+                send_card(chat, anlimg.render_network(net, card_font, bg_img), net_caption(net))
+            else:
+                for n in nums:
+                    bg_img = anl_background(bg, n["title"], 1200, 900, "aurora")
+                    photo = fetch_thumb(n.get("icon"))
+                    send_card(chat, anlimg.render_channel(n, card_font, bg_img, photo), card_caption(n))
+        print(f"⏱ Карточки аналитики ({'сеть' if mode == 'net' else 'каналы'}, {len(nums)}): "
+              f"данные MAX {t1 - t0:.1f} с, картинки и отправка {time.perf_counter() - t1:.1f} с")
+    except Exception as e:
+        log_exc("карточки аналитики")
+        with contextlib.suppress(Exception):
+            api_send(chat, f"⚠️ Карточка не получилась: {type(e).__name__}: {str(e)[:150]}. Попробуй ещё раз.")
+
+
+def anl_cards_start(uid, mode):
+    """Кнопки «🖼 Карточка канала» / «🌐 Сводка по всем каналам»: рисуем в фоне, картинка придёт в чат."""
+    chat, chans = user_chat(uid), my_channels()
+    if chat is None:
+        return "Не нашёл твой чат с ботом — напиши боту /start и нажми ещё раз."
+    if not chans:
+        return "Нет привязанных каналов MAX — сначала «📢 Куда выкладывать»."
+    key = f"{uid}:{mode}"
+    if time.time() - ANL_CARD_BUSY.get(key, 0) < 180:
+        return "⏳ Уже рисую — картинка придёт сюда сама, нажимать ещё раз не нужно."
+    ANL_CARD_BUSY[key] = time.time()
+    bg = anl_bg_mode(uid)
+
+    def run():
+        try:
+            anl_cards_send(chat, chans, mode, bg)
+        finally:
+            ANL_CARD_BUSY.pop(key, None)
+
+    threading.Thread(target=run, daemon=True, name="anl-cards").start()
+    what = "сводку по всей сети" if mode == "net" else (
+        "карточку канала" if len(chans) == 1 else f"карточки {len(chans)} каналов")
+    return f"⏳ Рисую {what} — несколько секунд, картинка придёт сюда сама."
+
+
+# ---------- 🔮 ПРОГНОЗ ПОСТА: оценка черновика до публикации ----------
+def predict_history(cid):
+    """Посты канала за 30 дней с просмотрами (для прогноза) — из памяти, если спрашивали недавно."""
+    got = PRED_HIST.get(cid)
+    if got is None or time.time() - got[0] > 1800:
+        got = (time.time(), fetch_channel_msgs(cid, days=30, limit=300))
+        PRED_HIST[cid] = got
+    return got[1]
+
+
+def predict_text(text, photo=False, video=False, cid=None, name=None):
+    """Ответ «🔮 Прогноз поста»: оценка, ожидаемые просмотры, лучшее время, советы (+ совет ИИ, если есть ключи)."""
+    hist = predict_history(cid) if cid else []
+    p = anlpredict.predict(text, photo, video, hist, quality=post_quality(text, photo or video))
+    out = anlpredict.explain(p, name)
+    if (text or "").strip() and ai_llm_ready():
+        t0 = time.perf_counter()
+        try:
+            tip = ai_ask_text(text[:3000], AI_ROTATORS, S, ai_settings(), journal)
+            out += "\n\n🤖 Совет ИИ:\n" + tip.strip()[:700]
+        except Exception as e:
+            _log_line(time.strftime("%H:%M:%S") + f" Прогноз: ИИ не ответил ({type(e).__name__}: {str(e)[:120]})")
+        finally:
+            perf_add("ai", "совет к посту", time.perf_counter() - t0)
+    return out
+
+
+PREDICT_ASK = ("🔮 Прогноз поста\n\nПришли сюда черновик — текст, можно с фото или видео. Бот сравнит его с прошлыми "
+               "постами твоего канала MAX и скажет:\n\n"
+               "• ⭐ оценку из 10;\n• 👁 сколько примерно просмотров наберёт;\n• ⏰ лучшее время выложить;\n"
+               "• что улучшить (и совет ИИ, если подключены ключи).\n\n"
+               "Черновик никуда не публикуется и не попадает в очередь или тайник.")
+
+
+def predict_start(uid, chat, text, atts=()):
+    """Черновик пришёл: считаем в фоне (история канала из MAX + ИИ — до полуминуты), в чате «печатает…»."""
+    rows = [[B("🔮 Ещё один пост", "a:predict")], [B("◀️ Аналитика", "m:anl")]]
+    if not (text or "").strip() and not atts:
+        api_send(chat, "Пришли текст поста (можно с фото или видео) — оценю его до публикации.", rows)
+        return
+    photo = any(a.get("kind") == "image" for a in atts or ())
+    video = any(a.get("kind") == "video" for a in atts or ())
+    t = cur() if cur().chat_id else next((x for x in (scope_themes() if HOST_MODE else THEMES) if x.chat_id), None)
+    cid = t.chat_id if t is not None else None
+
+    def run():
+        try:
+            with chat_busy(chat):
+                name = (chat_info_cached(cid).get("title") or t.name) if cid else None
+                answer = predict_text(text, photo, video, cid, name)
+        except Exception as e:
+            log_exc("прогноз поста")
+            answer = f"⚠️ Прогноз не получился: {type(e).__name__}. Попробуй ещё раз."
+        api_send(chat, answer, rows)
+
+    threading.Thread(target=run, daemon=True, name="predict").start()
 
 
 # ---------- 🌐 СОЦСЕТИ-ИСТОЧНИКИ (бета): TikTok, VK, YouTube, Rutube, RSS — по ссылке на аккаунт ----------
@@ -9915,7 +10483,6 @@ CLIENTS_FILE = "clients.json"
 CLIENTS_DIR = "clients"
 CLIENTS = {} if CLIENT_MODE else load_json(CLIENTS_FILE, {})
 PROCS = {}               # id клиента -> {"p": Popen, "mode": ..., "t": время запуска}
-CL_LOCK = threading.RLock()
 CL_NEW = {}              # user_id продавца -> id клиента, которого сейчас заводим
 BOT_FILE = os.path.abspath(globals().get("__file__") or "tg_to_max.py")
 
@@ -10020,6 +10587,7 @@ def free_media_hint(now=None):
            "Фото, видео и файлы — на платном тарифе: «💳 Продлить доступ».")
 
 
+@cabinet_locked
 def new_cabinet_theme(key, name):
     """Создаёт тему (канал) для кабинета key и возвращает её."""
     t = Theme(new_theme_id(), name, "", owner=str(key))
@@ -10034,6 +10602,7 @@ def new_cabinet_theme(key, name):
     return t
 
 
+@cabinet_locked
 def create_tenant(uid, chat, name="", username=""):
     """Новый кабинет для пользователя: запись + одна пустая тема (+ пробный период). Возвращает ключ кабинета."""
     key = str(uid)
@@ -10279,6 +10848,7 @@ def host_prepare(uid, chat, u, kind):
                   (sender.get("username") or "").lstrip("@"))
 
 
+@cabinet_locked
 def track_cabinet(uid, chat, name="", nick=""):
     """Host-режим: у каждого, кто пишет боту, свой кабинет. Нет — заводим; есть — запоминаем id/чат/имя/ник."""
     if uid is None:
@@ -10554,6 +11124,7 @@ def host_clean_chats():
         print(f"HOST: убрал чужие чаты из кабинетов: {n}")
 
 
+@cabinet_locked
 def ensure_host_cabinet():
     """У хозяина всегда есть его кабинет хотя бы с одной темой — чтобы было что настраивать (даже начав с нуля)."""
     if not HOST_MODE or not host_id():
@@ -10600,6 +11171,7 @@ def wipe_themes(themes):
     return len(themes), n_src, n_posts
 
 
+@cabinet_locked
 def ensure_own_theme(uid):
     """У того, кто пишет боту, в кабинете всегда есть тема: иначе привязка канала MAX и источники уходят
     «в пустоту» (после «🗑 Очистить старые каналы», после удаления последней темы)."""
@@ -10911,7 +11483,7 @@ def host_pay_online(rest, uid, email=None):
                              {"key": key, "plan": t["name"], "days": days}, "https://max.ru", email=email)
     except Exception as e:
         log_exc("ЮKassa (host)")
-        ok, why = yk_check()
+        ok, why = yk_check(fresh=True)
         host_alert(f"⚠️ ЮKassa не дала ссылку на оплату (кабинет «{(TENANTS.get(key) or {}).get('name') or key}», "
                    f"{price} ₽).\nОтвет ЮKassa: {str(e)[:300]}"
                    + ("" if ok else f"\nКлючи: {why}") + "\n\nПокупателю сказал попробовать чуть позже.")
@@ -11363,9 +11935,25 @@ def yk_seen():
     return f"бот видит ({src}): shopId {k[0]}, ключ {kind}, {len(k[1])} символов, …{k[1][-4:]}"
 
 
-def yk_check():
-    """(всё ок?, текст): подходят ли ключи ЮKassa — спрашиваем саму ЮKassa."""
+YK_CHECK_CACHE = {}      # (shopId, ключ) -> (когда, ответ): экран «Тарифы» не ждёт ЮKassa при каждом открытии
+YK_CHECK_TTL = 300
+
+
+def yk_check(fresh=False):
+    """(всё ок?, текст): подходят ли ключи ЮKassa — спрашиваем саму ЮKassa. Ответ помним 5 минут (только
+    «нет связи» не запоминаем); fresh — спросить заново (ключи только что ввели, оплата не прошла)."""
     keys = yk_keys()
+    got = YK_CHECK_CACHE.get(tuple(keys or ()))
+    if keys and not fresh and got and time.time() - got[0] < YK_CHECK_TTL:
+        return got[1]
+    res = _yk_check(keys)
+    if keys and not res[1].startswith("нет связи"):
+        YK_CHECK_CACHE.clear()
+        YK_CHECK_CACHE[tuple(keys)] = (time.time(), res)
+    return res
+
+
+def _yk_check(keys):
     if not keys:
         return False, ("не подключена. Добавь в Bothost переменные YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY "
                        "и сделай пересборку.")
@@ -12064,7 +12652,7 @@ def host_screen(name, uid):
         return text, [[B("✏️ Изменить тарифы", "p:cltarset")], [B("💳 Изменить реквизиты", "p:clpayset")],
                       [B(f"🎁 Пробный период при «Старте»: {GCFG.get('trial_days', 3) or 'выкл'}"
                          + (" дн." if GCFG.get('trial_days', 3) else ""), "a:cltrial")],
-                      [B("🔑 Ввести ключи ЮKassa", "p:clyk"), B("🔎 Проверить ЮKassa", "m:cltar")],
+                      [B("🔑 Ввести ключи ЮKassa", "p:clyk"), B("🔎 Проверить ЮKassa", "a:ykchk")],
                       [B("📞 Изменить мой контакт", "p:clcontact")], back]
     if kind == "clc":
         info = tenant_info(key)

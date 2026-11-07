@@ -18,6 +18,8 @@ class FakeMax:
         self.extra_chats = []    # чаты для GET /chats ровно в том виде, как их вернёт MAX
         self.no_chat_list = False  # как MAX с июня 2026: GET /chats не поддерживается (каналы — из bot_added)
         self.pins = {}           # chat_id -> закреплённое сообщение
+        self.subs = {}           # chat_id -> подписчиков (participants_count в GET /chats/{id})
+        self.actions = []        # (chat_id, action): «печатает…», «отправляет фото…»
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
         self.bots = {}                     # другие боты (продажа): токен -> {"name", "updates": [...]}
@@ -140,7 +142,9 @@ class FakeMax:
                     for slug, cid in outer.chats.items():
                         if ident == str(cid):
                             return self._send(200, {"chat_id": cid, "type": "channel", "status": "active",
-                                                    "title": slug, "link": f"https://max.ru/{slug}"})
+                                                    "title": slug, "link": f"https://max.ru/{slug}",
+                                                    **({"participants_count": outer.subs[cid]}
+                                                       if cid in outer.subs else {})})
                     for cid, (title, ln) in outer.private.items():
                         if ident == str(cid):
                             return self._send(200, {"chat_id": cid, "type": "channel", "status": "active",
@@ -252,6 +256,11 @@ class FakeMax:
                             for hs in outer.history.values() for h in hs
                             if h["body"]["mid"] in want and h["body"]["mid"] in outer.views]
                     return self._send(200, {"messages": out})
+                m = re.fullmatch(r"/chats/(-?\d+)/actions", p)
+                if method == "POST" and m:                    # «печатает…» в чате
+                    with outer.lock:
+                        outer.actions.append((int(m.group(1)), json.loads(raw or b"{}").get("action")))
+                    return self._send(200, {"success": True})
                 m = re.fullmatch(r"/chats/(-?\d+)/pin", p)
                 if method == "PUT" and m:                     # закрепить сообщение в канале
                     with outer.lock:
