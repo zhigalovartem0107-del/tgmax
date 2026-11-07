@@ -5,6 +5,7 @@
 заголовков и подсчёта слов канала его хватает, и он не тянет внешних библиотек."""
 import re
 import unicodedata
+import zlib
 
 STOP = frozenset("""
 и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по только ее её мне было вот от меня
@@ -110,6 +111,54 @@ def near_duplicate(a, b):
     if small <= 2:
         return shared == small
     return shared >= 3 and shared / small >= 0.6
+
+
+_TR = str.maketrans({"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh", "з": "z",
+                     "и": "i", "й": "j", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+                     "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+                     "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya"})
+
+
+def translit(word):
+    """«Роблокс» -> «robloks»: русское написание названия сравниваем с латинским по первым буквам."""
+    return norm(word).translate(_TR)
+
+
+def on_topic(title, niche):
+    """Новость — про нишу канала: в заголовке есть одно из главных слов канала (или его русское написание:
+    «Роблокс» для «roblox», «Фортнайт» для «fortnite»). Упоминание где-то в тексте — не считается."""
+    if not niche:
+        return True
+    words = content_words(title)
+    if {stem(w) for w in words} & set(niche):
+        return True
+    latin = {s[:4] for s in niche if len(s) >= 5 and not is_cyr(s)}
+    return bool(latin) and any(translit(w)[:4] in latin for w in words if is_cyr(w))
+
+
+def title_key(title):
+    """Заголовок без регистра, знаков и эмодзи: «Roblox заблокировали в России!» == «roblox заблокировали в россии»."""
+    return " ".join(norm(w) for w in words(title))
+
+
+def shingles(text, k=32):
+    """Отпечаток текста: k наименьших хэшей троек соседних основ слов (bottom-k). Перепечатка одной статьи на
+    другом сайте — почти тот же отпечаток, даже если заголовок чуть изменили."""
+    st = [stem(w) for w in content_words(text)]
+    grams = {zlib.crc32(" ".join(st[i:i + 3]).encode("utf-8")) for i in range(max(0, len(st) - 2))}
+    if not grams and st:
+        grams = {zlib.crc32(" ".join(st).encode("utf-8"))}
+    return sorted(grams)[:k]
+
+
+def same_text(a, b, k=32, threshold=0.5):
+    """Похожи ли тексты по отпечаткам (оценка доли общих троек слов по bottom-k)."""
+    a, b = set(a or ()), set(b or ())
+    if not a or not b:
+        return False
+    union = sorted(a | b)[:k]
+    both = sum(1 for h in union if h in a and h in b)
+    return both / len(union) >= threshold
 
 
 def cyr_share(texts):

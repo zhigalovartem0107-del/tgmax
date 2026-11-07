@@ -231,7 +231,8 @@ bot.ai_image.generate = lambda topic, key, http, url, model: (calls.append((topi
 bot.ai_keys = lambda p: ["or-key"] if p == "openrouter" else []
 got = bot.anl_background("ai", "Тема канала", 1200, 900, "aurora")
 assert got.getpixel((5, 5)) == (255, 0, 0) and calls == [("Тема канала", "or-key", AIIMG.MODEL)], calls
-assert bot.anl_background("ai", "Тема канала", 1200, 900, "aurora").getpixel((5, 5)) == (255, 0, 0)
+px = bot.anl_background("ai", "Тема канала", 1200, 900, "aurora").getpixel((5, 5))
+assert px[0] > 240 and px[1] < 16 and px[2] < 16, px                  # из файла-кэша (JPEG) — тот же красный
 assert len(calls) == 1, "фон от ИИ — один раз в неделю на тему (дальше из файла)"
 bot.ai_image.generate = lambda *a, **k: None                               # ИИ не смог — рисуем узор сами
 assert bot.anl_background("ai", "Другая тема", 1200, 900, "aurora").size == (1200, 900)
@@ -371,5 +372,103 @@ for t in ths:
     t.join()
 assert not errs and len(made) == 12 and len(set(made)) == 12, (errs, made)
 print("a11 ok: 🔒 темы, заведённые в одну секунду из разных «полос» меню, получают разные номера")
+
+# 12) кривые данные не роняют картинки и прогноз: NaN/бесконечность/строки/None в числах, мусор в постах и
+#     истории, огромные числа (не вылезают за карточку), странные размеры фона и режимы картинок (P, LA, 1, I;16…)
+nan, inf = float("nan"), float("inf")
+for v in (nan, inf, -inf, 1e30, -5, "12", None, True, [1]):
+    for f in (A.fmt_int, A.fmt_short, A.fmt_delta, A.fmt_pct, A.fmt_big):
+        out = f(v)
+        assert isinstance(out, str) and ("—" in out) == (v in (None, True, "12", [1]) or v != v or v in (inf, -inf)), (f, v, out)
+assert A.fmt_big(12_345_678) == "12,3M" and A.fmt_big(5008) == "5 008"
+junk_hist = {A.day_key(NOW - DAY): nan, A.day_key(NOW - 2 * DAY): "5000", "мусор": 3, A.day_key(NOW - 3 * DAY): None,
+             A.day_key(NOW - 4 * DAY): -7, A.day_key(NOW - 5 * DAY): 4990.0}
+junk_posts = [{"t": None, "views": 5}, {"views": 3}, "x", None, {"t": NOW - 30 * 3600, "views": "7"},
+              {"t": 1e20, "views": 9}, {"t": NOW - 30 * 3600, "views": -4}, {"t": NOW - 30 * 3600, "views": 800}]
+jn = A.channel_numbers(None, nan, junk_posts, junk_hist, NOW)
+assert jn["title"] == "Канал" and jn["subs"] is None and jn["v24"] == 800, jn
+assert [v for _, v, _ in jn["days"] if v is not None] == [4990], jn["days"]          # из истории — только честное
+assert A.render_channel(jn, F).size == (1200, 900)
+huge = A.channel_numbers("Огромный канал", 10 ** 12, [{"t": NOW - 30 * 3600, "views": 10 ** 13}], {}, NOW)
+img = A.render_channel(huge, F)
+assert img.size == (1200, 900) and img.getpixel((5, 450)) == A.PAGE, "огромные числа не вылезли за карточку"
+for w, h in ((0, 5), (1, 1), (5, 0), (-3, 4), (None, "x")):
+    bgx = A.procedural_background(w, h, 1)
+    assert bgx.size[0] >= 1 and bgx.size[1] >= 1
+for mode in ("P", "LA", "1", "I;16", "CMYK", "F", "I", "RGBA"):
+    assert A.render_channel(jn, F, bg=Image.new(mode, (40, 30)), photo=Image.new(mode, (40, 30))).size == (1200, 900)
+assert A.render_network(A.network_numbers([], NOW), F, Image.new("RGB", (1, 1))).size == (1280, 876)
+net_junk = A.network_numbers([{"title": None, "subs": nan, "v24": nan}, "мусор", None, {"subs": 50, "v24": 10}], NOW)
+assert net_junk["subs"] == 50 and net_junk["v24"] == 10 and net_junk["n"] == 2 and net_junk["top"][0][0] == "Канал"
+assert A.render_network(net_junk, F).size == (1280, 704)
+pj = P.predict(12345, history=[{"views": 5}, {"t": None, "views": 1}, {"t": 1e20, "views": 3}, {"t": NOW, "views": "x"},
+                               "junk", None, {"t": NOW - 3600, "views": nan}])
+assert pj["n"] == 0 and pj["reach"] is None and "нет истории" in P.explain(pj)
+assert P.predict("слово " * 50000)["features"]["words"] == 50000
+print("a12 ok: 🛡 NaN/бесконечность/строки/мусор в числах, постах и истории — «—» вместо падения; огромные числа "
+      "сжаты в карточку; любые размеры фона и режимы картинок; прогноз на мусорной истории — «нет истории»")
+
+# 13) испорченный subs_history.json и пустые каналы: карточка и прогноз всё равно приходят
+json.dump({"5000": {A.day_key(time.time() - DAY): float("nan"), "кривая дата": 5, A.day_key(time.time() - 2 * DAY): 4000},
+           "6000": "не словарь", "7000": [1, 2]}, open("subs_bad.json", "w"))
+clean = bot._load_subs("subs_bad.json")
+assert clean == {"5000": {A.day_key(time.time() - 2 * DAY): 4000}}, clean
+open("subs_bad.json", "w").write("{сломано")
+assert bot._load_subs("subs_bad.json") == {}
+open("subs_bad.json", "w").write("[1, 2, 3]")
+assert bot._load_subs("subs_bad.json") == {}
+srv.chats["empty"] = 9100
+srv.history[9100] = []
+n_msg = len(srv.messages)
+bot.anl_cards_send(111, [("Пустой канал", 9100, [])], "chan", "off")
+cap = srv.messages[-1]["body"]["text"]
+assert len(srv.messages) == n_msg + 1 and "на пост: 24 ч — —" in cap and srv.messages[-1]["body"]["attachments"], cap
+bot.anl_cards_send(111, [("Пустой канал", 9100, []), ("Тоже пустой", 9100, [])], "net", "off")
+assert "Сеть из 2 каналов" in srv.messages[-1]["body"]["text"]
+ans = bot.predict_text("Пост без истории канала", cid=9100, name="Пустой канал")
+assert "нет истории" in ans and "⭐ Оценка" in ans
+srv.history.pop(9100)
+bot.PRED_HIST.clear()
+real_get = bot.S.get
+bot.S.get = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("MAX лёг"))
+try:
+    ans = bot.predict_text("Пост, а MAX не отвечает", cid=4242, name="Канал")
+finally:
+    bot.S.get = real_get
+assert "⭐ Оценка" in ans and "нет истории" in ans, ans
+for i in range(30):
+    bot.PRED_HIST[10_000 + i] = (time.time() - (2000 if i < 10 else 0), [])
+bot.PRED_HIST.pop(9100, None)
+srv.history[9100] = []
+bot.predict_history(9100)
+assert len(bot.PRED_HIST) <= bot.PRED_HIST_MAX and 9100 in bot.PRED_HIST, len(bot.PRED_HIST)
+print("a13 ok: 💾 испорченный subs_history.json — честное берём, мусор отбрасываем; пустой канал — карточка с «—» и "
+      "сводка; прогноз без истории и при лежащем MAX; память прогнозов не растёт")
+
+# 14) ИИ-фон: нет ключа, мусор вместо картинки, огромная картинка — всегда фон есть (узор), бот не падает
+real_gen, real_keys = bot.ai_image.generate, bot.ai_keys
+gen_calls = []
+bot.ai_keys = lambda p: []
+bot.ai_image.generate = lambda *a, **k: gen_calls.append(a) or png
+assert bot.anl_background("ai", "Без ключа", 600, 300, "aurora").size == (600, 300) and not gen_calls
+bot.ai_keys = lambda p: ["k"] if p == "openrouter" else []
+for bad in (b"not an image", b"", b"\x89PNG\r\n\x1a\n" + b"\x00" * 20):
+    bot.ai_image.generate = lambda *a, bad=bad, **k: bad
+    assert bot.anl_background("ai", f"Мусор {len(bad)}", 600, 300, "waves").size == (600, 300)
+assert AIIMG.extract_image({"choices": [{"message": {"images": [{"image_url": {"url": "data:image/png;base64,!!!"}}]}}]}) is None
+assert AIIMG.extract_image({"choices": [{"message": {"images": [None, {"image_url": None}]}}]}) is None
+assert AIIMG.extract_image({"choices": []}) is None and AIIMG.extract_image({}) is None
+bigbuf = io.BytesIO()
+Image.new("RGB", (3000, 2000), (0, 120, 0)).save(bigbuf, "JPEG")
+bot.ai_image.generate = lambda *a, **k: bigbuf.getvalue()
+gbg = bot.anl_background("ai", "Огромная", 1280, 330, "waves")
+assert A.render_network(net, F, gbg).size == (1280, 876)
+bot.ai_image.generate, bot.ai_keys = real_gen, real_keys
+assert bot.update_label({"update_type": "message_created", "message": {"recipient": {"chat_type": "dialog"},
+                                                                       "body": {"text": "/абракадабра123 x"}}}) \
+    == "сообщение /…" and bot.update_label({"update_type": "message_created", "message": {
+        "recipient": {"chat_type": "dialog"}, "body": {"text": "/perf"}}}) == "сообщение /perf"
+print("a14 ok: 🎨 ИИ-фон: нет ключа — узор без запроса; мусор/пустота/битый PNG — узор; огромная картинка — "
+      "вписана; учёт скорости не заводит строку на каждую «/абракадабру»")
 
 print("ВСЕ ТЕСТЫ АНАЛИТИКИ ПРОШЛИ")

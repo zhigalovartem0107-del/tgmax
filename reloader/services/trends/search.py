@@ -34,6 +34,35 @@ class SearchUnavailable(SearchError):
     """Способ поиска недоступен на этом сервере (нет библиотеки)."""
 
 
+class SearchTimeout(SearchError):
+    """Поисковик не ответил за отведённое время (запрос завис). thread — поток с зависшим запросом."""
+
+    def __init__(self, msg, thread=None):
+        super().__init__(msg)
+        self.thread = thread
+
+
+def call_with_deadline(fn, args, timeout):
+    """fn(*args), но не дольше timeout секунд. Зависло — SearchTimeout сразу (поток с зависшим запросом
+    доживёт сам и тихо закончится): один зависший поисковик не держит проверку трендов."""
+    box = {}
+
+    def run():
+        try:
+            box["ok"] = fn(*args)
+        except BaseException as e:                     # передаём вызывающему как есть
+            box["err"] = e
+
+    th = threading.Thread(target=run, daemon=True, name="search-call")
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        raise SearchTimeout(f"не ответил за {timeout:g} с", th)
+    if "err" in box:
+        raise box["err"]
+    return box.get("ok"), th
+
+
 # ---------- адреса и даты ----------
 def canonical_url(url):
     """Один адрес для одной статьи: без http/https, www., m., amp-версии, якоря и меток (utm_…, fbclid…).
@@ -99,6 +128,40 @@ def normalize(raw):
 
 
 # ---------- способы поиска ----------
+_DDGS, _DDGS_LOCK = {}, threading.Lock()   # (класс, прокси, таймаут) -> клиент: соединения и куки — между запросами
+
+
+def _ddgs_client(cls, proxy, timeout):
+    key = (cls, proxy, timeout)
+    with _DDGS_LOCK:
+        cli = _DDGS.get(key)
+        if cli is None:
+            cli = _DDGS[key] = cls(proxy=proxy, timeout=timeout)
+        return cli
+
+
+def _ddgs_drop(cls, proxy, timeout):
+    """Клиент ответил ошибкой — следующий запрос начнём с чистого (другие куки, новое соединение)."""
+    with _DDGS_LOCK:
+        _DDGS.pop((cls, proxy, timeout), None)
+
+
+def close_clients():
+    """Закрыть клиентов DuckDuckGo (при остановке бота): соединения не висят."""
+    with _DDGS_LOCK:
+        clients = list(_DDGS.values())
+        _DDGS.clear()
+    for cli in clients:
+        for name in ("close", "__exit__"):
+            fn = getattr(cli, name, None)
+            if callable(fn):
+                try:
+                    fn() if name == "close" else fn(None, None, None)
+                except Exception:
+                    pass
+                break
+
+
 def _ddgs_class():
     """DDGS из ddgs (Python 3.10+) или из старой duckduckgo_search; нет ни той, ни другой — None."""
     with warnings.catch_warnings():
@@ -120,16 +183,22 @@ def ddg_news(query, lang="ru", max_results=10, timelimit="d", timeout=20, proxy=
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            got = cls(proxy=proxy, timeout=timeout).news(query, region=region, safesearch="moderate",
+            got = _ddgs_client(cls, proxy, timeout).news(query, region=region, safesearch="moderate",
                                                          timelimit=timelimit, max_results=max_results)
     except Exception as e:
         name, msg = type(e).__name__, str(e)
-        if "ratelimit" in name.lower() or "ratelimit" in msg.lower() or re.search(r"\b202\b", msg):
-            raise RateLimited(f"DuckDuckGo: слишком часто ({msg[:80]})") from None
         if "no results" in msg.lower():
             return []
+        _ddgs_drop(cls, proxy, timeout)
+        if "ratelimit" in name.lower() or "ratelimit" in msg.lower() or re.search(r"\b202\b", msg):
+            raise RateLimited(f"DuckDuckGo: слишком часто ({msg[:80]})") from None
         raise SearchError(f"DuckDuckGo: {name}: {msg[:120]}") from None
-    return list(got or [])
+    if got is None:
+        return []
+    if not isinstance(got, (list, tuple)):              # вместо списка новостей — HTML или что-то ещё
+        _ddgs_drop(cls, proxy, timeout)
+        raise SearchError(f"DuckDuckGo: непонятный ответ ({type(got).__name__})")
+    return list(got)
 
 
 def google_news(query, http, lang="ru", timeout=20, max_results=15):
@@ -140,7 +209,8 @@ def google_news(query, http, lang="ru", timeout=20, max_results=15):
         params = {"q": f"{query} when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"}
     try:
         r = http.get("https://news.google.com/rss/search", params=params, timeout=timeout,
-                     headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml"})
+                     headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml",
+                              "Cookie": "CONSENT=YES+cb"})     # серверы в ЕС: без согласия Google шлёт страницу
     except Exception as e:
         raise SearchError(f"Google News: нет связи ({type(e).__name__})") from None
     if r.status_code == 429:
@@ -150,7 +220,9 @@ def google_news(query, http, lang="ru", timeout=20, max_results=15):
     try:
         root = ElementTree.fromstring((r.content or b"")[:3_000_000])
     except ElementTree.ParseError:
-        raise SearchError("Google News: непонятный ответ") from None
+        raise SearchError("Google News: непонятный ответ (не RSS)") from None
+    if root.tag.lower() != "rss" or root.find("channel") is None:
+        raise SearchError("Google News: ответ не RSS (страница согласия или капча)")
     out = []
     for item in root.iter("item"):
         src = item.find("source")
@@ -169,14 +241,23 @@ class Searcher:
     в сеть за час; между запросами — пауза pause (сек); поисковик, сказавший «слишком часто», отдыхает rest."""
 
     def __init__(self, backends, ttl=3600, max_per_hour=40, pause=(1.5, 3.5), rest=1800, fail_rest=300,
-                 clock=time.time, sleep=time.sleep, rnd=None):
+                 clock=time.time, sleep=time.sleep, rnd=None, deadline=45, cache_max=200):
         self.backends = list(backends)
         self.ttl, self.max_per_hour, self.pause = ttl, max_per_hour, pause
-        self.rest, self.fail_rest = rest, fail_rest
+        self.rest, self.fail_rest, self.deadline, self.cache_max = rest, fail_rest, deadline, cache_max
         self.clock, self.sleep, self.rnd = clock, sleep, rnd or random.Random()
-        self.cache, self.resting, self.calls = {}, {}, deque()
+        self.cache, self.resting, self.calls, self.hung = {}, {}, deque(), {}
         self.last_net = 0.0
         self.lock = threading.Lock()
+
+    def _prune(self, now):
+        """Память ответов не растёт бесконечно: старше ttl — долой, и не больше cache_max запросов."""
+        for k in [k for k, (t, _) in self.cache.items() if now - t >= self.ttl]:
+            del self.cache[k]
+        extra = len(self.cache) - (self.cache_max - 1)          # место под новый ответ
+        if extra > 0:
+            for k in sorted(self.cache, key=lambda k: self.cache[k][0])[:extra]:
+                del self.cache[k]
 
     def status(self):
         now = self.clock()
@@ -194,6 +275,7 @@ class Searcher:
             return [], None
         with self.lock:                                   # один запрос в сеть за раз — поисковики это любят
             now = self.clock()
+            self._prune(now)
             hit = self.cache.get(key)
             if hit and now - hit[0] < self.ttl:
                 return list(hit[1]), None
@@ -204,13 +286,26 @@ class Searcher:
                 if self.resting.get(name, 0) > now:
                     errors.append(f"{name}: отдыхает")
                     continue
+                if self.hung.get(name) is not None and self.hung[name].is_alive():
+                    errors.append(f"{name}: прошлый запрос ещё висит")   # не копим зависшие потоки
+                    continue
                 if len(self.calls) >= self.max_per_hour:
                     errors.append("лимит запросов к поиску на час")
                     break
                 self._wait_turn()
                 self.calls.append(self.clock())
                 try:
-                    raw = fn(key[0], lang)
+                    if self.deadline:
+                        raw, self.hung[name] = call_with_deadline(fn, (key[0], lang), self.deadline)
+                    else:
+                        raw = fn(key[0], lang)
+                    if raw is not None and not isinstance(raw, (list, tuple)):
+                        raise SearchError(f"{name}: непонятный ответ ({type(raw).__name__})")
+                except SearchTimeout as e:
+                    self.resting[name] = self.clock() + self.fail_rest
+                    self.hung[name] = e.thread                  # пока висит — этого поисковика не спрашиваем
+                    errors.append(f"{name}: {e}")
+                    continue
                 except RateLimited as e:
                     self.resting[name] = self.clock() + self.rest
                     errors.append(str(e))

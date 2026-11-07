@@ -22,6 +22,7 @@ class FakeMax:
         self.actions = []        # (chat_id, action): «печатает…», «отправляет фото…»
         self.ai_replies = []     # ИИ (OpenRouter/DeepSeek): очередь ответов (код, текст) на POST /chat/completions
         self.ai_calls = []       # (ключ из Authorization, текст задания) — что спросили у ИИ
+        self.delay = 0.0         # задержка каждого ответа (сек): «медленный MAX» для нагрузочных проверок
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
         self.bots = {}                     # другие боты (продажа): токен -> {"name", "updates": [...]}
@@ -87,6 +88,8 @@ class FakeMax:
                 raw = self._body()
                 with outer.lock:
                     outer.requests.append((method, u.path, q))
+                if outer.delay and u.path != "/updates":
+                    time.sleep(outer.delay)
                 if not self._auth():
                     return
                 p = u.path

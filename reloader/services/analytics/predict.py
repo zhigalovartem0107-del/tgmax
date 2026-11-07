@@ -14,7 +14,7 @@ EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")
 
 
 def features(text, photo=False, video=False):
-    t = text or ""
+    t = "" if text is None else str(text)
     words = re.findall(r"\w+", t)
     letters = [c for c in t if c.isalpha()]
     return {"len": len(t), "words": len(words), "media": bool(photo or video), "photo": bool(photo),
@@ -48,6 +48,16 @@ def best_time(history, min_posts=2):
     return pick(by_day), pick(by_hour)
 
 
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf")
+
+
+def _valid(p):
+    """Пост истории с понятными временем и просмотрами (мусор из MAX или файла — пропускаем)."""
+    return isinstance(p, dict) and _num(p.get("t")) and 0 < p["t"] < 4.1e9 and _num(p.get("views")) \
+        and p["views"] >= 0
+
+
 def _has_media(p):
     return bool(p.get("img") or p.get("video"))
 
@@ -57,7 +67,7 @@ def predict(text, photo=False, video=False, history=(), now=None, quality=None):
     (post_quality); нет — считаем сами. Ожидаемые просмотры: медиана похожих постов канала (с медиа / без),
     поправки на длину и «рекламность» — во столько раз, во сколько у ЭТОГО канала такие посты заходят хуже/лучше.
     Возвращает {"score", "reach": (от, до) | None, "median", "best": (день, час), "tips", "why", "n", "features"}."""
-    hist = sorted((p for p in history if isinstance(p.get("views"), (int, float))), key=lambda p: -p["t"])[:60]
+    hist = sorted((p for p in history or () if _valid(p)), key=lambda p: -p["t"])[:60]
     f = features(text, photo, video)
     base = _median([p["views"] for p in hist])
     factor, why, tips = 1.0, [], []

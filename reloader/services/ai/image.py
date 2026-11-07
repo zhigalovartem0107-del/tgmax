@@ -18,16 +18,22 @@ def prompt_for(topic):
 
 
 def extract_image(data):
-    """Байты картинки из ответа OpenRouter (или None)."""
-    msg = ((data.get("choices") or [{}])[0].get("message") or {})
-    for im in msg.get("images") or []:
-        url = ((im or {}).get("image_url") or {}).get("url") or ""
-        m = re.match(r"data:image/[\w.+-]+;base64,(.+)$", url, re.S)
+    """Байты картинки из ответа OpenRouter (или None — ответ не того вида, картинки нет или она битая)."""
+    try:
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        images = list(msg.get("images") or [])
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return None
+    for im in images:
+        holder = im.get("image_url") if isinstance(im, dict) else None
+        url = holder.get("url") if isinstance(holder, dict) else ""
+        m = re.match(r"data:image/[\w.+-]+;base64,(.+)$", str(url or ""), re.S)
         if m:
             try:
-                return base64.b64decode(m.group(1))
+                raw = base64.b64decode("".join(m.group(1).split()), validate=True)   # строго: мусор — не картинка
             except ValueError:
                 return None
+            return raw or None
     return None
 
 

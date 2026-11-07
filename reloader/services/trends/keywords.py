@@ -102,6 +102,18 @@ def _specific(k):
     return k["pair"] or not T.is_cyr(k["word"])
 
 
+def niche_stems(keywords, manual=(), n=3):
+    """Основы слов, без которых новость — не про нишу канала: свои слова админа или самые «конкретные» слова
+    канала (названия, пары слов, латиница); таких нет — два главных слова."""
+    words = [m for m in manual or () if m and m.strip()]
+    if not words:
+        words = [k["word"] for k in keywords if _specific(k)][:n] or [k["word"] for k in keywords[:2]]
+    out = set()
+    for w in words:
+        out |= T.stems(w)
+    return out
+
+
 def make_queries(keywords, manual=(), n=3):
     """Запросы к поиску: свои слова админа — как есть; иначе главное слово канала, оно же с другими словами
     (общие слова вроде «обновление» отдельно не ищем — найдётся всё подряд)."""

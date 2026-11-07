@@ -3262,7 +3262,7 @@ try:
                 "date": time.time() - 3600}
     bot.TREND_SEARCH = SE103.Searcher([("fake", lambda q, lang: [dict(viral103)])], pause=None, ttl=0)
     bot.ai_llm_ready = lambda: True
-    bot.ai_ask_text = lambda text, *a, **k: "YES [1]\nRoblox заблокировали в России. Все обсуждают. Пиши сейчас."
+    bot.ai_ask_text = lambda text, *a, **k: "YES [1] 9/10\nRoblox заблокировали в России. Все обсуждают. Пиши сейчас."
     n103 = len(SENT103)
     assert bot.trend_run(ta.id)["verdict"] == "yes" and bot.trend_run(tb.id)["verdict"] == "yes"
     got103 = [(c, txt) for c, txt, _ in SENT103[n103:] if txt.startswith("🔥 Тренд")]

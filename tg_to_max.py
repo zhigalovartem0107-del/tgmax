@@ -6,7 +6,6 @@
 Установка:   pip install telethon requests
 """
 import asyncio
-import builtins
 import contextlib
 import contextvars
 import copy
@@ -40,7 +39,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110612            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110613            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -95,13 +94,13 @@ for _stream in (sys.stdout, sys.stderr):              # логи хостинг�
         _stream.reconfigure(line_buffering=True)
 from reloader.core import log as _log
 from reloader.core import files as _files
-from reloader.core.files import load_json, load_json_safe, _WRITE_LOCK, save_json, DATA_FILES, DATA_GLOBS, SKIP_DIRS, _find_sessions  # noqa: E402
-from reloader.core.timeutil import MONTHS_GEN, MONTHS_SHORT  # noqa: E402
+from reloader.core.files import load_json, load_json_safe, save_json, DATA_FILES, DATA_GLOBS, _find_sessions  # noqa: E402
+from reloader.core.timeutil import MONTHS_SHORT  # noqa: E402
 from reloader.core import timeutil as _timeutil
 from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
 from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
-from reloader.core.log import LOG_FILE, JOURNAL, _log_line, _quiet_unraisable, print, _JLine, journal, log_exc, _excepthook  # noqa: E402
+from reloader.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402,F401 (LOG_FILE — для проверок)
 from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
 from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
@@ -446,6 +445,8 @@ PERF_LOCK = threading.Lock()
 PERF = {"since": time.time(), "http": {}, "upd": {}, "ai": {}, "json": {}, "tg": {}, "trend": {},
         "slow": deque(maxlen=15)}
 PERF_SLOW_SEC = 1.5          # нажатие обрабатывалось дольше — строка в лог с тем, на что ушло время
+PERF_COMMANDS = {"start", "id", "perf", "channels", "kanaly", "panel", "admin", "p", "menu", "m", "card", "predict",
+                 "trends", "stats", "status", "queue", "log", "check", "help"}   # свои строки в /perf
 _PERF_LOCAL = threading.local()   # запросы, сделанные во время текущего нажатия (для строки «медленно»)
 
 
@@ -501,6 +502,55 @@ def save_json(path, data, private=False, backup=False):
 
 
 CL_LOCK = threading.RLock()  # кабинеты и темы: новый кабинет / тема заводится строго по одному
+
+
+BG_THREADS = set()           # фоновые «отправить и забыть» из asyncio-цикла (для проверок: bg_wait)
+BG_LOCK = threading.Lock()
+
+
+def on_loop_thread():
+    """Код идёт в потоке asyncio-цикла (из корутины): сетевой запрос здесь держит ВСЁ — чтение Telegram всех
+    каналов и публикацию. В потоках меню, трендов, аналитики и в asyncio.to_thread — False."""
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def in_background(fn, *args, name="bg"):
+    """«Отправить и забыть»: из asyncio-цикла — в отдельном потоке с той же темой (contextvars), чтобы медленный
+    MAX не останавливал бота; из любого другого места — сразу, как обычный вызов."""
+    if not on_loop_thread():
+        return fn(*args)
+    ctx = contextvars.copy_context()
+
+    def run():
+        try:
+            ctx.run(fn, *args)
+        except Exception:
+            log_exc(f"фон: {getattr(fn, '__name__', name)}")
+        finally:
+            with BG_LOCK:
+                BG_THREADS.discard(threading.current_thread())
+
+    th = threading.Thread(target=run, daemon=True, name=f"bg-{name}")
+    with BG_LOCK:
+        BG_THREADS.add(th)
+    th.start()
+    return None
+
+
+def bg_wait(timeout=10.0):
+    """Дождаться фоновых отправок (проверки, остановка). True — все закончились."""
+    end = time.time() + timeout
+    while time.time() < end:
+        with BG_LOCK:
+            alive = [t for t in BG_THREADS if t.is_alive()]
+        if not alive:
+            return True
+        alive[0].join(max(0.01, min(0.2, end - time.time())))
+    return False
 
 
 def cabinet_locked(fn):
@@ -909,6 +959,36 @@ def save_history():
     t = cur()
     t.history[:] = prune(t.history)        # в памяти тоже не копим лишнее
     save_json(t.f["history"], t.history)
+
+
+_SAVE_SEQ, _SAVE_SEQ_LOCK, _SAVE_N = {}, threading.Lock(), __import__("itertools").count()
+
+
+async def save_json_async(path, data, **kw):
+    """Запись файла из корутины — в потоке, цикл не ждёт диск. data — снимок, сделанный в цикле (копия);
+    более старый снимок не затрёт более новый, если записи одного файла обгонят друг друга."""
+    seq = next(_SAVE_N)
+
+    def write():
+        with _SAVE_SEQ_LOCK:
+            if _SAVE_SEQ.get(path, -1) > seq:
+                return
+            save_json(path, data, **kw)
+            _SAVE_SEQ[path] = seq
+
+    await asyncio.to_thread(write)
+
+
+async def save_history_async():
+    """save_history из чтения каналов: чистка — в цикле (быстро), запись истории (может быть сотни КБ) — в потоке."""
+    t = cur()
+    t.history[:] = prune(t.history)
+    await save_json_async(t.f["history"], list(t.history))
+
+
+async def save_last_ids_async():
+    t = cur()
+    await save_json_async(t.f["state"], dict(t.last_ids))
 
 
 def bump(key):
@@ -2216,6 +2296,16 @@ def make_report(title=None):
             f"Сейчас в очереди: {len(QUEUE)} (ждут одобрения: {pend}) · в тайнике: {len(STASH)}")
 
 
+def pin_post(chat, mid):
+    """📌 Закрепить пост в канале (без уведомления подписчиков)."""
+    try:
+        r = S.put(f"{MAX_API}/chats/{chat}/pin", headers=HEADERS, timeout=20, json={"message_id": mid, "notify": False})
+        if r.status_code != 200:
+            journal(f"📌 Не получилось закрепить пост: MAX {r.status_code} — дай боту право «Закреплять сообщения»")
+    except Exception as e:
+        print("Закреп:", e)
+
+
 def post_extras(mids):
     """После публикации: 📌 закрепить пост и/или 🗑 поставить его на автоудаление (бесплатно, во всех тарифах)."""
     mids = [m for m in (mids or []) if m]
@@ -2223,13 +2313,7 @@ def post_extras(mids):
     if not mids or not chat:
         return
     if CFG.get("pin_new"):
-        try:
-            r = S.put(f"{MAX_API}/chats/{chat}/pin", headers=HEADERS, timeout=20,
-                      json={"message_id": mids[0], "notify": False})
-            if r.status_code != 200:
-                journal(f"📌 Не получилось закрепить пост: MAX {r.status_code} — дай боту право «Закреплять сообщения»")
-        except Exception as e:
-            print("Закреп:", e)
+        in_background(pin_post, chat, mids[0], name="pin")    # из публикации (корутина) — не держим цикл
     h = int(CFG.get("autodel_h") or 0)
     if h > 0:
         lst = list(PUB.get("autodel") or [])
@@ -3183,7 +3267,11 @@ def notify(text, tag=True, rows=None):
     n = len(tenant_themes(cur().owner)) if HOST_MODE and cur().owner else len(THEMES)
     if tag and n > 1:
         text = f"🎭 {cur().name}\n{text}"
-    for chat in card_chats():
+    in_background(_notify_send, list(card_chats()), text, rows, name="notify")   # из корутины — не держим цикл
+
+
+def _notify_send(chats, text, rows):
+    for chat in chats:
         try:
             api_send(chat, text, rows)
         except Exception as e:
@@ -3463,7 +3551,7 @@ def _screen(name, uid=None):
         pubs = [p for p in PUB.get("day_posts", []) if p.get("mid") and p.get("raw") is not None
                 and not p.get("ad")][-5:][::-1]
         smart = ("учится ✅" if m["n_ad"] >= AD_MODEL_MIN and m["n_ok"] >= AD_MODEL_MIN else
-                 f"начнёт помогать после 3 отметок каждого вида")
+                 "начнёт помогать после 3 отметок каждого вида")
         text = (f"🧠 Обучение фильтра рекламы — {smart}\n"
                 f"Запомнил: рекламы {m['n_ad']}, нормальных постов {m['n_ok']}.\n\n"
                 "Бот ошибся? Отметь — он запомнит и в следующий раз решит правильно.\n\n"
@@ -3550,8 +3638,8 @@ def _screen(name, uid=None):
         pend = sum(1 for x in QUEUE if x.get("status") == "pending")
         text = (f"📋 Очередь ({len(QUEUE)})\nСледующая публикация: {next_pub_text()}\n\n"
                 + ("\n".join(lines) or "пока пусто")
-                + (f"\n\n✋ — пост ждёт, пока ты нажмёшь «Сейчас» / «Через…» / «Пропустить» на его карточке. "
-                   f"Сам он не выйдет." if pend else ""))
+                + ("\n\n✋ — пост ждёт, пока ты нажмёшь «Сейчас» / «Через…» / «Пропустить» на его карточке. "
+                   "Сам он не выйдет." if pend else ""))
         dels = [B(f"❌ {i + 1}", f"a:qdel:{it['id']}") for i, it in enumerate(items)]
         rows = [dels[i:i + 5] for i in range(0, len(dels), 5)]
         if items:
@@ -4317,7 +4405,9 @@ def do_action(act, uid=None):
         scr = "anl"
     elif p[0] == "anlbg":
         mode = ANL_BG[(ANL_BG.index(anl_bg_mode(uid)) + 1) % len(ANL_BG)]
-        GCFG.setdefault("anl_bg", {})[str(uid)] = mode
+        if not isinstance(GCFG.get("anl_bg"), dict):
+            GCFG["anl_bg"] = {}                              # испорченная настройка — начинаем заново
+        GCFG["anl_bg"][str(uid)] = mode
         save_cfg()
         FLASH[uid] = f"Фон карточек: {ANL_BG_NAMES[mode]}" + (
             "" if mode != "ai" or ai_keys("openrouter") else
@@ -5278,8 +5368,12 @@ def owner_alert(text):
     if CFG["admins"]:
         chat = CFG["admin_chats"].get(str(CFG["admins"][0]))
         if chat:
-            with contextlib.suppress(Exception):
-                api_send(chat, text)
+            in_background(_quiet_send, chat, text, None, name="owner-alert")   # из корутины — не держим цикл
+
+
+def _quiet_send(chat, text, rows=None):
+    with contextlib.suppress(Exception):
+        api_send(chat, text, rows)
 
 
 HOST_CHAT = {"chat": None}
@@ -5291,8 +5385,7 @@ def host_alert(text, rows=None):
     if chat is None and not HOST_MODE and GCFG.get("admins"):
         chat = GCFG["admin_chats"].get(str(GCFG["admins"][0]))
     if chat:
-        with contextlib.suppress(Exception):
-            api_send(chat, text, rows)
+        in_background(_quiet_send, chat, text, rows, name="host-alert")   # из корутины — не держим цикл
 
 
 def note_wrong_code(uid, t, name=""):
@@ -5797,7 +5890,11 @@ def update_label(u):
         if rec.get("chat_type") not in (None, "dialog"):
             return "сообщение в канале"
         t = ((u.get("message") or {}).get("body") or {}).get("text") or ""
-        return "сообщение " + (t.split()[0][:16] if t.startswith("/") and t.split() else "текст")
+        cmd = t.split()[0][1:].split("@")[0].lower() if t.startswith("/") and t.split() else ""
+        if not cmd:
+            return "сообщение текст"
+        known = cmd in {n for n, _ in COMMAND_HELP} or cmd in PERF_COMMANDS
+        return "сообщение /" + (cmd[:16] if known else "…")      # чужие «/абракадабра» — одной строкой
     return {"bot_started": "старт", "bot_added": "бот добавлен", "bot_removed": "бот убран"}.get(kind, str(kind))
 
 
@@ -7063,7 +7160,7 @@ async def _process_channel(client, ch, fails, fresh):
         skipped = [m for key in order[:-BACKLOG_MAX] for m in groups[key]]
         order = order[-BACKLOG_MAX:]
         LAST_IDS[ch] = max(LAST_IDS[ch], max(m.id for m in skipped))
-        save_last_ids()
+        await save_last_ids_async()
         journal(f"[{ch}] накопилось много новых постов — пропускаю самые старые ({len(skipped)} сообщений), "
                 f"показываю последние {BACKLOG_MAX}")
         await asyncio.to_thread(notify, f"ℹ️ @{ch}: накопилось много постов, пока бот был выключен. "
@@ -7153,7 +7250,7 @@ async def _process_channel(client, ch, fails, fresh):
                 queued = True                          # фото не удаляем: вдруг скажут «не реклама»
                 if ad[0] == "ask" and CFG.get("ads_ask", True):
                     journal(f"[{ch}] пост {last}: может быть рекламой ({'; '.join(ad[1])}) — спросил тебя")
-                    ask_ad(held)
+                    in_background(ask_ad, held, name="ask-ad")   # карточка с фото — загрузка не в цикле
                 else:
                     bump("ads")
                     journal(f"[{ch}] пост {last}: похоже на рекламу ({'; '.join(ad[1])}) — не публикую")
@@ -7162,7 +7259,7 @@ async def _process_channel(client, ch, fails, fresh):
                 alts = dup.setdefault("alts", [])
                 if entry["norm"] and len(alts) < 6:
                     alts.append(entry["norm"])
-                    save_history()
+                    await save_history_async()
                 bump("dups")
                 journal(f"[{ch}] пост {last}: ДУБЛЬ по смыслу, уже публиковали — пропускаю")
             elif len(QUEUE) >= 100:
@@ -7187,7 +7284,7 @@ async def _process_channel(client, ch, fails, fresh):
                 QUEUE.append(item)
                 save_queue()
                 history.append(entry)               # сразу помним, чтобы ловить дубли в очереди
-                save_history()
+                await save_history_async()
                 queued = True
                 journal(f"[{ch}] пост {last} поставлен в очередь (всего {len(QUEUE)})"
                       + (" — жду одобрения" if status == "pending" else "")
@@ -7212,7 +7309,7 @@ async def _process_channel(client, ch, fails, fresh):
         SEEN.pop(skey, None)
         if ch in LAST_IDS:
             LAST_IDS[ch] = max(LAST_IDS[ch], last)
-            save_last_ids()
+            await save_last_ids_async()
 
 
 DOWN_REMIND = 86400            # «не открывается» про один источник — не чаще раза в сутки, и после перезапуска тоже
@@ -7225,14 +7322,14 @@ def down_first(ch):
     if time.time() - noted.get(key, 0) < DOWN_REMIND:
         return False
     noted[key] = time.time()
-    save_cfg()
+    in_background(save_cfg, name="save-cfg")              # из чтения каналов (корутина) — запись с fsync фоном
     return True
 
 
 def down_over(ch):
     """Источник открылся — забываем поломку: сломается снова — скажем снова."""
     if GCFG.get("down_noted", {}).pop(f"{cur().id}|{ch}", None):
-        save_cfg()
+        in_background(save_cfg, name="save-cfg")
 
 
 async def sync_channels(client):
@@ -7287,7 +7384,7 @@ async def sync_channels(client):
             LAST_IDS[ch] = saved[ch]
         else:
             LAST_IDS[ch] = latest_id     # новый канал: старое не постим
-    save_last_ids()
+    await save_last_ids_async()
 
 
 async def last_post_start(client, ch):
@@ -8391,7 +8488,7 @@ def send_dashboard(chat, name, ws, thumbs=()):
     if ws["n"]:
         try:
             path = f"dashboard_{chat}_{abs(hash(name)) % 10 ** 8}.png"
-            week_dashboard(name, ws, thumbs).save(path, optimize=True)
+            week_dashboard(name, ws, thumbs).save(path)       # без optimize: в 7 раз быстрее, на 6% больше
             tok = upload_image(path)
             with contextlib.suppress(OSError):
                 os.remove(path)
@@ -8466,13 +8563,22 @@ from reloader.services.ai.rewrite import ask as ai_ask_text  # noqa: E402
 from reloader.services.analytics import predict as anlpredict  # noqa: E402
 
 SUBS_FILE = "subs_history.json"
-SUBS_HIST = load_json(SUBS_FILE, {})     # chat_id канала MAX -> {"ГГГГ-ММ-ДД": подписчиков (последнее за день)}
+def _load_subs(path):
+    """subs_history.json: испорченное (не словарь, NaN, строки, кривые даты) — отбрасываем, остальное берём."""
+    raw = load_json(path, {})
+    out = {str(k): anlimg.clean_history(v) for k, v in raw.items() if isinstance(v, dict)} \
+        if isinstance(raw, dict) else {}
+    return {k: v for k, v in out.items() if v}
+
+
+SUBS_HIST = _load_subs(SUBS_FILE)       # chat_id канала MAX -> {"ГГГГ-ММ-ДД": подписчиков (последнее за день)}
 SUBS_KEEP_DAYS = 62
 SUBS_LOCK = threading.Lock()
 ANL_BG = ("pattern", "off", "ai")        # фон карточек: узор (по умолчанию) → без фона → рисует ИИ → узор…
 ANL_BG_NAMES = {"pattern": "🎨 узор", "off": "⬜ без фона", "ai": "🤖 рисует ИИ"}
 ANL_CARD_BUSY = {}                       # «uid:вид» -> когда начали рисовать (второе нажатие не запускает заново)
 PRED_HIST = {}                           # chat_id -> (когда, посты канала) — история для прогноза, на 30 мин
+PRED_HIST_MAX = 20                       # не больше стольких каналов в памяти (память бота не растёт)
 _CARD_FONTS = threading.local()          # шрифты — у каждого потока свои (FreeType не любит общий шрифт)
 
 
@@ -8545,7 +8651,8 @@ def anl_channel(name, cid, known=()):
 
 
 def anl_bg_mode(uid):
-    m = (GCFG.get("anl_bg") or {}).get(str(uid))
+    box = GCFG.get("anl_bg")
+    m = box.get(str(uid)) if isinstance(box, dict) else None
     return m if m in ANL_BG else "pattern"
 
 
@@ -8554,7 +8661,7 @@ def ai_background(topic):
     None — ключей OpenRouter нет или не вышло (тогда рисуем узор сами)."""
     from PIL import Image
     import io
-    path = f"anl_bg_{anlimg.seed_of(topic) % 10 ** 8}.png"
+    path = f"anl_bg_{anlimg.seed_of(topic) % 10 ** 8}.jpg"
     with contextlib.suppress(Exception):
         if time.time() - os.path.getmtime(path) < 7 * 86400:
             return Image.open(path).convert("RGB")
@@ -8571,7 +8678,7 @@ def ai_background(topic):
         except Exception:
             continue
         with contextlib.suppress(OSError):
-            img.save(path)
+            img.save(path, "JPEG", quality=90)
         return img
     return None
 
@@ -8611,17 +8718,28 @@ def net_caption(net):
             f"общий ER {f.fmt_pct(net['er'])}")
 
 
-def send_card(chat, img, caption):
-    """Картинка в чат (через загрузку в MAX); не загрузилась — хотя бы цифры текстом."""
-    path, tok = f"card_{abs(hash((chat, time.time()))) % 10 ** 10}.png", None
+def upload_card(img, photo_like=False):
+    """Картинку — в MAX, вернуть токен (None — не вышло). С фоном-узором или фото — JPEG: в 30+ раз быстрее и
+    в 5 раз меньше PNG (шум фона PNG не сжимает); плоская карточка — PNG (чёткий текст, и так мало весит)."""
+    ext = "jpg" if photo_like else "png"
+    path = f"card_{secrets.token_hex(6)}.{ext}"
     try:
-        img.save(path)
-        tok = upload_image(path)
+        if photo_like:
+            img.convert("RGB").save(path, "JPEG", quality=92, subsampling=0)
+        else:
+            img.save(path, "PNG")
+        return upload_image(path)
     except Exception as e:
         print("Аналитика: карточка не загрузилась:", e)
+        return None
     finally:
         with contextlib.suppress(OSError):
             os.remove(path)
+
+
+def send_card(chat, img, caption, photo_like=False):
+    """Картинка в чат (через загрузку в MAX); не загрузилась — хотя бы цифры текстом."""
+    tok = upload_card(img, photo_like)
     return api_send(chat, caption, None, tok) if tok else api_send(chat, caption)
 
 
@@ -8639,12 +8757,16 @@ def anl_cards_send(chat, chans, mode, bg="pattern"):
                 net = anlimg.network_numbers(nums)
                 topic = " ".join(n["title"] for n in nums)[:80]
                 bg_img = anl_background(bg, topic, 1280, 330, "waves")
-                send_card(chat, anlimg.render_network(net, card_font, bg_img), net_caption(net))
+                send_card(chat, anlimg.render_network(net, card_font, bg_img), net_caption(net), bg_img is not None)
             else:
-                for n in nums:
+                def card(n):                             # фон, рисунок и загрузка — параллельно по каналам…
                     bg_img = anl_background(bg, n["title"], 1200, 900, "aurora")
-                    photo = fetch_thumb(n.get("icon"))
-                    send_card(chat, anlimg.render_channel(n, card_font, bg_img, photo), card_caption(n))
+                    img = anlimg.render_channel(n, card_font, bg_img, fetch_thumb(n.get("icon")))
+                    return upload_card(img, bg_img is not None)
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    tokens = list(pool.map(card, nums))
+                for n, tok in zip(nums, tokens):         # …а в чат — по порядку каналов
+                    api_send(chat, card_caption(n), None, tok) if tok else api_send(chat, card_caption(n))
         print(f"⏱ Карточки аналитики ({'сеть' if mode == 'net' else 'каналы'}, {len(nums)}): "
               f"данные MAX {t1 - t0:.1f} с, картинки и отправка {time.perf_counter() - t1:.1f} с")
     except Exception as e:
@@ -8681,10 +8803,15 @@ def anl_cards_start(uid, mode):
 # ---------- 🔮 ПРОГНОЗ ПОСТА: оценка черновика до публикации ----------
 def predict_history(cid):
     """Посты канала за 30 дней с просмотрами (для прогноза) — из памяти, если спрашивали недавно."""
+    now = time.time()
     got = PRED_HIST.get(cid)
-    if got is None or time.time() - got[0] > 1800:
-        got = (time.time(), fetch_channel_msgs(cid, days=30, limit=300))
+    if got is None or now - got[0] > 1800:
+        got = (now, fetch_channel_msgs(cid, days=30, limit=300))
         PRED_HIST[cid] = got
+        for k in [k for k, v in list(PRED_HIST.items()) if now - v[0] > 1800]:
+            PRED_HIST.pop(k, None)                       # устаревшее — долой
+        while len(PRED_HIST) > PRED_HIST_MAX:            # и не больше PRED_HIST_MAX каналов
+            PRED_HIST.pop(min(PRED_HIST, key=lambda k: PRED_HIST[k][0]), None)
     return got[1]
 
 
@@ -8751,6 +8878,7 @@ TREND_STATE_FILE = "trends_state.json"   # когда следующая про�
 TREND_ALERTS = AlertStore(TREND_FILE, save=save_json, load=load_json_safe)
 TREND_STATE = TrendState(TREND_STATE_FILE, save=save_json, load=load_json)
 TREND_EVERY = (2 * 3600, 3 * 3600)       # каждая тема — раз в 2–3 часа (случайно: темы не идут пачкой)
+TREND_TICK = 60                          # как часто фоновый поток смотрит, не пора ли проверить какую-то тему (сек)
 TREND_AI_DAY = max(1, env_int("TREND_AI_DAILY", 150))   # вопросов ИИ о трендах в сутки на весь бот
 TREND_LOCK = threading.Lock()            # одна проверка трендов за раз (фон и «🔎 Проверить сейчас»)
 TREND_MANUAL = {}                        # uid -> когда нажал «Проверить сейчас» (не чаще раза в 5 минут)
@@ -8758,6 +8886,8 @@ TREND_PROXY = (os.environ.get("TREND_PROXY") or "").strip() or None   # прок
 TREND_WORKER = None
 TREND_VERDICT = {"yes": "нашёл тренд — сигнал отправлен ✅", "no": "ничего вирусного по теме — промолчал",
                  "nothing-new": "новых новостей с прошлой проверки нет", "empty": "свежих новостей по словам не нашлось",
+                 "off-topic": "новости только мельком задевают тему канала — промолчал",
+                 "warmup": "память трендов восстанавливалась — эта проверка без сигнала (чтобы не повторить старое)",
                  "no-words": "в канале нет постов — не из чего взять слова", "no-ai": "⚠️ ИИ недоступен",
                  "ai-error": "⚠️ ИИ ответил ошибкой", "search-error": "⚠️ поиск новостей не ответил",
                  "send-error": "⚠️ не смог отправить сигнал", "error": "⚠️ сбой проверки"}
@@ -8779,6 +8909,19 @@ TREND_SEARCH = trsearch.Searcher([
 ])
 
 
+def close_sessions():
+    """При остановке бота: закрыть HTTP-сессии (MAX, ИИ, ЮKassa — S; t.me и Google News — WS) и клиентов
+    DuckDuckGo. Пока бот работает, сессии одни на всех: соединения переиспользуются, новые не плодятся."""
+    for sess in (S, WS):
+        with contextlib.suppress(Exception):
+            sess.close()
+    with contextlib.suppress(Exception):
+        trsearch.close_clients()
+
+
+__import__("atexit").register(close_sessions)
+
+
 def trend_scope(t):
     """Кому сигнал: кабинет покупателя (host-режим) или админ бота. У каждого своя память «уже отправляли»."""
     return f"cab:{t.owner}" if HOST_MODE and t.owner else "admin"
@@ -8786,6 +8929,12 @@ def trend_scope(t):
 
 def trend_enabled(t):
     return bool(t.own.get("trend_on", True))
+
+
+def trend_words(t):
+    """Свои слова для поиска (список строк); испорчено в файле тем — как «не заданы»."""
+    w = t.own.get("trend_words")
+    return [x for x in w if isinstance(x, str) and x.strip()][:5] if isinstance(w, list) else []
 
 
 def trend_allowed(t):
@@ -8838,7 +8987,7 @@ def trend_job(t):
         sig = CFG["signature_text"] if CFG["signature_on"] else ""
     title = ((chat_info_cached(t.chat_id) or {}).get("title") if t.chat_id else "") or t.name
     lang = "ru" if trtext.cyr_share(texts) >= 0.3 else "en"
-    return TrendJob(trend_scope(t), t.id, title, texts, list(t.own.get("trend_words") or []), sig, lang)
+    return TrendJob(trend_scope(t), t.id, title, texts, trend_words(t), sig, lang)
 
 
 def trend_ask(prompt):
@@ -8912,7 +9061,8 @@ def trend_start():
         print("🔥 Тренды выключены переменной TRENDS=0")
         return None
     if TREND_WORKER is None:
-        TREND_WORKER = TrendWorker(trend_targets, trend_run, TREND_STATE, interval=TREND_EVERY, log=print)
+        TREND_WORKER = TrendWorker(trend_targets, trend_run, TREND_STATE, interval=TREND_EVERY, tick=TREND_TICK,
+                                   log=print)
         n = len(trend_targets())
         print(f"🔥 Тренды: слежу за каналами ({n}), каждый — раз в 2–3 часа; сигнал — только когда есть вирусное"
               + ("" if ai_llm_ready() else ". ⚠️ Нет ключей ИИ — сигналов не будет, пока их не добавят"))
@@ -8928,6 +9078,9 @@ def trend_result_text(res):
                 "теме канала. Как только что-то случится — пришлю сам.")
     if v == "nothing-new":
         return f"🔥 С прошлой проверки новых новостей по словам {words} нет. Слежу дальше — сигнал придёт сам."
+    if v == "off-topic":
+        return (f"🔥 Нашёл новости по словам {words}, но они только мельком задевают тему канала — это не тренд. "
+                "Слежу дальше.")
     if v == "empty":
         return f"🔥 Свежих новостей по словам {words} за сутки не нашлось. Слежу дальше."
     if v == "no-words":
@@ -8957,6 +9110,9 @@ def trend_check_now(uid):
     if TREND_LOCK.locked():
         return "⏳ Как раз идёт проверка трендов — если найдётся вирусное, сигнал придёт сам."
     TREND_MANUAL[str(uid)] = time.time()
+    if len(TREND_MANUAL) > 500:                           # память не растёт: старые нажатия забываем
+        for k in [k for k, v in list(TREND_MANUAL.items()) if time.time() - v > 3600]:
+            TREND_MANUAL.pop(k, None)
     tid = t.id
 
     def run():
@@ -9010,7 +9166,7 @@ def trend_screen(uid):
     t = cur()
     on, last, nxt = trend_enabled(t), TREND_STATE.last(t.id), TREND_STATE.next(t.id)
     n, rec = TREND_ALERTS.stats(trend_scope(t))
-    own = t.own.get("trend_words") or []
+    own = trend_words(t)
     lines = ["🔥 Тренды — сигнал, когда по теме канала случается что-то вирусное", "",
              "Каждые 2–3 часа бот ищет свежие новости по словам из последних постов канала. ИИ строго отбирает: "
              "только по-настоящему вирусное или важное, что точно подходит каналу. Есть такое — пришлю короткий "
@@ -9029,7 +9185,8 @@ def trend_screen(uid):
         lines.append(f"Последняя проверка: {time.strftime('%d.%m %H:%M', time.localtime(last['t']))} — "
                      + TREND_VERDICT.get(last.get("verdict"), str(last.get("verdict")))
                      + (f" (новостей {last.get('found', 0)}, новых {last.get('new', 0)})" if last.get("found") else "")
-                     + (f": {last['error']}" if last.get("error") and last.get("verdict") != "yes" else ""))
+                     + (f": {last['error']}" if last.get("error") and last.get("verdict") != "yes" else "")
+                     + (f" ({last['reason']})" if last.get("reason") and last.get("verdict") == "no" else ""))
     if on and nxt and t.chat_id:
         lines.append(f"Следующая: ≈ {time.strftime('%H:%M', time.localtime(max(nxt, time.time())))}")
     lines.append(f"Сигналов отправлено: {n}" + (
@@ -9079,7 +9236,6 @@ def social_parse(tok):
         return None, None
     url = t if t.lower().startswith("http") else "https://" + t
     host = re.sub(r"^www\.|^m\.", "", re.match(r"(?i)https?://([^/]+)", url).group(1).lower())
-    path = url.split(host, 1)[-1] if host in url.lower() else ""
     for dom, nm in SOCIAL_NO.items():
         if host == dom or host.endswith("." + dom):
             return None, f"{nm} не отдаёт посты без входа в аккаунт — пока не поддерживается"
@@ -11425,7 +11581,7 @@ def host_adopt_orphans():
     save_tenants()
     save_cfg()
     if orphans or moved:
-        print(f"HOST: твои темы — личный кабинет хозяина (бесплатно, бессрочно): "
+        print("HOST: твои темы — личный кабинет хозяина (бесплатно, бессрочно): "
               + (", ".join(t.name for t in THEMES if t.owner == key) or "—"))
 
 
@@ -11689,7 +11845,7 @@ def buyers_screen(page=0, query=""):
     keys.sort(key=lambda k: -(TENANTS[k].get("until") or 0))
     shown, page, pages = paginate(keys, page)
     lines = [f"{i}. {TENANTS[k].get('name') or k} · {buyer_status(k)}" for i, k in enumerate(shown, page * 8 + 1)]
-    text = (f"👥 Покупатели" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
+    text = ("👥 Покупатели" + (f" — поиск «{query}»" if query else "") + f": {len(keys)}\n\n"
             + ("\n".join(lines) if lines else "Никого не нашёл." if query else "Пока никого нет."))
     rows = [[B(f"{TENANTS[k].get('name') or k}"[:40], f"m:buyer:{k}")] for k in shown]
     nav = ([B("⬅️ Раньше", f"m:buyers:{page - 1}")] if page > 0 else []) \
@@ -11867,7 +12023,6 @@ def host_terms_all():
                 continue
             warned = c.setdefault("warned", [])
             left = c["until"] - now
-            p30, p90 = (tariff_by_name(c.get("plan")) or {}).get("price", PRICE_30), None
             price = f"Продлить: кнопка «💳 Оплатить доступ» в боте. Вопросы: {SELLER_CONTACT}."
             if left <= 0 and "end" not in warned:
                 warned.append("end"); save_tenants()
@@ -12623,7 +12778,7 @@ CL_STATUS = {"run": "✅ работает", "free": "🆓 бесплатный �
 
 
 def tenant_info(key):
-    pub = errors = sources = admins = 0
+    pub = errors = sources = 0
     names = []
     for t in tenant_themes(key):
         with theme_ctx(t):
@@ -13446,11 +13601,11 @@ def clients_text(action, text, uid):
             if cid not in TENANTS:
                 return "Кабинет не найден.", "cl"
             n = tenant_send(cid, "✉️ Сообщение от хозяина бота:\n\n" + text.strip())
-            return (f"Отправил ✅" if n else "Не получилось — кабинет ещё не писал боту."), f"clc:{cid}"
+            return ("Отправил ✅" if n else "Не получилось — кабинет ещё не писал боту."), f"clc:{cid}"
         if cid not in CLIENTS:
             return "Клиент не найден.", "cl"
         n = client_send(cid, "✉️ Сообщение от продавца:\n\n" + text.strip())
-        return (f"Отправил клиенту ✅" if n else "Не получилось отправить — клиент ещё не писал своему боту."), f"clc:{cid}"
+        return ("Отправил клиенту ✅" if n else "Не получилось отправить — клиент ещё не писал своему боту."), f"clc:{cid}"
     if action == "cltarset":
         new, bad = [], []
         for line in text.splitlines():
@@ -13792,7 +13947,7 @@ async def main():
         host_adopt_orphans()
         host_clean_chats()
         with contextlib.suppress(Exception):
-            clean_bot_names()
+            await asyncio.to_thread(clean_bot_names)   # спрашивает MAX (GET /me) — не в цикле
         print(f"HOST-режим: один бот для всех. Кабинетов: {len(TENANTS)}. Хозяин (OWNER_ID): {HOST_OWNER or '— не задан!'}")
         print(storage_note())
     for t in THEMES:

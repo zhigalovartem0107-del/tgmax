@@ -28,13 +28,23 @@ DAY = 86400
 
 
 # ---------- числа ----------
+def num(x):
+    """Конечное число или None: None, NaN, бесконечность, строка, True/False — «нет данных» (файл истории мог
+    испортиться, MAX — прислать что-то странное; картинка от этого падать не должна)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or x != x or x in (float("inf"), float("-inf")):
+        return None
+    return x
+
+
 def fmt_int(n):
     """5008 -> «5 008»; нет данных — «—»."""
+    n = num(n)
     return "—" if n is None else f"{int(round(n)):,}".replace(",", " ")
 
 
 def fmt_short(n):
     """121700 -> «121,7K», 21900 -> «21,9K», 593 -> «593»."""
+    n = num(n)
     if n is None:
         return "—"
     if abs(n) >= 1_000_000:
@@ -44,12 +54,42 @@ def fmt_short(n):
     return fmt_int(n)
 
 
+def fmt_big(n):
+    """Точно до 10 млн («5 008»), дальше коротко («12,3M»): огромные числа не вылезают за карточку."""
+    n = num(n)
+    return fmt_short(n) if n is not None and abs(n) >= 10_000_000 else fmt_int(n)
+
+
 def fmt_pct(x):
+    x = num(x)
     return "—" if x is None else f"{x:.1f}%".replace(".", ",")
 
 
 def fmt_delta(n):
+    n = num(n)
     return "—" if n is None else ("+" if n >= 0 else "−") + fmt_int(abs(n))
+
+
+_DAY_RE = __import__("re").compile(r"\d{4}-\d{2}-\d{2}$")
+
+
+def clean_posts(posts):
+    """Посты с понятными временем и просмотрами (остальное — мусор, пропускаем)."""
+    out = []
+    for p in posts or ():
+        if isinstance(p, dict) and num(p.get("t")) is not None and 0 < p["t"] < 4.1e9 \
+                and num(p.get("views")) is not None and p["views"] >= 0:
+            out.append(p)
+    return out
+
+
+def clean_history(history):
+    """{"ГГГГ-ММ-ДД": подписчиков} — только правильные даты и целые неотрицательные числа."""
+    out = {}
+    for k, v in (history.items() if isinstance(history, dict) else ()):
+        if isinstance(k, str) and _DAY_RE.match(k) and num(v) is not None and v >= 0:
+            out[k] = int(v)
+    return out
 
 
 def day_key(ts):
@@ -87,7 +127,10 @@ def subs_days(history, subs, now, days=7):
 def channel_numbers(title, subs, posts, history, now=None):
     """Всё для карточки канала. posts — [{"t", "views"}], history — {«ГГГГ-ММ-ДД»: подписчиков}."""
     now = now or time.time()
-    hist = dict(history or {})
+    hist = clean_history(history)
+    posts = clean_posts(posts)
+    subs = int(subs) if num(subs) is not None and subs >= 0 else None
+    title = str(title).strip() if title is not None and str(title).strip() else "Канал"
     v = views_by_age(posts, now)
     days = subs_days(hist, subs, now)
     old = sorted(k for k in hist if k < day_key(now))
@@ -104,15 +147,17 @@ def channel_numbers(title, subs, posts, history, now=None):
 
 def network_numbers(channels, now=None):
     """Сводка по сети: channels — [channel_numbers(...)]. ER — просмотры за сутки к подписчикам."""
-    subs = sum(c["subs"] or 0 for c in channels)
+    channels = [c for c in channels or () if isinstance(c, dict)]
+    subs = sum(num(c.get("subs")) or 0 for c in channels)
     def total(k):
-        vals = [c[k] for c in channels if c.get(k) is not None]
+        vals = [num(c.get(k)) for c in channels if num(c.get(k)) is not None]
         return sum(vals) if vals else None
     v24 = total("v24")
-    top = sorted(channels, key=lambda c: -(c["subs"] or 0))[:3]
+    top = sorted(channels, key=lambda c: -(num(c.get("subs")) or 0))[:3]
     return {"subs": subs, "v24": v24, "v48": total("v48"), "v72": total("v72"),
             "er": round(v24 / subs * 100, 1) if v24 is not None and subs else None,
-            "n": len(channels), "top": [(c["title"], c["subs"], c.get("v24")) for c in top],
+            "n": len(channels), "top": [(str(c.get("title") or "Канал"), num(c.get("subs")), num(c.get("v24")))
+                                        for c in top],
             "now": now or time.time()}
 
 
@@ -167,6 +212,7 @@ def seed_of(text):
 
 def procedural_background(w, h, seed, style="aurora"):
     """Свой фон у каждого канала (seed — от названия): «aurora» — мягкие цветные пятна, «waves» — волны."""
+    w, h = max(1, int(num(w) or 1)), max(1, int(num(h) or 1))    # кривые размеры — не падаем
     rnd = random.Random(seed)
     palettes = [((24, 20, 64), (88, 86, 214), (236, 72, 153)), ((10, 30, 60), (34, 139, 230), (45, 212, 191)),
                 ((40, 16, 60), (168, 85, 247), (251, 146, 60)), ((12, 38, 32), (16, 185, 129), (250, 204, 21))]
@@ -225,7 +271,8 @@ def render_channel(n, font=None, bg=None, photo=None, brand="Reloader"):
     _card(img, (32, 160, 448, 424), NAVY, 28, 245 if art else 255)
     d = ImageDraw.Draw(img)
     _text(d, (60, 190), "Подписчики", font(False, 26), (190, 204, 232))
-    _text(d, (58, 228), fmt_int(n["subs"]), font(True, 74), WHITE)
+    big = fmt_big(n["subs"])
+    _text(d, (58, 228), big, _fit(d, big, font, True, 74, 360), WHITE)
     d.line([(60, 320), (420, 320)], fill=(60, 78, 112), width=1)
     for i, (lab, val) in enumerate((("Сегодня", n["today"]), ("7 дней", n["d7"]), ("30 дней", n["d30"]))):
         x = 60 + i * 124
@@ -242,14 +289,15 @@ def render_channel(n, font=None, bg=None, photo=None, brand="Reloader"):
             _card(img, (484, y - 2, 848, y + 52), ACCENT_SOFT, 14, 255)
             d = ImageDraw.Draw(img)
         _text(d, (500, y + 25), f"{h} часа" if h < 48 else f"{h} часов", font(False, 22), ACCENT if i == 0 else GRAY, "lm")
-        _text(d, (830, y + 25), fmt_int(n[f"v{h}"]), font(True, 32), ACCENT if i == 0 else INK, "rm")
+        _text(d, (830, y + 25), fmt_big(n[f"v{h}"]), font(True, 32), ACCENT if i == 0 else INK, "rm")
         if i:
             d.line([(500, y - 6), (832, y - 6)], fill=LINE, width=1)
     # ER24
     _card(img, (884, 160, W - 32, 424), PINK, 28, a)
     d = ImageDraw.Draw(img)
     _text(d, (910, 186), "ER24", font(True, 26), INK)
-    _text(d, (908, 236), fmt_pct(n["er24"]), font(True, 64), RED)
+    er = fmt_pct(n["er24"])
+    _text(d, (908, 236), er, _fit(d, er, font, True, 64, 250), RED)
     _text(d, (910, 330), "Просмотры за 24 часа", font(False, 19), GRAY)
     _text(d, (910, 356), "к числу подписчиков", font(False, 19), GRAY)
     # график
