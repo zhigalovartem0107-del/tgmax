@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110608            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110609            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1611,6 +1611,44 @@ def cabinet_admin_of(key, cid, extra=()):
         return None
     mine = list((TENANTS.get(key) or {}).get("admins") or []) + ([key] if key else []) + list(extra)
     return any(same_uid(a, m) for a in adm for m in mine)
+
+
+BIND_WAIT_SEC = 20 * 60   # дал ссылку, бот канал не нашёл — 20 минут любое слово в канале привязывает его
+CHAN_EVENTS = deque(maxlen=15)   # что пришло из каналов MAX и что бот сделал — для /channels (диагностика)
+
+
+def chan_event(cid, who, result, title=""):
+    CHAN_EVENTS.append(f"{time.strftime('%d.%m %H:%M')} канал {title or ''} ({cid}), автор {who or 'неизвестен'}: {result}")
+
+
+def waiting_theme(cid):
+    """Как раньше: тема ждёт канал (дали ссылку, а бот его не нашёл) — пост в канале привязывает его.
+    Ждёт одна тема — она; ждут несколько — та, чей владелец есть в админах канала."""
+    now = time.time()
+    ws = [x for x in THEMES if not x.chat_id and now - float(x.own.get("bind_wait") or 0) < BIND_WAIT_SEC]
+    if len(ws) == 1:
+        return ws[0]
+    mine = [x for x in ws if cabinet_admin_of(x.owner, cid)]
+    return mine[0] if len(mine) == 1 else None
+
+
+def channels_report():
+    """/channels (админу): каналы MAX, где бот, к чему привязаны, кто ждёт канал и последние события из каналов."""
+    taken = {t.chat_id: t for t in THEMES if t.chat_id}
+    lines = ["📢 Каналы MAX, где бот:"]
+    for c in bot_channels()[:30]:
+        t = taken.get(c["chat_id"])
+        owner = ((TENANTS.get(t.owner) or {}).get("name") or t.owner or "—") if t else ""
+        lines.append(f"• {c['title']} ({c['chat_id']}) {c['link'] or 'без ссылки'} — "
+                     + (f"привязан к «{t.name}» ({owner})" if t else "свободен"))
+    if len(lines) == 1:
+        lines.append("— ни одного: MAX не вернул боту каналы (бот не админ ни в одном канале?)")
+    now = time.time()
+    ws = [t for t in THEMES if not t.chat_id and now - float(t.own.get("bind_wait") or 0) < BIND_WAIT_SEC]
+    lines += ["", "⏳ Ждут канал (дали ссылку):"] + ([f"• «{t.name}» — {t.link or 'без ссылки'}" for t in ws] or ["— никто"])
+    lines += ["", "🕓 Последние события из каналов:"] + (list(CHAN_EVENTS)[::-1] or
+                                                        ["— пока ничего: бот не получал сообщений из каналов"])
+    return "\n".join(lines)[:3900]
 
 
 CHAN_HINTS = {}          # (chat_id канала, о чём сказали) -> когда: подсказки владельцу — не чаще раза в час
@@ -3925,6 +3963,10 @@ def apply_text(action, text, uid=None):
                 print(f"Канал MAX {cid}: уже привязан к теме «{other.name}» другого кабинета — сюда не переношу")
                 return ("⚠️ Этот канал MAX уже привязан к другому кабинету — сюда привязать его не могу. "
                         "Если канал твой, напиши в «❓ Поддержка»."), "thm"
+        if t.chat_id:
+            t.own.pop("bind_wait", None)
+        else:
+            t.own["bind_wait"] = time.time()              # 20 минут: любое слово в канале — и он привязан
         save_cfg()
         nxt = "ask:chadd" if not CFG["channels"] else "thm"
         if t.chat_id:
@@ -4038,6 +4080,7 @@ def do_action(act, uid=None):
                 if HOST_MODE and old.owner != t.owner:
                     notify(f"🔁 Канал MAX «{c['title']}» больше не привязан к теме «{old.name}».")
         t.chat_id, t.link = cid, c["link"] or t.link
+        t.own.pop("bind_wait", None)
         DENIED.pop(cid, None)
         DENY_N.pop(cid, None)
         save_cfg()
@@ -4968,6 +5011,8 @@ def run_command(cmd, arg, uid, chat_id):
                 save_cfg()
                 CUR.set(t)
                 show("main")
+    elif cmd in ("channels", "kanaly") and can_panel(uid):
+        say(channels_report())                          # 📢 каналы бота, привязки и события из каналов
     elif cmd == "check" and simple_menu(uid):
         show("main")                                   # 🔎 проверки связи у покупателя нет — его меню
     elif cmd == "check":
@@ -5331,6 +5376,7 @@ def on_channel_message(rec, who=None, added=False):
     if bound is not None:
         if chan_hint_due(cid, "bound"):
             print(f"Канал MAX {cid}: уже привязан к теме «{bound.name}» (кабинет {bound.owner or '—'})")
+            chan_event(cid, who, f"уже привязан к «{bound.name}»")
         return
     if rec.get("chat_type") not in (None, "channel"):
         return
@@ -5350,8 +5396,11 @@ def on_channel_message(rec, who=None, added=False):
             info = chat_info(cid)                         # ищем тему, которая ждёт канал с этой же ссылкой
             link = _norm_link(info.get("link"))
             t = next((x for x in THEMES if not x.chat_id and x.link and link and _norm_link(x.link) == link), None)
+            if t is None:                                 # как раньше: дали ссылку, бот не нашёл — любое слово
+                t = waiting_theme(cid)                    # в канале привязывает его к теме, которая ждёт
         if t is None:
             title = chat_info(cid).get("title") or link or str(cid)
+            chan_event(cid, who, "не привязан: нет темы, которая ждёт канал", title)
             print(f"Канал MAX {cid} «{title}»: {'бота добавили' if added else 'есть сообщение'}, но не нашлось темы, "
                   f"которая его ждёт (автор: {who or 'неизвестен'}, ссылка канала: {link or 'нет'}) — не привязываю")
             chat = user_chat(who) if key is not None else None
@@ -5370,12 +5419,14 @@ def on_channel_message(rec, who=None, added=False):
     if t is None or t.chat_id:
         return
     t.chat_id = cid
+    t.own.pop("bind_wait", None)
     DENIED.pop(cid, None)
     DENY_N.pop(cid, None)
     if t is THEMES[0]:
         _save_channel_id(cid)
     save_cfg()
     print(f"Канал MAX привязан к теме «{t.name}»: chat_id = {cid}")
+    chan_event(cid, who, f"привязан к «{t.name}»")
     with theme_ctx(t):
         notify("✅ Канал MAX привязан к этой теме." + (rights_note(cid) or " Публикую сюда."))
 

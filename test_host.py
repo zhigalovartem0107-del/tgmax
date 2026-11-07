@@ -3120,5 +3120,48 @@ assert t100b.chat_id == 10005 and other100.chat_id is None, (t100b.chat_id, othe
 bot.delete_theme(other100)
 print("h100 ok: 📢 привязка канала по посту/ссылке — работает и без списка админов MAX, чужой канал нельзя, не молчим")
 
+# 101) 📢 как раньше: дал ссылку (бот её не нашёл — закрытый канал / ссылка «поделиться»), написал любое слово в
+#      канале — канал привязан к теме, которая ждёт (если ждёт одна, 20 минут); две ждут — по админам канала;
+#      /channels — админу: каналы бота, к чему привязаны и последние события из каналов (покупателю — нет)
+msg(10100, 101000, "/start")
+k101 = bot.tenant_key(10100)
+t101 = bot.tenant_themes(k101)[0]
+bot.PENDING[10100] = "thlink"
+n101 = len(OUT)
+msg(10100, 101000, "https://max.ru/join/PRIV101")
+assert t101.chat_id is None and told(n101, "Не нашёл канал") and told(n101, "любое сообщение"), [o[0][:120] for o in OUT[n101:]]
+srv.private[10101] = ("Приватный 101", "https://max.ru/join/OTHERLINK")   # MAX отдаёт другую ссылку
+n101 = len(OUT)
+channel_post(10101)                                              # автор поста неизвестен (как в MAX)
+assert t101.chat_id == 10101 and disk_theme(t101.id)["chat_id"] == 10101, t101.chat_id
+assert told(n101, "Канал MAX привязан") and "bind_wait" not in t101.own, [o[0][:80] for o in OUT[n101:]]
+# две темы ждут — без подсказки не гадаем; владелец в админах канала — его
+msg(10110, 101100, "/start"); msg(10120, 101200, "/start")
+ta, tb = bot.tenant_themes(bot.tenant_key(10110))[0], bot.tenant_themes(bot.tenant_key(10120))[0]
+for u_, t_ in ((10110, ta), (10120, tb)):
+    bot.PENDING[u_] = "thlink"
+    msg(u_, u_ * 10, f"https://max.ru/join/WAIT{u_}")
+srv.private[10102] = ("Чей-то канал", "")
+channel_post(10102)
+assert ta.chat_id is None and tb.chat_id is None, "две ждут — не гадаем"
+srv.chat_admins[10102] = [111, 10120]                             # в админах — бот и второй покупатель
+channel_post(10102)
+assert tb.chat_id == 10102 and ta.chat_id is None, (ta.chat_id, tb.chat_id)
+# ожидание кончилось (больше 20 минут) — случайный пост в чужом канале ничего не берёт
+ta.own["bind_wait"] = time.time() - 21 * 60
+srv.private[10103] = ("Канал после", "")
+channel_post(10103)
+assert ta.chat_id is None, ta.chat_id
+# /channels: админу — каналы бота и события; покупателю — его меню
+n101 = len(OUT)
+msg(1, 61000, "/channels")
+dump101 = " ".join(o[0] for o in OUT[n101:])
+assert "Приватный 101" in dump101 and t101.name in dump101 and "свободен" in dump101, dump101[:600]
+assert "10103" in dump101 or "Канал после" in dump101, "последние события из каналов"
+n101 = len(OUT)
+msg(10100, 101000, "/channels")
+assert "Приватный 101" not in " ".join(o[0] for o in OUT[n101:]), "покупателю — нет"
+print("h101 ok: 📢 как раньше — ссылка + любое слово в канале привязывает; /channels — диагностика у админа")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)
