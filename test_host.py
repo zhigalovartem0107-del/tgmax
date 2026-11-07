@@ -2982,31 +2982,23 @@ json.dump([{"id": f"{nxt99}|zombie:1", "ch": "zombie", "status": "ok"}], open(f"
 t_new99 = bot.create_theme("Новая")
 assert t_new99.id != nxt99 and not t_new99.queue, (t_new99.id, t_new99.queue)
 bot.delete_theme(t_new99)
-# E) привязка по ссылке — только своего канала (в MAX ты админ этого канала)
+# E) как раньше: дал ссылку на канал, где бот уже админ, — привязан сразу (в списке админов MAX — только бот,
+#    так MAX и отвечает; покупателя там может не быть под тем же id)
 t99 = bot.tenant_themes(k99)[0]
-before99 = (t99.chat_id, t99.link)
 srv.chats["stranger99"] = 9904
-srv.chat_admins[9904] = [424242]
+srv.chat_admins[9904] = [111]                                    # 111 — сам бот (как в настоящем MAX)
 bot.PENDING[9900] = "thlink"
 n99 = len(OUT)
 msg(9900, 99000, "https://max.ru/stranger99")
-assert (t99.chat_id, t99.link) == before99, (t99.chat_id, t99.link)
-assert any("не админ" in o[0] for o in OUT[n99:]) and not any("привязан ✅" in o[0] for o in OUT[n99:]), \
-    [o[0][:120] for o in OUT[n99:]]
-srv.chat_admins[9904] = [9900]                                   # стал админом — привязка проходит
-bot.PENDING[9900] = "thlink"
-msg(9900, 99000, "https://max.ru/stranger99")
 assert t99.chat_id == 9904 and disk_theme(t99.id)["chat_id"] == 9904, t99.chat_id
-# F) тема ждёт канал по ссылке; пост в канале без автора — привязываем, только если владелец — админ канала
+assert any("привязан ✅" in o[0] for o in OUT[n99:]), [o[0][:120] for o in OUT[n99:]]
+# F) тема ждёт канал по ссылке (бота ещё не было); бота добавили, написали слово — привязан
 w99 = bot.create_theme("Ждёт канал", owner=k99)
 w99.link = "https://max.ru/stranger99b"
 srv.chats["stranger99b"] = 9905
-srv.chat_admins[9905] = [424242]
+srv.chat_admins[9905] = [111]
 chanpost = {"update_type": "message_created", "message": {"recipient": {"chat_id": 9905, "chat_type": "channel"},
                                                            "body": {"text": "пост"}}}
-bot.handle_update(chanpost)
-assert w99.chat_id is None, "чужой канал по совпавшей ссылке не привязываем"
-srv.chat_admins[9905] = [9900]
 bot.handle_update(chanpost)
 assert w99.chat_id == 9905, w99.chat_id
 bot.delete_theme(w99)
@@ -3056,16 +3048,14 @@ try:
     assert t100b.chat_id == 10001 and told(n100, "Канал MAX привязан"), [o[0][:80] for o in OUT[n100:]]
 finally:
     bot.chat_admin_ids = real_adm100
-# C) чужой канал: в списке админов есть люди, но не владелец темы — не привязываем, владельцу объясняем
+# C) в списке админов MAX — только бот (как отвечает настоящий MAX): слово в канале всё равно привязывает
 t100b.chat_id = None
-srv.chat_admins[10001] = [424242]
+srv.chat_admins[10001] = [111]
 n100 = len(OUT)
 channel_post(10001)
-assert t100b.chat_id is None and told(n100, "не админ"), [o[0][:100] for o in OUT[n100:]]
-n100 = len(OUT)
-channel_post(10001)                                              # повтор не засыпает владельца
-assert not told(n100, "не админ"), "подсказка — не чаще раза в час"
-# D) владелец — в списке админов (под любым из своих id) — привязывается
+assert t100b.chat_id == 10001 and told(n100, "Канал MAX привязан"), [o[0][:100] for o in OUT[n100:]]
+# D) владелец — в списке админов — тоже привязывается
+t100b.chat_id = None
 srv.chat_admins[10001] = [10000]
 channel_post(10001)
 assert t100b.chat_id == 10001
@@ -3113,6 +3103,21 @@ srv.chat_admins[10004] = [424242]                                 # у хозя�
 n100 = len(OUT)
 channel_post(10004)
 assert host100.chat_id == 10004 and told(n100, "Канал MAX привязан"), [o[0][:80] for o in OUT[n100:]]
+# K) канал уже привязан к теме другого кабинета — ссылкой его не забрать, и бот так и говорит
+t100b.chat_id = None
+bot.PENDING[10000] = "thlink"
+n100 = len(OUT)
+msg(10000, 100000, "https://max.ru/hostwait100")                 # канал хозяина (из I)
+assert t100b.chat_id is None and host100.chat_id == 10004, (t100b.chat_id, host100.chat_id)
+assert told(n100, "уже привязан") and not told(n100, "Не нашёл канал"), [o[0][:120] for o in OUT[n100:]]
+# L) канал у другой темы того же кабинета — переносим сюда
+other100 = bot.new_cabinet_theme(k100, "Вторая")
+other100.chat_id = 10005
+srv.chats["mine100"] = 10005
+bot.PENDING[10000] = "thlink"
+msg(10000, 100000, "https://max.ru/mine100")
+assert t100b.chat_id == 10005 and other100.chat_id is None, (t100b.chat_id, other100.chat_id)
+bot.delete_theme(other100)
 print("h100 ok: 📢 привязка канала по посту/ссылке — работает и без списка админов MAX, чужой канал нельзя, не молчим")
 
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
