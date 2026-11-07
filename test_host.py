@@ -3163,5 +3163,56 @@ msg(10100, 101000, "/channels")
 assert "Приватный 101" not in " ".join(o[0] for o in OUT[n101:]), "покупателю — нет"
 print("h101 ok: 📢 как раньше — ссылка + любое слово в канале привязывает; /channels — диагностика у админа")
 
+# 102) 📢 MAX с июня 2026 не отдаёт список чатов (GET /chats): каналы бот узнаёт из «бот добавлен» и помнит
+#      (known_chats.json); выбор канала и ссылка работают по этому списку; ID канала (web.max.ru/-…) —
+#      привязка напрямую; «бот добавлен» без пометки «канал» — тоже канал (уточняем по id); /channels —
+#      что бот получил от MAX
+srv.no_chat_list = True
+try:
+    msg(10200, 102000, "/start")
+    k102 = bot.tenant_key(10200)
+    t102 = bot.tenant_themes(k102)[0]
+    # A) бота добавили админом в канал; MAX не пометил «это канал» — уточняем по id, запоминаем, привязываем
+    srv.private[10201] = ("Роблокс мемы", "https://max.ru/channel_robloxxx")
+    n102 = len(OUT)
+    bot.handle_update({"update_type": "bot_added", "chat_id": 10201,
+                       "user": {"user_id": 10200, "first_name": "U10200"}})
+    assert t102.chat_id == 10201 and told(n102, "Канал MAX привязан"), (t102.chat_id, [o[0][:80] for o in OUT[n102:]])
+    assert "10201" in json.load(open("known_chats.json")), "канал запомнен на диске"
+    # B) выбор канала (GET /chats нет): в списке — каналы, которые бот знает (хозяину — все; покупателю — свои)
+    press(1, 61000, "m:chpick")
+    assert "Роблокс мемы" in shown(), shown()
+    t102.chat_id = None
+    press(10200, 102000, "m:chpick")
+    assert "a:chbind:10201" in shown(), shown()                    # добавил бота сам — канал его
+    # C) ссылка на известный канал — привязан сразу (раньше: «не нашёл», потому что GET /chats пуст)
+    bot.PENDING[10200] = "thlink"
+    n102 = len(OUT)
+    msg(10200, 102000, "https://max.ru/channel_robloxxx")
+    assert t102.chat_id == 10201 and told(n102, "привязан ✅"), (t102.chat_id, [o[0][:100] for o in OUT[n102:]])
+    # D) ID канала: ссылка из веб-версии (web.max.ru/-…) или число — проверяем у MAX и привязываем
+    srv.private[-10202] = ("Канал по ID", None)
+    t102.chat_id = None
+    bot.PENDING[10200] = "thlink"
+    msg(10200, 102000, "https://web.max.ru/-10202")
+    assert t102.chat_id == -10202, t102.chat_id
+    t102.chat_id = None
+    bot.PENDING[10200] = "thlink"
+    msg(10200, 102000, "-10202")
+    assert t102.chat_id == -10202, t102.chat_id
+    t102.chat_id = None
+    bot.PENDING[10200] = "thlink"
+    n102 = len(OUT)
+    msg(10200, 102000, "https://max.ru/nobody_knows_this")          # не знаем — честно и как быть
+    assert t102.chat_id is None and told(n102, "добавь снова") and told(n102, "web.max.ru"), [o[0][:160] for o in OUT[n102:]]
+    # E) /channels: что пришло от MAX (счётчики событий), каналы из «бот добавлен», подсказка
+    n102 = len(OUT)
+    msg(1, 61000, "/channels")
+    dump102 = " ".join(o[0] for o in OUT[n102:])
+    assert "Роблокс мемы" in dump102 and "bot_added" in dump102 and "message_created" in dump102, dump102[:900]
+finally:
+    srv.no_chat_list = False
+print("h102 ok: 📢 без GET /chats (MAX с июня 2026): каналы из «бот добавлен», выбор/ссылка/ID работают, /channels — что пришло")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

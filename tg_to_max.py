@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110609            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110610            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1587,10 +1587,60 @@ def max_chats():
     return out
 
 
+KNOWN_FILE = "known_chats.json"
+KNOWN_CHATS = load_json_safe(KNOWN_FILE, {})   # id канала (строкой) -> {"added_by", "t"}: MAX с июня 2026
+                                               # не отдаёт список чатов (GET /chats) — каналы бот помнит сам
+CHAT_INFO_CACHE = {}                           # id -> (сведения от MAX, когда спросили)
+
+
+def remember_chat(cid, who=None):
+    """Запоминаем канал, где есть бот (из «бот добавлен», привязки, проверенного id)."""
+    if not isinstance(cid, int):
+        return
+    rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
+    if who is not None and not rec.get("added_by"):
+        rec["added_by"] = str(who)
+    with contextlib.suppress(OSError):
+        save_json(KNOWN_FILE, KNOWN_CHATS, backup=True)
+
+
+def forget_chat(cid):
+    if KNOWN_CHATS.pop(str(cid), None) is not None:
+        with contextlib.suppress(OSError):
+            save_json(KNOWN_FILE, KNOWN_CHATS, backup=True)
+
+
+def chat_info_cached(cid, ttl=600):
+    """GET /chats/{id} (этот метод у MAX есть) с кэшем: не дёргаем MAX на каждое открытие списка каналов."""
+    got = CHAT_INFO_CACHE.get(cid)
+    if got is None or time.time() - got[1] > (ttl if got[0] else 60):
+        got = (chat_info(cid), time.time())
+        CHAT_INFO_CACHE[cid] = got
+    return got[0]
+
+
+def known_chats(types=("channel",)):
+    """Каналы, которые бот знает сам (MAX их больше не перечисляет): [{chat_id, title, link, type}]."""
+    ids = list(dict.fromkeys([int(k) for k in KNOWN_CHATS if re.fullmatch(r"-?\d+", k)]
+                             + [t.chat_id for t in THEMES if isinstance(t.chat_id, int)]))
+    out = []
+    for cid in ids:
+        info = chat_info_cached(cid)
+        if not info or info.get("status") not in (None, "active") or info.get("type") not in (None,) + tuple(types):
+            continue
+        out.append({"chat_id": cid, "title": info.get("title") or str(cid), "link": info.get("link") or "",
+                    "type": info.get("type")})
+    return out
+
+
 def bot_channels():
-    """Каналы MAX, где состоит бот: [{chat_id, title, link}]. Пусто — не получилось узнать."""
-    return [{"chat_id": c["chat_id"], "title": c.get("title") or str(c["chat_id"]), "link": c.get("link") or ""}
-            for c in max_chats() if c.get("type") == "channel" and c.get("status") in (None, "active")]
+    """Каналы MAX, где состоит бот: [{chat_id, title, link}]. Что вернул GET /chats (если MAX ещё отдаёт) +
+    каналы, которые бот знает сам (из «бот добавлен», привязанных тем, проверенных id)."""
+    out = {c["chat_id"]: {"chat_id": c["chat_id"], "title": c.get("title") or str(c["chat_id"]), "link": c.get("link") or ""}
+           for c in max_chats() if c.get("type") == "channel" and c.get("status") in (None, "active")}
+    for c in known_chats():
+        out.setdefault(c["chat_id"], {k: c[k] for k in ("chat_id", "title", "link")})
+    return list(out.values())
 
 
 def chat_admin_ids(chat_id):
@@ -1648,6 +1698,10 @@ def channels_report():
     lines += ["", "⏳ Ждут канал (дали ссылку):"] + ([f"• «{t.name}» — {t.link or 'без ссылки'}" for t in ws] or ["— никто"])
     lines += ["", "🕓 Последние события из каналов:"] + (list(CHAN_EVENTS)[::-1] or
                                                         ["— пока ничего: бот не получал сообщений из каналов"])
+    lines += ["", "📊 События от MAX с запуска: " + (", ".join(f"{k}={v}" for k, v in UPD_STATS.most_common(8)) or "—"),
+              "", "💡 MAX с июня 2026 не отдаёт боту список каналов. Канал бот узнаёт, когда его добавляют: "
+              "убери бота из админов канала и добавь снова — канал появится здесь и привяжется. Или пришли боту "
+              "ID канала: адрес канала в web.max.ru (web.max.ru/-123…)."]
     return "\n".join(lines)[:3900]
 
 
@@ -1673,7 +1727,9 @@ def pick_channels(uid):
     if not HOST_MODE or is_host(uid):
         return chans
     key = tenant_key(uid)
-    return [c for c in chans if cabinet_admin_of(key, c["chat_id"], [uid])]
+    mine = {str(m) for m in (TENANTS.get(key) or {}).get("admins") or []} | {str(uid), str(key)}
+    return [c for c in chans if (KNOWN_CHATS.get(str(c["chat_id"])) or {}).get("added_by") in mine
+            or cabinet_admin_of(key, c["chat_id"], [uid])]
 
 
 def channel_test(chat_id):
@@ -1718,15 +1774,32 @@ def resolve_chat_id(link):
     """id канала MAX по ссылке, @имени или имени. Поиска чата по ссылке в MAX Bot API нет (чат — только по числовому
     id), поэтому ищем среди чатов, где состоит бот (GET /chats): канал или группа, ссылка в любом виде, регистр не
     важен; ссылки у чата нет — по названию (если такое одно). None — бот такого чата не видит."""
+    m = re.search(r"(?:^|/)(-?\d{4,})/?$", (link or "").strip())
+    if m:                                             # ID канала: web.max.ru/-123… или просто число
+        cid = int(m.group(1))
+        info = chat_info(cid)
+        if info.get("chat_id") or info.get("type"):
+            remember_chat(cid)
+            return cid
+        return None
     want = link_slug(link)
     if not want:
         return None
     chats = [c for c in max_chats() if c.get("status") in (None, "active")]
+    seen = {c["chat_id"] for c in chats}
+    chats += [c for c in known_chats(("channel", "chat")) if c["chat_id"] not in seen]   # MAX не перечисляет — свои
     hit = next((c["chat_id"] for c in chats if c.get("link") and link_slug(c["link"]) == want), None)
     if hit is None:
         bare = lambda x: re.sub(r"[\W_]+", "", (x or "").lower())
         same = [c["chat_id"] for c in chats if bare(c.get("title")) == bare(want)]
         hit = same[0] if len(same) == 1 else None
+    if hit is None:                                   # старый поиск по ссылке (из документации MAX убран) — вдруг
+        with contextlib.suppress(Exception):
+            r = S.get(f"{MAX_API}/chats/{want}", headers=HEADERS, timeout=20)
+            j = r.json() if r.status_code == 200 else {}
+            if isinstance(j.get("chat_id"), int) and j.get("type") in (None, "channel", "chat"):
+                hit = j["chat_id"]
+                remember_chat(hit)
     return hit
 
 
@@ -3972,8 +4045,10 @@ def apply_text(action, text, uid=None):
         if t.chat_id:
             return "Канал MAX найден и привязан ✅" + rights_note(t.chat_id), nxt
         BIND["theme"] = t.id
-        return ("Не нашёл канал по ссылке. Добавь бота админом в этот канал MAX и напиши там любое "
-                "сообщение — я привяжу сам."), nxt
+        return ("Не нашёл канал по ссылке: MAX больше не даёт боту список каналов — канал бот узнаёт, когда его "
+                "добавляют в канал.\n\nСделай так: убери бота из админов канала и добавь снова — привяжу сам. Если "
+                "бот только что добавлен — напиши в канале любое сообщение.\n\nИли пришли ID канала: открой канал "
+                "в web.max.ru и скопируй адрес из строки браузера (web.max.ru/-123…)."), nxt
     if action in ("addts", "delts"):
         sites = [re.sub(r"^https?://(www\.)?", "", w.strip().lower()).split("/")[0] for w in re.split(r"[\s,;]+", text)]
         sites = [w for w in sites if "." in w]
@@ -4081,6 +4156,7 @@ def do_action(act, uid=None):
                     notify(f"🔁 Канал MAX «{c['title']}» больше не привязан к теме «{old.name}».")
         t.chat_id, t.link = cid, c["link"] or t.link
         t.own.pop("bind_wait", None)
+        remember_chat(cid)
         DENIED.pop(cid, None)
         DENY_N.pop(cid, None)
         save_cfg()
@@ -5420,6 +5496,7 @@ def on_channel_message(rec, who=None, added=False):
         return
     t.chat_id = cid
     t.own.pop("bind_wait", None)
+    remember_chat(cid, who)
     DENIED.pop(cid, None)
     DENY_N.pop(cid, None)
     if t is THEMES[0]:
@@ -5454,8 +5531,14 @@ def on_bot_removed(u):
                   "не нужно.")
 
 
+UPD_STATS = Counter()     # какие события MAX присылал с запуска (для /channels): тип[:вид чата]
+
+
 def handle_update(u):
     kind = u.get("update_type")
+    with contextlib.suppress(Exception):
+        ct = ((u.get("message") or {}).get("recipient") or {}).get("chat_type") if kind == "message_created" else ""
+        UPD_STATS[f"{kind}:{ct}" if ct else str(kind)] += 1
     uid = None
     if kind == "message_callback":
         uid = ((u.get("callback") or {}).get("user") or {}).get("user_id")
@@ -5505,6 +5588,8 @@ def _handle_update(u, kind):
         msg = u.get("message") or {}
         rec = msg.get("recipient") or {}
         if rec.get("chat_type") != "dialog":
+            if chan_hint_due(rec.get("chat_id"), "raw"):
+                print("MAX сообщение не из лички: " + json.dumps(msg, ensure_ascii=False)[:1500])
             on_channel_message(rec, (msg.get("sender") or {}).get("user_id"))   # привязка канала
             return
         sender = msg.get("sender") or {}
@@ -5512,9 +5597,15 @@ def _handle_update(u, kind):
         handle_message(sender.get("user_id"), rec.get("chat_id"), name,
                        (msg.get("body") or {}).get("text") or "", msg)
     elif kind == "bot_removed":
+        print("MAX bot_removed: " + json.dumps(u, ensure_ascii=False)[:1500])
+        chan_event(u.get("chat_id"), (u.get("user") or {}).get("user_id"), "бота убрали (bot_removed)")
+        forget_chat(u.get("chat_id"))
         on_bot_removed(u)
     elif kind == "bot_added":
         adder = (u.get("user") or {}).get("user_id")
+        print("MAX bot_added: " + json.dumps(u, ensure_ascii=False)[:1500])
+        remember_chat(u.get("chat_id"), adder)
+        chan_event(u.get("chat_id"), adder, "бота добавили (bot_added)")
         back = next((x for x in THEMES if x.chat_id == u.get("chat_id")), None)
         if back is not None:                           # бота вернули в канал темы — сразу продолжаем
             DENIED.pop(back.chat_id, None)
@@ -5523,7 +5614,8 @@ def _handle_update(u, kind):
                 with theme_ctx(back):                       # сообщение — владельцу ЭТОЙ темы, а не тому, кто сейчас пишет
                     journal("✅ Бота вернули в канал MAX — продолжаю публиковать")
                     owner_alert(f"✅ Бота вернули в канал темы «{back.name}» — продолжаю публиковать.")
-        elif (u.get("is_channel") or u.get("chat_type") == "channel") and (HOST_MODE or not CFG["admins"] or is_admin(adder)):
+        elif (u.get("is_channel") or u.get("chat_type") == "channel"
+              or chat_info_cached(u.get("chat_id")).get("type") == "channel") and (HOST_MODE or not CFG["admins"] or is_admin(adder)):
             on_channel_message({"chat_id": u.get("chat_id"), "chat_type": "channel"}, adder, added=True)
     elif kind == "bot_started":
         user = u.get("user") or {}

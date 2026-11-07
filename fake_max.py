@@ -16,6 +16,7 @@ class FakeMax:
         self.deny_chats = set()  # каналы, где бот не админ: публикация -> 403
         self.members = {}        # chat_id -> {user_id подписчиков} (проверка обязательной подписки)
         self.extra_chats = []    # чаты для GET /chats ровно в том виде, как их вернёт MAX
+        self.no_chat_list = False  # как MAX с июня 2026: GET /chats не поддерживается (каналы — из bot_added)
         self.pins = {}           # chat_id -> закреплённое сообщение
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
@@ -113,6 +114,8 @@ class FakeMax:
                     if int(m.group(1)) in outer.deny_chats:
                         return self._send(200, {"user_id": 111, "is_admin": False, "permissions": []})
                     return self._send(200, {"user_id": 111, "is_admin": True, "permissions": ["write"]})
+                if method == "GET" and p == "/chats" and outer.no_chat_list:
+                    return self._send(404, {"code": "not.found", "message": "Method GET /chats is not supported"})
                 if method == "GET" and p == "/chats":         # каналы, где состоит бот
                     chats = [{"chat_id": cid, "type": "channel", "status": "active", "title": slug,
                               "link": f"https://max.ru/{slug}"} for slug, cid in outer.chats.items()]
@@ -136,7 +139,12 @@ class FakeMax:
                     ident = m.group(1)                        # (поиска чата по ссылке/имени в MAX Bot API нет)
                     for slug, cid in outer.chats.items():
                         if ident == str(cid):
-                            return self._send(200, {"chat_id": cid, "title": slug, "link": f"https://max.ru/{slug}"})
+                            return self._send(200, {"chat_id": cid, "type": "channel", "status": "active",
+                                                    "title": slug, "link": f"https://max.ru/{slug}"})
+                    for cid, (title, ln) in outer.private.items():
+                        if ident == str(cid):
+                            return self._send(200, {"chat_id": cid, "type": "channel", "status": "active",
+                                                    "title": title, "link": ln or None})
                     return self._send(404, {"code": "not.found", "message": f"Chat {ident} not found"})
                 if method == "GET" and p == "/subscriptions":
                     return self._send(200, {"subscriptions": [{"url": x, "time": 0} for x in outer.subscriptions]})
