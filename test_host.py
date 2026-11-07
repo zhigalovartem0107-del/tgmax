@@ -3214,5 +3214,74 @@ finally:
     srv.no_chat_list = False
 print("h102 ok: 📢 без GET /chats (MAX с июня 2026): каналы из «бот добавлен», выбор/ссылка/ID работают, /channels — что пришло")
 
+# 103) 🔥 тренды в host-режиме: у хозяина — всегда; покупателю — только когда хозяин включил («специально
+#      выбранным»), сама всем не выходит; бесплатный тариф — нет; у каждого кабинета своя память; сигнал — в его чат
+from reloader.services.trends import search as SE103  # noqa: E402
+from reloader.services.trends.store import AlertStore as AS103  # noqa: E402
+SENT103, subs103 = [], bot.GCFG.get("force_subs")
+api103, ready103, ask103 = bot.api_send, bot.ai_llm_ready, bot.ai_ask_text
+bot.api_send = lambda chat, text, rows=None, token=None: (SENT103.append((chat, text or "", rows or [])),
+                                                          OUT.append((text or "", rows or [])), "m")[2]
+try:
+    bot.GCFG["force_subs"] = []
+    bot.TREND_ALERTS = AS103("sent_alerts_103.json", save=bot.save_json, load=bot.load_json_safe)
+    cabs103 = []
+    for uid, chat, cid in ((10301, 103010, -10301), (10302, 103020, -10302)):
+        srv.private[cid] = (f"Канал {uid}", None)
+        bot.track_cabinet(uid, chat, f"Покупатель {uid}")
+        k = bot.tenant_key(uid)
+        bot.host_extend(k, 30)                                 # оплачен
+        t = bot.tenant_themes(k)[0]
+        t.chat_id, t.own["trend_words"] = cid, ["roblox"]
+        cabs103.append((uid, chat, k, t))
+    (ua, chat_a, ka, ta), (ub, chat_b, kb, tb) = cabs103
+    bot.GCFG.setdefault("beta", {}).pop("trends", None)
+    r103 = bot.beta_rec("trends")
+    assert r103["state"] == "beta" and r103["hold"] is True, r103          # тратит ключи ИИ — сама всем не выходит
+    assert "trends" not in bot.beta_tick(time.time() + 30 * 86400)
+    assert ta.id not in bot.trend_targets() and tb.id not in bot.trend_targets()
+    host_t = [t for t in bot.tenant_themes(bot.host_id()) if t.chat_id and bot.trend_enabled(t)]
+    assert all(t.id in bot.trend_targets() for t in host_t), "свои каналы хозяина — всегда"
+    msg(ua, chat_a, "/trends")
+    assert "🔥 Тренды — сигнал" not in shown(), shown()                    # покупателю без функции — нет
+    press(1, 61000, "m:clbeta")
+    assert "🔥 Тренды" in shown() and "m:clbf:trends" in shown(), shown()
+    press(1, 61000, f"m:clbt:{ka}")
+    assert f"a:clbt:{ka}:trends" in shown(), shown()
+    press(1, 61000, f"a:clbt:{ka}:trends")                                 # хозяин включил покупателю A
+    assert bot.feature_on("trends", ka) and not bot.feature_on("trends", kb)
+    assert ta.id in bot.trend_targets() and tb.id not in bot.trend_targets()
+    msg(ua, chat_a, "/trends")
+    assert "🔥 Тренды — сигнал" in shown() and "Ключи ИИ добавляет владелец бота" in shown(), shown()
+    until103 = bot.TENANTS[ka]["until"]
+    bot.TENANTS[ka]["until"] = time.time() - 60                             # не продлил — бесплатный тариф
+    assert ta.id not in bot.trend_targets()
+    bot.TENANTS[ka]["until"] = until103
+    press(1, 61000, f"a:clbt:{kb}:trends")
+    viral103 = {"title": "Roblox заблокировали в России", "url": "https://ria.ru/roblox-103", "source": "РИА",
+                "date": time.time() - 3600}
+    bot.TREND_SEARCH = SE103.Searcher([("fake", lambda q, lang: [dict(viral103)])], pause=None, ttl=0)
+    bot.ai_llm_ready = lambda: True
+    bot.ai_ask_text = lambda text, *a, **k: "YES [1]\nRoblox заблокировали в России. Все обсуждают. Пиши сейчас."
+    n103 = len(SENT103)
+    assert bot.trend_run(ta.id)["verdict"] == "yes" and bot.trend_run(tb.id)["verdict"] == "yes"
+    got103 = [(c, txt) for c, txt, _ in SENT103[n103:] if txt.startswith("🔥 Тренд")]
+    assert [c for c, _ in got103] == [chat_a, chat_b], got103               # каждому — в его чат, хозяину — нет
+    assert "«Канал 10301»" in got103[0][1] and "«Канал 10302»" in got103[1][1], got103
+    assert bot.trend_run(ta.id)["verdict"] == "nothing-new" and bot.trend_run(tb.id)["verdict"] == "nothing-new"
+    saved103 = json.load(open("sent_alerts_103.json"))
+    assert set(saved103["sent"]) == {f"cab:{ka}", f"cab:{kb}"}, saved103["sent"].keys()
+    press(ua, chat_a, f"a:trendoff:{tb.id}")                               # чужие тренды не выключить
+    assert bot.trend_enabled(tb) and "не твоя" in " ".join(o[0] for o in OUT[-3:]), OUT[-3:]
+    press(ua, chat_a, f"a:trendoff:{ta.id}")                               # свои — «🔕» из сигнала
+    assert not bot.trend_enabled(ta) and ta.id not in bot.trend_targets()
+    press(1, 61000, f"a:clbt:{ka}:trends")                                 # хозяин выключил функцию A
+    assert not bot.feature_on("trends", ka)
+finally:
+    bot.api_send, bot.ai_llm_ready, bot.ai_ask_text = api103, ready103, ask103
+    bot.GCFG["force_subs"] = subs103 if subs103 is not None else []
+print("h103 ok: 🔥 тренды: у хозяина — всегда, покупателю — когда хозяин включил (сама не выходит), бесплатный "
+      "тариф — нет; каждому кабинету свой сигнал в его чат и своя память; чужие тренды не выключить")
+
 print("ВСЕ ТЕСТЫ HOST-РЕЖИМА ПРОШЛИ")
 os._exit(0)

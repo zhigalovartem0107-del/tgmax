@@ -20,6 +20,8 @@ class FakeMax:
         self.pins = {}           # chat_id -> закреплённое сообщение
         self.subs = {}           # chat_id -> подписчиков (participants_count в GET /chats/{id})
         self.actions = []        # (chat_id, action): «печатает…», «отправляет фото…»
+        self.ai_replies = []     # ИИ (OpenRouter/DeepSeek): очередь ответов (код, текст) на POST /chat/completions
+        self.ai_calls = []       # (ключ из Authorization, текст задания) — что спросили у ИИ
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
         self.bots = {}                     # другие боты (продажа): токен -> {"name", "updates": [...]}
@@ -71,6 +73,8 @@ class FakeMax:
                         self._send(401, {"type": "error", "id": "019a-test-err", "code": "invalid_credentials",
                                           "description": "Error in shopId or secret key. Check their validity."})
                     return ok
+                if path == "/chat/completions":            # ИИ: ключ проверяет сам ИИ, не MAX
+                    return True
                 if self.headers.get("Authorization") != outer.token \
                         and self.headers.get("Authorization") not in outer.bots:
                     self._send(401, {"code": "verify.token", "message": "Invalid access_token"})
@@ -256,6 +260,15 @@ class FakeMax:
                             for hs in outer.history.values() for h in hs
                             if h["body"]["mid"] in want and h["body"]["mid"] in outer.views]
                     return self._send(200, {"messages": out})
+                if method == "POST" and p == "/chat/completions":   # ИИ в формате OpenAI (OpenRouter, DeepSeek)
+                    body = json.loads(raw or b"{}")
+                    with outer.lock:
+                        outer.ai_calls.append(((self.headers.get("Authorization") or "").replace("Bearer ", ""),
+                                               ((body.get("messages") or [{}])[0]).get("content") or ""))
+                        code, text = outer.ai_replies.pop(0) if outer.ai_replies else (200, "NO")
+                    if code != 200:
+                        return self._send(code, {"error": {"message": "rate limit" if code == 429 else "error"}})
+                    return self._send(200, {"choices": [{"message": {"content": text}}]})
                 m = re.fullmatch(r"/chats/(-?\d+)/actions", p)
                 if method == "POST" and m:                    # «печатает…» в чате
                     with outer.lock:

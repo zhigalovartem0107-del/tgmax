@@ -40,7 +40,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110611            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110612            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -443,7 +443,8 @@ TG_HOSTS = ["t.me", "telegram.me"]                   # если t.me не отв
 
 # ---------- ⏱ СКОРОСТЬ: где бот тратит время (запросы к MAX/ЮKassa/ИИ/t.me, нажатия, запись файлов) ----------
 PERF_LOCK = threading.Lock()
-PERF = {"since": time.time(), "http": {}, "upd": {}, "ai": {}, "json": {}, "tg": {}, "slow": deque(maxlen=15)}
+PERF = {"since": time.time(), "http": {}, "upd": {}, "ai": {}, "json": {}, "tg": {}, "trend": {},
+        "slow": deque(maxlen=15)}
 PERF_SLOW_SEC = 1.5          # нажатие обрабатывалось дольше — строка в лог с тем, на что ушло время
 _PERF_LOCAL = threading.local()   # запросы, сделанные во время текущего нажатия (для строки «медленно»)
 
@@ -2926,7 +2927,7 @@ AUTODEL_SEC = 3600
 AUTODEL_LOCK = threading.Lock()
 AUTODEL = {"temp": [], "menu": {}}
 AUTODEL.update(load_json(AUTODEL_FILE, {}))
-KEEP_TEXT = ("📊 Итоги дня", "📈 Отчёт")           # отчёты остаются в чате
+KEEP_TEXT = ("📊 Итоги дня", "📈 Отчёт", "🔥 Тренд для")   # отчёты и сигналы трендов остаются в чате
 
 
 def track_sent(chat_id, mid, text, rows):
@@ -3804,8 +3805,11 @@ def _screen(name, uid=None):
                 [B("🖼 Карточка канала", "a:anlcard")],
                 [B("🌐 Сводка по всем каналам", "a:anlnet")],
                 [B("🔮 Прогноз поста", "a:predict")],
+                *([[B("🔥 Тренды", "m:trends")]] if feature_on("trends") else []),
                 [B(f"Фон карточек: {ANL_BG_NAMES[anl_bg_mode(uid)]}", "a:anlbg")],
                 [B("◀️ Панель", "m:cl") if HOST_MODE and can_panel(uid) else back[0]]]
+    elif name == "trends" and feature_on("trends"):
+        text, rows = trend_screen(uid)
     elif name == "predict" and feature_on("stats"):
         text = PREDICT_ASK
         rows = [[B("◀️ Аналитика", "m:anl")]]
@@ -3876,6 +3880,8 @@ def _screen(name, uid=None):
 SOCIAL_HINT = ("\n\n🌐 Бета: можно прислать ссылку на аккаунт соцсети — tiktok.com/@имя, vk.com/имя, "
                "youtube.com/@имя, rutube.ru/channel/…, или сайт/блог с RSS. Буду брать оттуда новые посты.")
 PROMPTS = {
+    "trendwords": ("✏️ Пришли 1–5 слов или фраз через запятую — по ним бот будет искать новости для трендов "
+                   "(например: roblox, brawl stars).\n\nПришли «авто» — снова брать слова из последних постов канала."),
     "codeentry": "Отправь код активации сообщением в этот чат.",
     "buyerreq": "📇 Продавец просит поделиться контактом — нажми кнопку ниже. Так он сможет написать тебе лично в MAX.",
     "buysearch": "Пришли id покупателя или его @username — найду карточку.",
@@ -3953,6 +3959,8 @@ def split_words(text):
 
 def apply_text(action, text, uid=None):
     """Применяет присланный текст. Возвращает (ответ, экран)."""
+    if action == "trendwords":                         # 🔥 свои слова для поиска трендов
+        return trend_words_set(cur(), text), "trends"
     if action in ("buysearch", "coderevoke") or (action or "").startswith("codegen:"):
         if not can_panel(uid):
             return "Нет доступа.", "main"
@@ -4318,6 +4326,9 @@ def do_action(act, uid=None):
     elif p[0] == "predict" and feature_on("stats"):
         PENDING[uid] = "predict"
         scr = "predict"
+    elif p[0] in ("trendtg", "trendnow", "trendoff"):
+        FLASH[uid] = trend_action(p, uid)
+        scr = "trends"
     elif p[0] in ("aismart", "aitags", "aiqual", "aidup", "aiads"):
         key = {"aismart": "smart_time", "aitags": "smart_tags", "aiqual": "smart_quality",
                "aidup": "dedupe_strict", "aiads": "ads_strict"}[p[0]]
@@ -4530,7 +4541,7 @@ SPREAD_LABELS = {"ad_keywords": "рекламные слова", "old_signatures
 
 
 LAST_SCREEN = {}       # админ -> экран меню, с которого он пришёл (туда ведёт «◀️ Назад» из ввода)
-SPREAD_QUIET = {"chadd", "chdel", "thlink", "themenew", "thname", "stashadd"}   # своё у темы — «для всех» не про них
+SPREAD_QUIET = {"chadd", "chdel", "thlink", "themenew", "thname", "stashadd", "trendwords"}   # своё у темы — «для всех» не про них
 
 
 def prompt_nav(uid):
@@ -4920,6 +4931,7 @@ COMMAND_HELP = [
     ("stats", "📊 Аналитика просмотров за 7 дней — прямо сейчас"),
     ("card", "🖼 Карточка канала; /card all — сводка по всем каналам"),
     ("predict", "🔮 Прогноз поста: оценка черновика до публикации"),
+    ("trends", "🔥 Тренды: сигнал, когда по теме канала случилось вирусное"),
     ("help", "Список команд"),
 ]
 
@@ -5204,6 +5216,11 @@ def run_command(cmd, arg, uid, chat_id):
         else:
             PENDING[uid] = "predict"
             say(PREDICT_ASK, [[B("◀️ Аналитика", "m:anl")]])
+    elif cmd in ("trends", "trend", "trendy") and feature_on("trends"):
+        if arg.lower() in ("now", "сейчас", "check"):
+            say(trend_check_now(uid))                   # 🔎 проверить тренды прямо сейчас
+        else:
+            show("trends")
     elif cmd in ("card", "kartochka") and feature_on("stats"):
         say(anl_cards_start(uid, "net" if arg.lower() in ("net", "all", "сеть", "все") else "chan"))
     elif cmd == "check" and simple_menu(uid):
@@ -5748,7 +5765,7 @@ def _handle_update(u, kind):
 # Раньше события MAX шли строго по одному: пока бот ждал ЮKassa, MAX или ИИ для одного покупателя (до 20–60 с),
 # кнопки не отвечали никому. Теперь у каждого пользователя своя «полоса»: его нажатия — по порядку, а чужие
 # медленные дела его не держат.
-MENU_LANES = max(1, min(16, int(os.environ.get("MENU_LANES") or 4)))
+MENU_LANES = max(1, min(16, env_int("MENU_LANES", 4)))
 LANES = []                   # [queue.Queue] — по одной на полосу
 LANES_LOCK = threading.Lock()
 TYPING_AFTER_SEC = 1.0       # нажатие обрабатывается дольше — в чате «печатает…», чтобы было видно, что бот занят
@@ -5896,6 +5913,7 @@ def perf_report(reset=False):
     lines += top("http", 8, "🌐 Запросы (MAX, ЮKassa, ИИ, t.me):")
     lines += top("ai", 4, "🤖 ИИ:")
     lines += top("tg", 3, "📡 Telegram:")
+    lines += top("trend", 3, "🔥 Тренды (поиск новостей):")
     lines += top("json", 4, "💾 Запись файлов:")
     slow = snap["slow"][-5:]
     lines += ([f"🐢 Медленные нажатия (дольше {PERF_SLOW_SEC:.1f} с), последние:"]
@@ -7639,18 +7657,24 @@ BETA_FEATURES = {   # ключ: (название, что делает, где �
            "Пересказывает каждый пост другими словами (синонимами), чтобы он не был копией. Тема, длина, ссылки, "
            "@каналы, цифры и КАПС остаются. Бесплатно, без ключей.",
            "меню → «⚙️ Ещё настройки» → «🧠 Умное» → «🪄 ИИ-редактор»"),
+    "trends": ("🔥 Тренды",
+               "Бот сам следит за новостями по теме канала покупателя и присылает сигнал, только когда случилось "
+               "что-то вирусное: что произошло и почему стоит выложить прямо сейчас. Тратит твои ключи ИИ, поэтому "
+               "всем сама не включается — включай нужным покупателям.",
+               "меню → «📊 Статистика и Отчеты» → «📊 Статистика просмотров» → «🔥 Тренды» или команда /trends"),
     "mytariff": ("🧩 Свой тариф",
                  "Покупатель сам выбирает, сколько ему нужно тем и источников, — цена считается сама: 200 ₽ база "
                  "(1 тема, 5 источников), +100 ₽ за тему, +50 ₽ за каждые 5 источников.",
                  "меню → «💳 Продлить доступ» → «🧩 Собрать свой тариф»"),
 }
 BETA_STATE = {"beta": "🧪 бета", "all": "✅ у всех", "off": "⛔ выключена"}
+BETA_HOLD = {"trends"}  # эти сами всем не выходят (держим в бете), пока хозяин не решит
 
 
 def beta_rec(f):
     b = GCFG.setdefault("beta", {})
     if f not in b:
-        b[f] = {"state": "beta", "since": time.time(), "hold": False, "testers": []}
+        b[f] = {"state": "beta", "since": time.time(), "hold": f in BETA_HOLD, "testers": []}
         with contextlib.suppress(Exception):
             save_cfg()
     return b[f]
@@ -8710,6 +8734,318 @@ def predict_start(uid, chat, text, atts=()):
         api_send(chat, answer, rows)
 
     threading.Thread(target=run, daemon=True, name="predict").start()
+
+
+# ---------- 🔥 ТРЕНДЫ: бот сам следит за новостями по теме канала и пишет, только когда случилось вирусное ----------
+# Не отчёт по расписанию, а сигнал по событию: фоновый поток раз в 2–3 часа на канал ищет свежие новости по словам
+# из последних постов, ИИ строго отвечает «NO» или «YES [n]» с коротким текстом; «NO» — молчим. Одну новость
+# (тот же адрес, перепечатку, ту же новость другими словами) одному получателю — один раз (sent_alerts.json).
+from reloader.services.trends import search as trsearch  # noqa: E402
+from reloader.services.trends import text as trtext  # noqa: E402
+from reloader.services.trends.store import AlertStore  # noqa: E402
+from reloader.services.trends.worker import Job as TrendJob, NoAI as TrendNoAI, TrendState, TrendWorker  # noqa: E402
+from reloader.services.trends.worker import scan as trend_scan  # noqa: E402
+
+TREND_FILE = "sent_alerts.json"          # что уже отправили (и что ИИ отклонил) — никогда не шлём одно дважды
+TREND_STATE_FILE = "trends_state.json"   # когда следующая проверка каждой темы и чем кончилась прошлая
+TREND_ALERTS = AlertStore(TREND_FILE, save=save_json, load=load_json_safe)
+TREND_STATE = TrendState(TREND_STATE_FILE, save=save_json, load=load_json)
+TREND_EVERY = (2 * 3600, 3 * 3600)       # каждая тема — раз в 2–3 часа (случайно: темы не идут пачкой)
+TREND_AI_DAY = max(1, env_int("TREND_AI_DAILY", 150))   # вопросов ИИ о трендах в сутки на весь бот
+TREND_LOCK = threading.Lock()            # одна проверка трендов за раз (фон и «🔎 Проверить сейчас»)
+TREND_MANUAL = {}                        # uid -> когда нажал «Проверить сейчас» (не чаще раза в 5 минут)
+TREND_PROXY = (os.environ.get("TREND_PROXY") or "").strip() or None   # прокси для DuckDuckGo, если нужен
+TREND_WORKER = None
+TREND_VERDICT = {"yes": "нашёл тренд — сигнал отправлен ✅", "no": "ничего вирусного по теме — промолчал",
+                 "nothing-new": "новых новостей с прошлой проверки нет", "empty": "свежих новостей по словам не нашлось",
+                 "no-words": "в канале нет постов — не из чего взять слова", "no-ai": "⚠️ ИИ недоступен",
+                 "ai-error": "⚠️ ИИ ответил ошибкой", "search-error": "⚠️ поиск новостей не ответил",
+                 "send-error": "⚠️ не смог отправить сигнал", "error": "⚠️ сбой проверки"}
+
+
+def _trend_timed(name, fn):
+    def run(query, lang):
+        t0 = time.perf_counter()
+        try:
+            return fn(query, lang)
+        finally:
+            perf_add("trend", f"поиск: {name}", time.perf_counter() - t0)
+    return run
+
+
+TREND_SEARCH = trsearch.Searcher([
+    ("DuckDuckGo", _trend_timed("DuckDuckGo", lambda q, lang: trsearch.ddg_news(q, lang, proxy=TREND_PROXY))),
+    ("Google News", _trend_timed("Google News", lambda q, lang: trsearch.google_news(q, WS, lang))),
+])
+
+
+def trend_scope(t):
+    """Кому сигнал: кабинет покупателя (host-режим) или админ бота. У каждого своя память «уже отправляли»."""
+    return f"cab:{t.owner}" if HOST_MODE and t.owner else "admin"
+
+
+def trend_enabled(t):
+    return bool(t.own.get("trend_on", True))
+
+
+def trend_allowed(t):
+    """Тренды возможны: канал MAX привязан; в host-режиме — свой канал хозяина или кабинет покупателя, которому
+    хозяин включил функцию (🧪 Бета-функции), оплаченный и не на бесплатном тарифе."""
+    if not t.chat_id:
+        return False
+    if not HOST_MODE:
+        return True
+    if not t.owner:
+        return False
+    if str(t.owner) == host_id() or is_host(t.owner):
+        return True
+    return feature_on("trends", t.owner) and theme_live(t) and not on_free(t)
+
+
+def trend_targets():
+    """Темы для фоновой проверки."""
+    return [t.id for t in list(THEMES) if trend_enabled(t) and trend_allowed(t)]
+
+
+def trend_texts(t, limit=40):
+    """Последние посты канала (и выложенные ботом, и ручные — из MAX) + то, что бот выложил и собирается
+    выложить. Новые — первыми, без повторов."""
+    got = []
+    if t.chat_id:
+        try:
+            r = S.get(f"{MAX_API}/messages", params={"chat_id": t.chat_id, "count": 50}, headers=HEADERS, timeout=20)
+            for m in (r.json().get("messages") or []) if r.status_code == 200 else []:
+                body = m.get("body") or {}
+                if body.get("text"):
+                    got.append(((m.get("timestamp") or 0) / 1000, body["text"]))
+        except Exception:
+            pass                                          # MAX не ответил — хватит того, что бот помнит сам
+    with theme_ctx(t):
+        got += [(p.get("t", 0), p.get("raw") or p.get("text") or "") for p in PUB.get("day_posts", [])]
+        got += [(x.get("enq", 0), x.get("text") or "") for x in list(QUEUE)]
+    out, seen = [], set()
+    for _, txt in sorted(got, key=lambda x: -(x[0] or 0)):
+        key = " ".join(str(txt).split())[:200]
+        if key and key not in seen:
+            seen.add(key)
+            out.append(str(txt))
+    return out[:limit]
+
+
+def trend_job(t):
+    texts = trend_texts(t)
+    with theme_ctx(t):
+        sig = CFG["signature_text"] if CFG["signature_on"] else ""
+    title = ((chat_info_cached(t.chat_id) or {}).get("title") if t.chat_id else "") or t.name
+    lang = "ru" if trtext.cyr_share(texts) >= 0.3 else "en"
+    return TrendJob(trend_scope(t), t.id, title, texts, list(t.own.get("trend_words") or []), sig, lang)
+
+
+def trend_ask(prompt):
+    """Строгий вопрос ИИ — через те же ключи и ротацию (KeyRotator), что и пересказ постов. Нет ключей,
+    все исчерпаны или дневной лимит трендов кончился — TrendNoAI (пересказу постов ключи нужнее)."""
+    if not ai_llm_ready():
+        raise TrendNoAI("нет ключей ИИ")
+    if not TREND_STATE.ai_take(TREND_AI_DAY, time.strftime("%Y-%m-%d")):
+        raise TrendNoAI(f"на сегодня лимит вопросов ИИ о трендах исчерпан ({TREND_AI_DAY})")
+    t0 = time.perf_counter()
+    try:
+        return ai_ask_text(prompt, AI_ROTATORS, S, ai_settings(), journal, prompt="", timeout=45)
+    except AiUnavailable as e:
+        raise TrendNoAI(f"ИИ не ответил: {str(e)[:150]}") from None
+    finally:
+        perf_add("ai", "тренды", time.perf_counter() - t0)
+
+
+def trend_send(t, text, item):
+    """Сигнал — админам кабинета этой темы (как карточки постов). Отправлено хоть одному — True."""
+    rows = []
+    url = requests.utils.requote_uri(str(item.get("url") or ""))   # кириллица в адресе — %D0%… (MAX примет)
+    if url.startswith(("https://", "http://")) and len(url) <= 1000:
+        rows.append([LB("📰 Открыть новость", url)])
+    rows.append([B("🔕 Не присылать тренды", f"a:trendoff:{t.id}")])
+    with theme_ctx(t):
+        chats = list(card_chats())
+    sent = 0
+    for chat in chats:
+        for variant in (rows, rows[-1:]):                # кнопку-ссылку MAX не принял — шлём без неё
+            try:
+                if api_send(chat, text, variant):
+                    sent += 1
+                    break
+            except Exception as e:
+                _log_line(time.strftime("%H:%M:%S") + f" Тренды: не отправил в чат {chat}: {type(e).__name__}")
+    if sent:
+        with theme_ctx(t):
+            journal(f"🔥 Тренд: {str(item.get('title') or '')[:120]}")
+    return sent > 0
+
+
+def trend_run(tid, manual=False):
+    """Одна проверка темы на тренды (фон или «Проверить сейчас»). Итог scan + название канала."""
+    t = theme_by_id(tid)
+    if t is None:
+        return {"verdict": "error", "error": "темы больше нет", "t": time.time()}
+    with TREND_LOCK:
+        job = trend_job(t)
+        with theme_ctx(t):
+            res = trend_scan(job, search=TREND_SEARCH.search, ask=trend_ask, store=TREND_ALERTS,
+                             send=lambda text, item: trend_send(t, text, item))
+    res["channel"] = job.channel
+    TREND_STATE.record(tid, res)                          # для экрана «🔥 Тренды»: чем кончилась проверка
+    with contextlib.suppress(Exception):
+        TREND_STATE.save()
+    line = (f"🔥 Тренды «{job.channel}»{' (вручную)' if manual else ''}: новостей {res.get('found', 0)}, "
+            f"новых {res.get('new', 0)} — {TREND_VERDICT.get(res.get('verdict'), res.get('verdict'))}"
+            + (f" ({res['error']})" if res.get("error") else ""))
+    if res.get("verdict") in ("yes", "send-error", "ai-error", "error"):
+        print(line)
+    else:
+        _log_line(time.strftime("%H:%M:%S") + " " + line)
+    return res
+
+
+def trend_start():
+    """Фоновый поток трендов (один на бота). TRENDS=0 в переменных хостинга — выключить совсем."""
+    global TREND_WORKER
+    if (os.environ.get("TRENDS") or "1").strip().lower() in ("0", "off", "no", "false", "нет"):
+        print("🔥 Тренды выключены переменной TRENDS=0")
+        return None
+    if TREND_WORKER is None:
+        TREND_WORKER = TrendWorker(trend_targets, trend_run, TREND_STATE, interval=TREND_EVERY, log=print)
+        n = len(trend_targets())
+        print(f"🔥 Тренды: слежу за каналами ({n}), каждый — раз в 2–3 часа; сигнал — только когда есть вирусное"
+              + ("" if ai_llm_ready() else ". ⚠️ Нет ключей ИИ — сигналов не будет, пока их не добавят"))
+    TREND_WORKER.start()
+    return TREND_WORKER
+
+
+def trend_result_text(res):
+    """Ответ на «🔎 Проверить сейчас», когда сигнала нет (если есть — пришёл сам сигнал)."""
+    v, words = res.get("verdict"), ", ".join((res.get("words") or [])[:5]) or "—"
+    if v == "no":
+        return (f"🔥 Проверил свежие новости по словам: {words} (новых: {res.get('new', 0)}) — ничего вирусного по "
+                "теме канала. Как только что-то случится — пришлю сам.")
+    if v == "nothing-new":
+        return f"🔥 С прошлой проверки новых новостей по словам {words} нет. Слежу дальше — сигнал придёт сам."
+    if v == "empty":
+        return f"🔥 Свежих новостей по словам {words} за сутки не нашлось. Слежу дальше."
+    if v == "no-words":
+        return ("🔥 Не из чего взять слова для поиска: в канале пока нет постов. Задай свои: "
+                "«🔥 Тренды» → «✏️ Свои слова для поиска».")
+    if v == "no-ai":
+        return (f"⚠️ ИИ недоступен ({res.get('error') or 'нет ключей'}) — без ИИ сигналы не отправляю: "
+                "без строгого отбора пришлось бы слать всё подряд.")
+    if v == "search-error":
+        return f"⚠️ Поиск новостей не ответил: {res.get('error') or 'нет связи'}. Попробую в следующий раз."
+    if v == "send-error":
+        return "⚠️ Нашёл тренд, но MAX не принял сообщение — попробую в следующий раз."
+    return f"⚠️ Проверка не получилась: {res.get('error') or v}. Попробую в следующий раз."
+
+
+def trend_check_now(uid):
+    """«🔎 Проверить сейчас»: в фоне (поиск + ИИ — до минуты), в чате «печатает…», ответ — сюда."""
+    t, chat = cur(), user_chat(uid)
+    if not t.chat_id:
+        return "Сначала привяжи канал MAX — «📢 Куда выкладывать»."
+    if not trend_allowed(t):
+        return "🔥 Тренды для этого канала пока недоступны."
+    if chat is None:
+        return "Не нашёл твой чат с ботом — напиши боту /start и нажми ещё раз."
+    if time.time() - TREND_MANUAL.get(str(uid), 0) < 300:
+        return "⏳ Недавно проверял — подожди пару минут. Если случится вирусное, сигнал придёт сам."
+    if TREND_LOCK.locked():
+        return "⏳ Как раз идёт проверка трендов — если найдётся вирусное, сигнал придёт сам."
+    TREND_MANUAL[str(uid)] = time.time()
+    tid = t.id
+
+    def run():
+        try:
+            with chat_busy(chat):
+                res = trend_run(tid, manual=True)
+            TREND_STATE.schedule(tid, time.time() + random.uniform(*TREND_EVERY))   # фон не повторит сразу
+            TREND_STATE.save()
+            if res.get("verdict") != "yes":
+                api_send(chat, trend_result_text(res), [[B("🔥 Тренды", "m:trends")]])
+        except Exception:
+            log_exc("тренды: проверить сейчас")
+            with contextlib.suppress(Exception):
+                api_send(chat, "⚠️ Проверка трендов не получилась — попробуй позже.")
+
+    threading.Thread(target=run, daemon=True, name="trend-now").start()
+    return "🔎 Ищу свежие новости по теме канала и спрашиваю ИИ — ответ придёт сюда (до минуты)."
+
+
+def trend_action(p, uid):
+    """Кнопки «🔥 Тренды»: вкл/выкл, проверить сейчас, «🔕 Не присылать» из сигнала. Короткий ответ над экраном."""
+    if p[0] == "trendnow":
+        return trend_check_now(uid)
+    t = cur() if p[0] == "trendtg" else theme_by_id(p[1] if len(p) > 1 else "")
+    if t is None or (HOST_MODE and t.owner != cur().owner):
+        return "Эта тема не твоя — тренды не трогаю."
+    t.own["trend_on"] = p[0] == "trendtg" and not trend_enabled(t)
+    save_cfg()
+    if t.own["trend_on"]:
+        return "🔥 Тренды включены — первая проверка в ближайшие 20 минут, дальше каждые 2–3 часа."
+    return f"🔕 Тренды для «{t.name}» выключены. Включить снова: «📊 Аналитика» → «🔥 Тренды»."
+
+
+def trend_words_set(t, text):
+    raw = (text or "").strip()
+    if raw.lower() in ("-", "авто", "auto", "нет", "сброс", "0"):
+        t.own["trend_words"] = []
+        save_cfg()
+        return "✅ Слова для поиска трендов — снова из последних постов канала."
+    words = [w.strip(" #@\"'«»") for w in re.split(r"[,;\n]+", raw)]
+    words = list(dict.fromkeys(w[:40] for w in words if len(w) >= 2))[:5]
+    if not words:
+        return "Не понял. Пришли слова через запятую, например: roblox, brawl stars"
+    t.own["trend_words"] = words
+    save_cfg()
+    return "✅ Ищу тренды по словам: " + ", ".join(words)
+
+
+def trend_screen(uid):
+    """Экран «🔥 Тренды» текущей темы. Без запросов в сеть — всё из памяти бота."""
+    t = cur()
+    on, last, nxt = trend_enabled(t), TREND_STATE.last(t.id), TREND_STATE.next(t.id)
+    n, rec = TREND_ALERTS.stats(trend_scope(t))
+    own = t.own.get("trend_words") or []
+    lines = ["🔥 Тренды — сигнал, когда по теме канала случается что-то вирусное", "",
+             "Каждые 2–3 часа бот ищет свежие новости по словам из последних постов канала. ИИ строго отбирает: "
+             "только по-настоящему вирусное или важное, что точно подходит каналу. Есть такое — пришлю короткий "
+             "сигнал: что случилось и почему стоит выложить прямо сейчас. Нет — молчу. Одна и та же новость "
+             "дважды не приходит.", ""]
+    lines.append(f"Канал: «{last.get('channel') or t.name}»" if t.chat_id else
+                 "⚠️ Канал MAX не привязан — сначала «📢 Куда выкладывать».")
+    lines.append("Статус: " + ("✅ слежу" if on else "⏸ выключено"))
+    if own:
+        lines.append("Слова для поиска (свои): " + ", ".join(own))
+    elif last.get("words"):
+        lines.append("Слова для поиска (из постов): " + ", ".join(last["words"][:6]))
+    else:
+        lines.append("Слова для поиска: возьму из последних постов канала при первой проверке")
+    if last.get("t"):
+        lines.append(f"Последняя проверка: {time.strftime('%d.%m %H:%M', time.localtime(last['t']))} — "
+                     + TREND_VERDICT.get(last.get("verdict"), str(last.get("verdict")))
+                     + (f" (новостей {last.get('found', 0)}, новых {last.get('new', 0)})" if last.get("found") else "")
+                     + (f": {last['error']}" if last.get("error") and last.get("verdict") != "yes" else ""))
+    if on and nxt and t.chat_id:
+        lines.append(f"Следующая: ≈ {time.strftime('%H:%M', time.localtime(max(nxt, time.time())))}")
+    lines.append(f"Сигналов отправлено: {n}" + (
+        f"; последний {time.strftime('%d.%m', time.localtime(rec.get('t', 0)))}: «{rec.get('title', '')[:80]}»"
+        if rec else ""))
+    if not ai_llm_ready():
+        lines += ["", "⚠️ ИИ не подключён — без строгого отбора ИИ сигналы не приходят. "
+                  + ("Ключи ИИ добавляет владелец бота." if HOST_MODE and not can_panel(uid) else
+                     "Добавь ключи ИИ (Gemini, OpenRouter или DeepSeek).")]
+    if HOST_MODE and len(tenant_themes(t.owner)) > 1:
+        lines += ["", "Это для текущей темы. Другая тема — переключи в «🎭 Мои каналы»."]
+    rows = [[B("⏸ Выключить" if on else "▶️ Включить", "a:trendtg")],
+            [B("🔎 Проверить сейчас", "a:trendnow")],
+            [B("✏️ Свои слова для поиска", "p:trendwords")],
+            [B("◀️ Аналитика", "m:anl")]]
+    return "\n".join(lines), rows
 
 
 # ---------- 🌐 СОЦСЕТИ-ИСТОЧНИКИ (бета): TikTok, VK, YouTube, Rutube, RSS — по ссылке на аккаунт ----------
@@ -13489,6 +13825,10 @@ async def main():
             hub_start()                                  # чтение каналов для ботов клиентов
         threading.Thread(target=supervise_loop, daemon=True).start()   # боты клиентов (продажа)
     asyncio.create_task(background_loop())              # чистка карточек, отчёт
+    try:
+        trend_start()                                    # 🔥 тренды: свой поток, раз в 2–3 часа на канал
+    except Exception:
+        log_exc("запуск трендов")
     tasks, fails, sem = {}, {}, asyncio.Semaphore(5)
     last_full, woke, chan_try = 0.0, set(), time.time()
     while True:
