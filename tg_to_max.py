@@ -39,7 +39,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110613            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110614            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -3303,7 +3303,8 @@ def terms_text():
             "Удалить всё — напиши продавцу.\n\n"
             "8. Перерывы в работе Telegram, MAX или сервера возможны; за блокировки каналов и действия этих "
             "площадок продавец не отвечает.\n\n"
-            f"Полный текст оферты — у продавца: {SELLER_CONTACT}.")
+            + (f"Полный текст оферты: {legal_info()['offer_url']}" if legal_info()["offer_url"] else
+               f"Полный текст оферты — у продавца: {SELLER_CONTACT}."))
 
 
 RIGHTS_TEXT = ("📄 Подтверди права на контент\n\n"
@@ -3479,6 +3480,11 @@ def _screen(name, uid=None):
     got = buyer_admin_screen(name, uid)
     if got is not None:
         return got
+    if name in ("cllegal", "legal", "privacy", "deldata"):      # ⚖️ документы, реквизиты, данные
+        got = legal_screen(name, uid)
+        if got is not None:
+            return got
+        name = "main"
     if name == "dg" and simple_menu(uid):
         name = "main"                                   # 🔎 проверки связи у покупателя нет — его меню
     if name == "bview" and HOST_MODE and can_panel(uid):   # 👀 админ смотрит меню глазами покупателя
@@ -3860,7 +3866,10 @@ def _screen(name, uid=None):
         link = seller_link()
         known = contact_ok(SELLER_CONTACT) and SELLER_CONTACT != "@ВАШ_КОНТАКТ"
         text = "❓ Поддержка\n\n" + (f"Напиши продавцу: {SELLER_CONTACT}" if known else "Продавец ещё не указал контакт.")
-        rows = ([[LB("❓ Поддержка", link)]] if link else []) + [back]
+        req = LEGAL.requisites(legal_info())
+        if req:
+            text += "\n\n🏢 Продавец:\n" + req
+        rows = ([[LB("❓ Поддержка", link)]] if link else []) + [[B("📄 Документы и реквизиты", "m:legal")], back]
     elif name == "hp":
         text = help_text(uid) + "\n\nМожно просто скинуть боту фото/видео/пересланное — улетит в тайник."
         rows = [back]
@@ -3906,7 +3915,10 @@ def _screen(name, uid=None):
     elif name.split(":")[0] == "myt" and HOST_MODE and feature_on("mytariff"):
         text, rows = mytariff_screen(name.partition(":")[2])
     elif name == "terms":
-        text, rows = terms_text(), [[B("📡 Каналы-источники", "m:ch")], back]
+        text = terms_text() + "\n\n" + legal_footer()
+        rows = (legal_doc_rows() + [[B("🔐 Какие данные хранит бот", "m:privacy")]]
+                + ([[B(DEL_BTN, "m:deldata")]] if legal_buyer(uid) else [])
+                + [[B("📡 Каналы-источники", "m:ch")], back])
     elif name == "rights":
         text, rows = RIGHTS_TEXT, rights_rows(uid)
     elif name == "more" and simple_menu(uid):
@@ -3968,6 +3980,19 @@ def _screen(name, uid=None):
 SOCIAL_HINT = ("\n\n🌐 Бета: можно прислать ссылку на аккаунт соцсети — tiktok.com/@имя, vk.com/имя, "
                "youtube.com/@имя, rutube.ru/channel/…, или сайт/блог с RSS. Буду брать оттуда новые посты.")
 PROMPTS = {
+    "cllg:name": ("Пришли наименование продавца, как в документах: «ИП Иванов Иван Иванович», «ООО «Ромашка»» или "
+                  "«Самозанятый Иванов Иван Иванович». «-» — очистить."),
+    "cllg:inn": "Пришли ИНН: 12 цифр у ИП и самозанятого, 10 цифр у ООО. Проверю контрольные цифры. «-» — очистить.",
+    "cllg:ogrn": "Пришли ОГРНИП (15 цифр, у ИП) или ОГРН (13 цифр, у ООО). У самозанятого его нет. «-» — очистить.",
+    "cllg:address": "Пришли юридический адрес (адрес регистрации), как в выписке. «-» — очистить.",
+    "cllg:email": "Пришли почту поддержки для покупателей: help@site.ru. «-» — очистить.",
+    "cllg:phone": "Пришли телефон поддержки: +7 999 123-45-67. «-» — очистить.",
+    "cllg:offer_url": "Пришли ссылку на оферту (договор с покупателем): https://… «-» — очистить.",
+    "cllg:privacy_url": ("Пришли ссылку на политику конфиденциальности (как обрабатываешь персональные данные, "
+                         "152-ФЗ): https://… «-» — очистить."),
+    "cllg:refund_url": "Пришли ссылку на условия возврата денег: https://… «-» — очистить.",
+    "cllg:cookies_url": ("Пришли ссылку на политику cookie — она нужна, если у тебя есть сайт: https://… "
+                         "«-» — очистить (тогда возьму из переменной COOKIES_URL, если она есть)."),
     "trendwords": ("✏️ Пришли 1–5 слов или фраз через запятую — по ним бот будет искать новости для трендов "
                    "(например: roblox, brawl stars).\n\nПришли «авто» — снова брать слова из последних постов канала."),
     "codeentry": "Отправь код активации сообщением в этот чат.",
@@ -4047,6 +4072,8 @@ def split_words(text):
 
 def apply_text(action, text, uid=None):
     """Применяет присланный текст. Возвращает (ответ, экран)."""
+    if (action or "").startswith("cllg:"):               # ⚖️ реквизиты продавца — только хозяин
+        return legal_set(uid, action.split(":", 1)[1], text)
     if action == "trendwords":                         # 🔥 свои слова для поиска трендов
         return trend_words_set(cur(), text), "trends"
     if action in ("buysearch", "coderevoke") or (action or "").startswith("codegen:"):
@@ -4314,6 +4341,8 @@ def do_action(act, uid=None):
     """Кнопки-действия. Возвращает экран, который показать после."""
     p = act.split(":")
     scr = "main"
+    if p[0] == "cllgform":                                  # ⚖️ форма: ИП → ООО → самозанятый
+        return legal_form_cycle(uid)
     if p[0] in ("buyerask", "buyercard", "codesexp") and HOST_MODE and can_panel(uid):   # 👥 🎟 — в панели хозяина
         return host_action(p, uid) or "cl"
     if p[0] == "ykchk":                                    # 🔎 Проверить ЮKassa — спросить заново, не из памяти
@@ -4689,8 +4718,9 @@ def handle_callback(cb):
     kind, _, rest = payload.partition(":")
     if HOST_MODE and not is_host(uid):
         key = tenant_by_chat(cb.get("_chat")) or tenant_key(uid)
-        if key and not tenant_live(key) and payload not in ("m:pay", "p:promo") \
-                and not payload.startswith(("py:", "pk:", "pd:", "pc:", "pe:")):
+        if key and not tenant_live(key) and payload not in ("m:pay", "p:promo", "m:legal", "m:privacy", "m:terms",
+                                                            "m:deldata") \
+                and not payload.startswith(("py:", "pk:", "pd:", "pc:", "pe:", "lg:")):
             api_answer(cid, *host_lock_screen(uid))
             return
     if kind == "m":
@@ -4724,6 +4754,8 @@ def handle_callback(cb):
         CUR.set(t)
         PENDING[uid] = "stashadd"
         text, rows = stash_prompt(), [[B("✅ Готово", "m:sh")]]
+    elif kind == "lg":                                     # ⚖️ согласие, удаление данных, отписка от рекламы
+        text, rows = legal_callback(rest, uid, cb.get("_chat"))
     elif kind == "py" and (CLIENT_MODE or HOST_MODE):      # выбрал тариф и срок
         text, rows = pay_choice(rest, uid)
     elif kind == "pd" and (CLIENT_MODE or HOST_MODE):      # «Я оплатил» / заявка
@@ -5322,6 +5354,11 @@ def run_command(cmd, arg, uid, chat_id):
         show("lg")
     elif cmd == "report":
         say(make_report())
+    elif cmd in ("legal", "yur", "rekvizity", "docs", "documents", "privacy", "deletedata"):
+        if cmd in ("legal", "yur", "rekvizity") and legal_can_edit(uid):
+            show("cllegal")                             # ⚖️ реквизиты — хозяину; остальным — документы
+        else:
+            show({"privacy": "privacy", "deletedata": "deldata"}.get(cmd, "legal"))
     else:
         show("hp")
     return True
@@ -11211,7 +11248,7 @@ ERID_RE = re.compile(r"erid\s*[:：]?\s*([\w-]{4,})", re.I)
 
 def ad_targets():
     """Кому реклама: кабинеты на бесплатном тарифе. Платные и выключенные хозяином её не получают."""
-    return [k for k in TENANTS if k != host_id() and tenant_mode(k) == "free"]
+    return [k for k in TENANTS if k != host_id() and tenant_mode(k) == "free" and not TENANTS[k].get("ads_off")]
 
 
 def ad_image(att):
@@ -11258,7 +11295,7 @@ def ad_broadcast(d):
     targets = ad_targets()
     sent = 0
     for k in targets:
-        sent += tenant_send(k, d["body"], None, d["image"])
+        sent += tenant_send(k, d["body"], [[B(NOADS_BTN, "lg:noads")]], d["image"])   # отписка — в каждой рекламе
         time.sleep(0.05)
     log = GCFG.setdefault("ad_log", [])
     log.append({"t": time.time(), "erid": d["erid"], "mark": d["mark"], "text": d["text"][:300], "sent": sent})
@@ -11963,6 +12000,10 @@ def host_free_paid(key, t, days):
 def host_pay_online(rest, uid, email=None):
     i, days = rest.split(":")[:2]
     days = int(days)
+    gate = legal_gate(uid, i, days)                       # ⚖️ без согласия — ни ссылки, ни платежа
+    if gate:
+        PENDING.pop(uid, None)
+        return gate
     key = tenant_key(uid) or cur().owner
     t = pick_tariff(i)
     price = plan_price(t, days, key)
@@ -11997,6 +12038,9 @@ def host_pay_online(rest, uid, email=None):
 def host_pay_manual(rest, uid):
     i, days = rest.split(":")[:2]
     days = int(days)
+    gate = legal_gate(uid, i, days)                       # ⚖️ без согласия — ни заявки
+    if gate:
+        return gate
     key = tenant_key(uid)
     t = pick_tariff(i)
     price = plan_price(t, days, key)
@@ -12185,6 +12229,359 @@ def pay_screen():
     return text, rows + [[B("◀️ В меню", "m:main")]]
 
 
+# ---------- ⚖️ ЮРИДИЧЕСКОЕ: реквизиты продавца, документы, согласие до оплаты, удаление данных ----------
+# 152-ФЗ (персональные данные), 54-ФЗ (чеки), «О защите прав потребителей» (оферта, возврат, реквизиты продавца),
+# «О рекламе» (отписка). Реквизиты и ссылки вводит хозяин (/legal), покупатель видит их в «📄 Условия» и перед оплатой.
+from reloader.services import legal as LEGAL  # noqa: E402
+
+LEGAL_CONSENTS_FILE = "legal_consents.json"   # кто, когда и с какими документами согласился перед оплатой
+LEGAL_REQUESTS_FILE = "legal_requests.json"   # запросы на удаление данных: кто, когда, выполнено ли
+CONSENT_OFF = "⬜ Я согласен с условиями Оферты и Политикой конфиденциальности"
+CONSENT_ON = "✅ Я согласен с условиями Оферты и Политикой конфиденциальности"
+PAY_GO = "💳 Перейти к оплате"
+DEL_BTN = "🗑 Запросить удаление моих данных"
+NOADS_BTN = "🔕 Не присылать рекламу"
+LEGAL_DELETED = ("✅ Твои данные удалены по твоему запросу: каналы, настройки, очередь постов, имя и контакты. "
+                 "Сведения об оплатах и запись о согласии с офертой (без имени) хранятся столько, сколько требует "
+                 "закон. Спасибо, что был с нами!")
+DOC_ICONS = {"Оферта": "📄", "Политика конфиденциальности": "🔐", "Условия возврата": "↩️", "Политика cookie": "🍪"}
+
+
+def legal_info():
+    """Реквизиты и ссылки продавца: введённое хозяином в панели → переменные хостинга. У бота клиента (продажа
+    ботов) — данные продавца из subscription.json (сам клиент их не меняет)."""
+    panel = GCFG.get("legal") if isinstance(GCFG.get("legal"), dict) else {}
+    if CLIENT_MODE:
+        seller = sub_info().get("legal")
+        panel = seller if isinstance(seller, dict) else {}
+    return LEGAL.merge(panel, os.environ)
+
+
+def legal_version():
+    return LEGAL.version(legal_info())
+
+
+def legal_can_edit(uid):
+    """Реквизиты меняет только хозяин (и ADMIN_IDS); у бота клиента — никто (это данные продавца)."""
+    return bool(uid is not None and can_panel(uid) and not CLIENT_MODE)
+
+
+def legal_buyer(uid):
+    """Покупатель (у него согласие перед оплатой и кнопка удаления данных), а не хозяин бота."""
+    return CLIENT_MODE or (HOST_MODE and uid is not None and not can_panel(uid))
+
+
+def legal_consents():
+    data = load_json_safe(LEGAL_CONSENTS_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def legal_consented(uid):
+    """Согласие с офертой и политикой ТЕКУЩЕЙ версии (поменялись документы или продавец — согласие заново)."""
+    rec = legal_consents().get(str(uid))
+    return isinstance(rec, dict) and rec.get("ver") == legal_version()
+
+
+def legal_agree(uid, plan=""):
+    """Покупатель отметил «✅ Я согласен…»: дата, версия и ссылки на документы — доказательство согласия.
+    Имя не храним (лишние данные не нужны)."""
+    info, data = legal_info(), legal_consents()
+    data[str(uid)] = {"ver": legal_version(), "t": time.time(), "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+                      "key": (tenant_key(uid) or "") if HOST_MODE else "", "plan": str(plan or ""),
+                      "docs": {"offer": info["offer_url"], "privacy": info["privacy_url"],
+                               "refund": info["refund_url"]}, "text": CONSENT_ON}
+    save_json(LEGAL_CONSENTS_FILE, data, backup=True)
+    journal(f"⚖️ Согласие с офертой и политикой: ID {uid}, документы v{data[str(uid)]['ver']}")
+
+
+def legal_revoke(uid):
+    data = legal_consents()
+    if data.pop(str(uid), None) is not None:
+        save_json(LEGAL_CONSENTS_FILE, data, backup=True)
+        journal(f"⚖️ Согласие снято: ID {uid}")
+
+
+def legal_footer(info=None):
+    """Документы и реквизиты продавца — блоком для «📄 Условия» и «❓ Поддержка»."""
+    info = info or legal_info()
+    docs = dict(LEGAL.documents(info))
+    lines = ["📑 Документы:",
+             "• Оферта — " + (docs.get("Оферта") or "условия использования бота («📄 Условия»)"),
+             "• Политика конфиденциальности — " + (docs.get("Политика конфиденциальности")
+                                                     or "«🔐 Какие данные хранит бот»"),
+             "• Условия возврата — " + (docs.get("Условия возврата") or "п. 6 условий использования")]
+    if docs.get("Политика cookie"):
+        lines.append("• Политика cookie — " + docs["Политика cookie"])
+    req = LEGAL.requisites(info)
+    if req:
+        lines += ["", "🏢 Продавец:", req]
+    return "\n".join(lines)
+
+
+def legal_doc_rows(info=None):
+    """Кнопки-ссылки на документы продавца (те, что он дал)."""
+    return [[LB(f"{DOC_ICONS[n]} {n}", url)] for n, url in LEGAL.documents(info or legal_info())]
+
+
+def legal_admin_screen():
+    """⚖️ Юридическая информация — экран хозяина: что заполнено, что нет, кнопки ввода."""
+    info = legal_info()
+    panel = GCFG.get("legal") if isinstance(GCFG.get("legal"), dict) else {}
+    form = info.get("form") or ""
+    og = "ОГРНИП" if form == "ИП" else "ОГРН" if form == "ООО" else "ОГРН / ОГРНИП"
+
+    def val(k):
+        v = info.get(k)
+        if not v:
+            return "—"
+        return v + ("" if panel.get(k) else f" (из переменной {LEGAL.FIELDS[k][2]})")
+
+    lines = ["⚖️ Юридическая информация",
+             "Это видят покупатели: в «📄 Условия», «❓ Поддержка» и перед оплатой — там же они отмечают согласие "
+             "с офертой и политикой конфиденциальности (без отметки оплатить нельзя).", "",
+             f"Форма: {val('form')}", f"Наименование: {val('name')}", f"ИНН: {val('inn')}",
+             f"{og}: " + ("не нужен" if form == "Самозанятый" else val("ogrn")),
+             f"Юридический адрес: {val('address')}", f"Почта поддержки: {val('email')}",
+             f"Телефон поддержки: {val('phone')}", "",
+             f"Оферта: {val('offer_url')}", f"Политика конфиденциальности: {val('privacy_url')}",
+             f"Условия возврата: {val('refund_url')}", f"Политика cookie: {val('cookies_url')} (нужна для сайта)"]
+    bad = LEGAL.mismatch(info)
+    if bad:
+        lines += ["", f"⚠️ Не подходит к форме «{form}»:"] + [f"• {b}" for b in bad]
+    miss = LEGAL.missing(info)
+    if miss:
+        lines += ["", "⚠️ Не заполнено: " + ", ".join(miss) + ". Пока ссылок нет, покупатель видит встроенные "
+                  "условия бота и «что хранит бот»."]
+    ver = legal_version()
+    n = sum(1 for r in legal_consents().values() if isinstance(r, dict) and r.get("ver") == ver)
+    lines += ["", f"Согласий покупателей с текущими документами: {n}. Поменяешь оферту или реквизиты — "
+                  "покупатели отметят согласие заново перед следующей оплатой.",
+              "💾 Чтобы реквизиты пережили пересборку на хостинге, их можно задать и переменными: "
+              + ", ".join(env for _, _, env in LEGAL.FIELDS.values()) + ". Введённое здесь — главнее."]
+    rows = [[B(f"🏢 Форма: {form or 'не выбрана'}", "a:cllgform")],
+            [B("✏️ Наименование", "p:cllg:name"), B("✏️ ИНН", "p:cllg:inn")],
+            [B(f"✏️ {og}", "p:cllg:ogrn"), B("✏️ Адрес", "p:cllg:address")],
+            [B("✏️ Почта", "p:cllg:email"), B("✏️ Телефон", "p:cllg:phone")],
+            [B("🔗 Оферта", "p:cllg:offer_url"), B("🔗 Политика", "p:cllg:privacy_url")],
+            [B("🔗 Возврат", "p:cllg:refund_url"), B("🔗 Cookie", "p:cllg:cookies_url")],
+            [B("👀 Как видит покупатель", "m:legal")],
+            [B("◀️ Тарифы и реквизиты", "m:cltar") if HOST_MODE else B("◀️ В меню", "m:main")]]
+    return "\n".join(lines), rows
+
+
+def legal_screen(name, uid):
+    """Экраны: cllegal (хозяин), legal (документы и реквизиты), privacy (что хранит бот), deldata (удаление)."""
+    back = [B("◀️ В меню", "m:main")]
+    info = legal_info()
+    if name == "cllegal":
+        return legal_admin_screen() if legal_can_edit(uid) else None
+    if name == "legal":
+        rows = legal_doc_rows(info) + [[B("🔐 Какие данные хранит бот", "m:privacy")]]
+        if legal_buyer(uid):
+            rows.append([B(DEL_BTN, "m:deldata")])
+        if legal_can_edit(uid):
+            rows.append([B("⚖️ Изменить реквизиты", "m:cllegal")])
+        return "📄 Документы и реквизиты\n\n" + legal_footer(info), rows + [back]
+    if name == "privacy":
+        contact = SELLER_CONTACT if contact_ok(SELLER_CONTACT) and SELLER_CONTACT != "@ВАШ_КОНТАКТ" else ""
+        rows = [r for r in legal_doc_rows(info) if "Политика конфиденциальности" in r[0]["text"]]
+        if legal_buyer(uid):
+            rows.append([B(DEL_BTN, "m:deldata")])
+        return LEGAL.privacy_text(info, contact), rows + [[B("◀️ Документы", "m:legal")]]
+    if name == "deldata":
+        if not legal_buyer(uid):
+            where = ("«👥 Все покупатели» → покупатель → «🗑 Удалить кабинет»" if HOST_MODE else
+                     "«💼 Клиенты» → клиент → «🗑 Удалить клиента»")
+            return (f"🗑 Удаление данных — для покупателей: они отправляют запрос тебе, ты удаляешь их данные "
+                    f"({where}).", [[B("◀️ Документы", "m:legal")]])
+        return ("🗑 Удаление моих данных\n\nОтправим продавцу запрос удалить твои данные: кабинет, каналы, настройки, "
+                "очередь постов, имя, ник и контакты. После удаления бот перестанет работать для тебя — вернуть "
+                "будет нельзя.\n\nСведения об оплатах продавец хранит столько, сколько требует закон.\n\n"
+                "Отправить запрос?"), [[B("✅ Да, отправить запрос", "lg:del")], [B("◀️ Назад", "m:legal")]]
+    return None
+
+
+def legal_push():
+    """Реквизиты поменялись — боты клиентов (продажа ботов) показывают новые сразу: они читают subscription.json."""
+    for cid in list(CLIENTS):
+        with contextlib.suppress(Exception):
+            write_subscription(cid)
+
+
+def legal_set(uid, field, text):
+    """Хозяин прислал значение поля реквизитов: проверяем (ИНН/ОГРН — по контрольным цифрам) и сохраняем."""
+    if not legal_can_edit(uid) or field not in LEGAL.FIELDS:
+        return "Нет доступа.", "main"
+    label = LEGAL.FIELDS[field][0]
+    val, err = LEGAL.validate(field, text, legal_info().get("form") or "")
+    if err:
+        return f"❌ {label}: {err}", "cllegal"
+    if not isinstance(GCFG.get("legal"), dict):
+        GCFG["legal"] = {}
+    if val:
+        GCFG["legal"][field] = val
+    else:
+        GCFG["legal"].pop(field, None)
+    save_cfg()
+    legal_push()
+    if val:
+        return f"✅ {label}: {val}", "cllegal"
+    env = LEGAL.FIELDS[field][2]
+    return (f"🧹 {label}: очищено" + (f" — теперь из переменной {env}" if (os.environ.get(env) or "").strip()
+                                     else "")), "cllegal"
+
+
+def legal_form_cycle(uid):
+    """🏢 Форма: ИП → ООО → Самозанятый → ИП…"""
+    if not legal_can_edit(uid):
+        return "main"
+    cur_form = legal_info().get("form") or ""
+    forms = list(LEGAL.FORMS)
+    nxt = forms[(forms.index(cur_form) + 1) % len(forms)] if cur_form in forms else forms[0]
+    if not isinstance(GCFG.get("legal"), dict):
+        GCFG["legal"] = {}
+    GCFG["legal"]["form"] = nxt
+    save_cfg()
+    legal_push()
+    return "cllegal"
+
+
+def legal_gate(uid, plan, days):
+    """Перед любой оплатой: нет согласия с текущими офертой и политикой — экран согласия (иначе None)."""
+    if not (HOST_MODE or CLIENT_MODE) or uid is None or legal_consented(uid):
+        return None
+    return consent_screen(uid, plan, days)
+
+
+def consent_screen(uid, plan, days, warn=""):
+    """Экран согласия: что покупает и за сколько (цена окончательная), ссылки на документы, отметка-«галочка»
+    (по умолчанию НЕ отмечена) и «💳 Перейти к оплате»."""
+    info = legal_info()
+    try:
+        t = pick_tariff(plan)
+        price = plan_price(t, int(days), cur().owner if HOST_MODE else None)
+        what = f"«{t['name']}» на {int(days)} дней — {price} ₽"
+    except (ValueError, IndexError, KeyError, TypeError):
+        what = "тариф"
+    docs = dict(LEGAL.documents(info))
+    req = LEGAL.requisites(info)
+    text = ("📄 Перед оплатой\n\n" + (warn + "\n\n" if warn else "")
+            + f"Ты выбрал {what}. Цена окончательная: без скрытых платежей и автосписаний, карта не привязывается.\n\n"
+            "Прочитай документы:\n"
+            f"• Оферта — {docs.get('Оферта') or 'условия в боте («📄 Условия»)'}\n"
+            f"• Политика конфиденциальности — {docs.get('Политика конфиденциальности') or '«🔐 Какие данные хранит бот»'}\n"
+            f"• Условия возврата — {docs.get('Условия возврата') or 'п. 6 условий в боте'}\n"
+            + (f"\nПродавец: {req.replace(chr(10), ' · ')}\n" if req else "")
+            + "\nОтметь согласие и нажми «💳 Перейти к оплате». Отмечая, ты подтверждаешь, что тебе исполнилось "
+              "18 лет (или у тебя есть согласие родителей) и что ты согласен на обработку персональных данных "
+              "по Политике конфиденциальности.")
+    code = f"{plan}:{days}"
+    rows = [[B(CONSENT_ON if legal_consented(uid) else CONSENT_OFF, f"lg:tick:{code}")], [B(PAY_GO, f"lg:go:{code}")]]
+    rows += legal_doc_rows(info)
+    rows += [[B("📄 Условия", "m:terms"), B("🔐 Данные", "m:privacy")], [B("◀️ Тарифы", "m:pay")]]
+    return text, rows
+
+
+def legal_callback(rest, uid, chat=None):
+    """Кнопки lg:… — отметка согласия, «Перейти к оплате», запрос удаления данных, отписка от рекламы."""
+    parts = (rest or "").split(":")
+    act = parts[0]
+    if act in ("tick", "go"):
+        plan, days = (parts + ["", ""])[1:3]
+        try:                                              # старая кнопка (тарифы поменялись) или подделка —
+            ok = pick_tariff(plan) is not None and int(days) in (30, 90)     # к тарифам и ценам, какие есть сейчас
+        except (ValueError, IndexError, KeyError, TypeError):
+            ok = False
+        if not ok:
+            return screen("pay", uid)
+        if act == "tick":                                 # «галочка»: отметил — согласие с датой; снял — снято
+            if legal_consented(uid):
+                legal_revoke(uid)
+            else:
+                legal_agree(uid, f"{plan}:{days}")
+            return consent_screen(uid, plan, days)
+        if not legal_consented(uid):
+            return consent_screen(uid, plan, days, warn=f"⚠️ Чтобы перейти к оплате, отметь согласие: «{CONSENT_OFF}».")
+        return pay_choice(f"{plan}:{days}", uid)
+    if act == "del":
+        return legal_delete_request(uid, chat), [[B("📄 Документы", "m:legal")], [B("◀️ В меню", "m:main")]]
+    if act == "noads":
+        return ads_opt_out(uid), [[B("◀️ В меню", "m:main")]]
+    return screen("legal", uid)
+
+
+def legal_requests():
+    data = load_json_safe(LEGAL_REQUESTS_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def legal_delete_request(uid, chat=None):
+    """«🗑 Запросить удаление моих данных»: запрос сохраняем и сразу пишем продавцу (152-ФЗ: после отзыва
+    согласия — удалить в течение 30 дней). Повторное нажатие не шлёт второе письмо."""
+    if not legal_buyer(uid):
+        return "Это для покупателей. Свои данные владелец бота удаляет сам."
+    key = tenant_key(uid) if HOST_MODE else "client"
+    if not key:
+        return "Не нашёл твой кабинет — напиши продавцу: " + SELLER_CONTACT
+    data = legal_requests()
+    rec = data.get(key)
+    if isinstance(rec, dict) and rec.get("status") == "new":
+        return f"⏳ Запрос уже отправлен {rec.get('date', '')}. Продавец удалит данные и напишет тебе сюда."
+    data[key] = {"uid": str(uid), "t": time.time(), "date": time.strftime("%d.%m.%Y %H:%M"), "status": "new"}
+    save_json(LEGAL_REQUESTS_FILE, data, backup=True)
+    journal(f"🗑 Запрос на удаление данных: ID {uid}")
+    if HOST_MODE:
+        c = TENANTS.get(key) or {}
+        chans = [str(t.chat_id) for t in tenant_themes(key) if t.chat_id]
+        host_alert(f"🗑 Запрос на удаление персональных данных (152-ФЗ)\n\nПокупатель: {c.get('name') or uid} "
+                   f"(ID {uid}), кабинет {key}" + (f"\nКаналы MAX: {', '.join(chans)}" if chans else "")
+                   + f"\nДата запроса: {data[key]['date']}\n\nПосле отзыва согласия данные нужно удалить в течение "
+                     "30 дней. «🗑 Удалить кабинет и данные» сотрёт кабинет со всеми каналами, настройками и "
+                     "контактами, а покупателю придёт подтверждение. Сведения об оплатах можно хранить, сколько "
+                     "требует закон.",
+                   [[B("🗑 Удалить кабинет и данные", f"m:cldel:{key}")], [B("👤 Открыть кабинет", f"m:clc:{key}")]])
+    else:                                                 # бот клиента: продавец увидит запрос у себя (см. check_pay_requests)
+        save_json("legal_request.json", dict(data[key], name=CFG["admin_names"].get(str(uid), "")))
+    return ("✅ Запрос отправлен продавцу. Он удалит твои данные в течение 30 дней и пришлёт сюда подтверждение.\n"
+            "Сведения об оплатах хранятся столько, сколько требует закон.")
+
+
+def legal_forget(key):
+    """Кабинет удаляют: если покупатель просил удалить данные — подтверждение ему и запрос закрыт; из согласий —
+    без имени; память трендов кабинета — долой."""
+    data = legal_requests()
+    rec = data.get(key)
+    if isinstance(rec, dict) and rec.get("status") == "new":
+        tenant_send(key, LEGAL_DELETED)
+        rec.update(status="done", done=time.time(), done_date=time.strftime("%d.%m.%Y %H:%M"))
+        save_json(LEGAL_REQUESTS_FILE, data, backup=True)
+        journal(f"🗑 Данные кабинета {key} удалены по запросу покупателя")
+    ids = {str(a) for a in (TENANTS.get(key) or {}).get("admins") or []} | {str(key)}
+    for path, loader in ((CONSENT_FILE, load_json), (LEGAL_CONSENTS_FILE, load_json_safe)):
+        cons = loader(path, {})
+        if isinstance(cons, dict) and any(isinstance(cons.get(i), dict) and "name" in cons[i] for i in ids):
+            for i in ids:
+                if isinstance(cons.get(i), dict):
+                    cons[i].pop("name", None)
+            save_json(path, cons, backup=path == LEGAL_CONSENTS_FILE)
+    with contextlib.suppress(Exception):
+        for box in (TREND_ALERTS.sent, TREND_ALERTS.seen):
+            box.pop(f"cab:{key}", None)
+        TREND_ALERTS.save()
+
+
+def ads_opt_out(uid):
+    """🔕 Отписка от рекламы (закон «О рекламе»: по просьбе получателя рассылку прекращают)."""
+    key = tenant_key(uid) if HOST_MODE else None
+    if not key or key not in TENANTS:
+        return "Реклама приходит только на бесплатном тарифе — у тебя её нет."
+    with CL_LOCK:
+        TENANTS[key]["ads_off"] = True
+        save_tenants()
+    journal(f"🔕 Отписка от рекламы: кабинет {key}")
+    return "🔕 Хорошо — рекламу больше не пришлю. Включить обратно — напиши продавцу."
+
+
 PAY_EMAIL_ASK = "Напишите email (почта) для отправки чека."
 
 
@@ -12192,6 +12589,9 @@ def pay_choice(rest, uid=None):
     """Выбрал тариф и срок: как оплатить и кнопка «Я оплатил»."""
     i, days = rest.split(":")[:2]
     days = int(days)
+    gate = legal_gate(uid, i, days)                       # ⚖️ сначала согласие с офертой и политикой
+    if gate:
+        return gate
     t = pick_tariff(i)
     price = plan_price(t, days, cur().owner if HOST_MODE else None)
     how = (sub_info().get("pay") or "").strip()
@@ -12220,6 +12620,9 @@ def pay_choice(rest, uid=None):
 def pay_online(rest, uid):
     """«Оплатить онлайн»: просим бота продавца создать платёж в ЮKassa — ссылка придёт сюда."""
     i, days = (int(x) for x in rest.split(":")[:2])
+    gate = legal_gate(uid, i, days)                       # ⚖️ без согласия — не просим ссылку на оплату
+    if gate:
+        return gate
     t = tariffs()[i]
     price = t["price"] if days == 30 else price90(t["price"])
     save_json("pay_request.json", {"status": "new", "mode": "online", "t": time.time(), "plan": t["name"],
@@ -12232,6 +12635,9 @@ def pay_online(rest, uid):
 def pay_done(rest, uid):
     """«Я оплатил»: заявка продавцу (он увидит её в своём боте с кнопкой «продлить»)."""
     i, days = (int(x) for x in rest.split(":")[:2])
+    gate = legal_gate(uid, i, days)                       # ⚖️ без согласия — не отправляем заявку
+    if gate:
+        return gate
     t = tariffs()[i]
     price = t["price"] if days == 30 else price90(t["price"])
     save_json("pay_request.json", {"status": "new", "t": time.time(), "plan": t["name"], "days": days,
@@ -12271,7 +12677,7 @@ def write_subscription(cid):
               {"until": c.get("until", 0), "mode": client_mode(c), "contact": SELLER_CONTACT,
                "plan": c.get("plan") or "", "themes": c.get("lim_themes", LIMIT_THEMES),
                "sources": c.get("lim_sources", LIMIT_SOURCES), "tariffs": tariffs(), "pay": GCFG.get("pay_info", ""),
-               "online": bool(yk_keys())})
+               "online": bool(yk_keys()), "legal": legal_info()})
 
 
 def start_client(cid):
@@ -12537,6 +12943,24 @@ def seller_notify(text, rows=None):
             api_send(chat, text, rows or [[B("💼 Клиенты", "m:cl")]])
 
 
+def pay_request_price(req):
+    """Сколько стоит заявка бота клиента по тарифам продавца сейчас (None — такого тарифа или срока нет)."""
+    t = next((x for x in tariffs() if x.get("name") == req.get("plan")), None)
+    if t is None or req.get("days") not in (30, 90):
+        return None
+    return t["price"] if req["days"] == 30 else price90(t["price"])
+
+
+def pay_request_ok(req):
+    """💳 Без скрытых платежей: цена в заявке (её видел покупатель) = цене тарифа продавца. Не совпало (тариф
+    подорожал, пока покупатель оплачивал, или заявку подделали) — платёж не создаём."""
+    want = pay_request_price(req)
+    try:
+        return want is not None and float(req.get("price")) == float(want)
+    except (TypeError, ValueError):
+        return False
+
+
 def check_pay_requests(now=None):
     """Заявки на оплату от ботов клиентов. Онлайн (ЮKassa): создаём платёж, шлём клиенту ссылку, сами следим за
     оплатой и продлеваем. «Я оплатил» (перевод): продавцу заявка с кнопкой «продлить»."""
@@ -12544,6 +12968,16 @@ def check_pay_requests(now=None):
     for cid, c in list(CLIENTS.items()):
         path = os.path.join(client_dir(cid), "pay_request.json")
         req = load_json(path, {})
+        if req.get("status") == "new" and not pay_request_ok(req):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+            with contextlib.suppress(Exception):
+                write_subscription(cid)                   # у бота клиента — тарифы и цены продавца сейчас
+            client_send(cid, "⚠️ Цена тарифа изменилась, пока ты оформлял оплату, — ничего не списано. Открой "
+                             "«💳 Тариф и оплата» и выбери тариф заново: там актуальная цена.")
+            journal(f"💳 Заявка «{c.get('name')}» не принята: в заявке {req.get('price')} ₽, а тариф "
+                    f"«{req.get('plan')}» на {req.get('days')} дн. стоит {pay_request_price(req)} ₽")
+            continue
         if req.get("mode") == "online" and yk_keys():
             if req.get("status") == "new":
                 try:
@@ -12596,6 +13030,26 @@ def check_pay_requests(now=None):
                         "Проверь перевод и нажми кнопку:",
                       [[B("✅ Оплата пришла — продлить", f"a:clpayok:{cid}")],
                        [B("❌ Не пришла", f"a:clpayno:{cid}"), B("✉️ Написать клиенту", f"p:clsay:{cid}")]])
+
+
+def check_legal_requests():
+    """🗑 Запросы на удаление данных из ботов клиентов — продавцу, один раз, с кнопкой «удалить клиента»."""
+    for cid, c in list(CLIENTS.items()):
+        path = os.path.join(client_dir(cid), "legal_request.json")
+        req = load_json(path, {})
+        if not isinstance(req, dict) or req.get("status") != "new":
+            continue
+        req["status"] = "sent"
+        save_json(path, req)
+        journal(f"🗑 Запрос на удаление данных: клиент «{c.get('name')}»")
+        seller_notify("🗑 Запрос на удаление персональных данных (152-ФЗ)\n\n"
+                      f"Клиент: {c.get('name')}" + (f" (@{c['username']})" if c.get("username") else "")
+                      + (f", пишет {req['name']}" if req.get("name") else "") + f" (ID {req.get('uid')})"
+                      + f"\nДата запроса: {req.get('date', '')}\n\nПосле отзыва согласия данные нужно удалить в "
+                        "течение 30 дней. «🗑 Удалить клиента и данные» остановит его бота и сотрёт настройки, каналы "
+                        "и контакты, а клиенту придёт подтверждение. Сведения об оплатах можно хранить, сколько "
+                        "требует закон.",
+                      [[B("🗑 Удалить клиента и данные", f"m:cldel:{cid}")], [B("👤 Открыть клиента", f"m:clc:{cid}")]])
 
 
 def check_client_terms(cid, now=None):
@@ -12673,6 +13127,8 @@ def supervise_once():
                 check_client_terms(cid)
     with contextlib.suppress(Exception):
         check_pay_requests()
+    with contextlib.suppress(Exception):
+        check_legal_requests()
 
 
 def supervise_loop():
@@ -13144,6 +13600,7 @@ def host_screen(name, uid):
                       [B(f"🎁 Пробный период при «Старте»: {GCFG.get('trial_days', 3) or 'выкл'}"
                          + (" дн." if GCFG.get('trial_days', 3) else ""), "a:cltrial")],
                       [B("🔑 Ввести ключи ЮKassa", "p:clyk"), B("🔎 Проверить ЮKassa", "a:ykchk")],
+                      [B("⚖️ Юридическая информация", "m:cllegal")],
                       [B("📞 Изменить мой контакт", "p:clcontact")], back]
     if kind == "clc":
         info = tenant_info(key)
@@ -13381,6 +13838,8 @@ def host_action(p, uid):
         tenant_send(key, f"❌ Оплату пока не нашли. Проверь перевод или напиши: {SELLER_CONTACT}")
         return f"clc:{key}"
     if p[0] == "cldelok":
+        with contextlib.suppress(Exception):
+            legal_forget(key)                              # ⚖️ просил удалить данные — подтверждение ему
         for t in tenant_themes(key):
             with contextlib.suppress(Exception):
                 delete_theme(t)
@@ -13565,16 +14024,23 @@ def clients_action(p, uid):
         supervise_once()
         return f"cllim:{cid}"
     if p[0] == "cldelok":
+        lreq = load_json(os.path.join(client_dir(cid), "legal_request.json"), {})
+        if isinstance(lreq, dict) and lreq.get("status") in ("new", "sent"):
+            with contextlib.suppress(Exception):          # просил удалить данные — подтверждение, пока бот жив
+                client_send(cid, LEGAL_DELETED)
+            journal(f"🗑 Данные клиента «{CLIENTS[cid].get('name')}» удалены по его запросу")
         with CL_LOCK:
             stop_client(cid)
             CLIENTS.pop(cid, None)
             save_clients()
             import shutil
-            cons = os.path.join(client_dir(cid), CONSENT_FILE)
-            if os.path.exists(cons):                      # подтверждение прав храним и после удаления клиента
-                os.makedirs("consent_archive", exist_ok=True)
-                with contextlib.suppress(OSError):
-                    shutil.copy(cons, os.path.join("consent_archive", f"{cid}_{time.strftime('%Y%m%d')}.json"))
+            for name, tag in ((CONSENT_FILE, ""), (LEGAL_CONSENTS_FILE, "_legal")):
+                cons = os.path.join(client_dir(cid), name)
+                if os.path.exists(cons):                  # подтверждения прав и согласия с офертой — доказательства,
+                    os.makedirs("consent_archive", exist_ok=True)   # храним и после удаления клиента
+                    with contextlib.suppress(OSError):
+                        shutil.copy(cons, os.path.join("consent_archive",
+                                                       f"{cid}{tag}_{time.strftime('%Y%m%d')}.json"))
             shutil.rmtree(client_dir(cid), ignore_errors=True)
         return "cl"
     return "cl"
@@ -13662,8 +14128,12 @@ def locked_answer(cb):
     if not is_admin(who) or LOCKED != "expired":
         return text, pay_rows
     try:
+        if pl.startswith("lg:"):
+            return legal_callback(pl[3:], who)
+        if pl in ("m:legal", "m:privacy", "m:terms", "m:deldata"):
+            return screen(pl[2:], who)
         if pl.startswith("py:"):
-            return pay_choice(pl[3:])
+            return pay_choice(pl[3:], who)
         if pl.startswith("pd:"):
             return pay_done(pl[3:], who)
         if pl.startswith("pk:"):

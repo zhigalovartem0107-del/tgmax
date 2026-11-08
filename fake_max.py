@@ -31,6 +31,7 @@ class FakeMax:
         self.views = {}                    # mid -> просмотры (как stat.views у постов канала в MAX)
         self.need_receipt = False          # ЮKassa: в магазине включены чеки — без receipt ответ 400
         self.payments = {}                 # ЮKassa: id -> {status, amount, metadata, description}
+        self.payment_bodies = []           # ЮKassa: запросы на создание платежа целиком (проверка «без скрытых платежей»)
         self.answers, self.deleted, self.requests = [], [], []
         self.uploads = {"image": 0, "video": 0, "file": 0}
         self.files = {}                    # токен файла -> (имя, байты), как их получил MAX
@@ -240,6 +241,7 @@ class FakeMax:
                         return self._send(400, {"type": "error", "code": "invalid_request",
                                                 "description": "Receipt is missing or illegal", "parameter": "receipt"})
                     with outer.lock:
+                        outer.payment_bodies.append(body)
                         pid = f"pay-{len(outer.payments) + 1}"
                         outer.payments[pid] = {"status": "pending", "amount": body["amount"],
                                                "metadata": body.get("metadata"), "description": body.get("description"),

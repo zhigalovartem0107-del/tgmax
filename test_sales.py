@@ -177,10 +177,41 @@ try:
     press("p:cltarset")
     srv.user_message(1, 100, "Старт 1 5 300\nСтандарт 3 10 600\nПро 10 30 1500\nБизнес 20 50 3000")
     srv.wait(lambda: any("Тарифы сохранены" in t for t in srv.texts(100)), what="тарифы сохранены")
+    # ⚖️ реквизиты продавца: вводит он сам (/legal), бот клиента показывает их покупателю сразу
+    srv.user_message(1, 100, "/legal")
+    srv.wait(lambda: any("Юридическая информация" in t for t in srv.texts(100)), what="продавцу: ⚖️ реквизиты")
+    press("a:cllgform")                                 # форма: ИП
+    for field, value, ok in (("name", "Иванов Иван Иванович", "✅ Наименование"),
+                             ("inn", "771234567859", "✅ ИНН"), ("ogrn", "319774600123453", "✅ ОГРН"),
+                             ("offer_url", "seller.example/oferta", "✅ Оферта")):
+        press(f"p:cllg:{field}")
+        srv.user_message(1, 100, value)
+        srv.wait(lambda: any(ok in t for t in srv.texts(100)), what=f"реквизиты: {field}")
+    srv.wait(lambda: (json.load(open(os.path.join(w, "data", "clients", cid, "subscription.json"))).get("legal")
+                      or {}).get("inn") == "771234567859", what="реквизиты у бота клиента")
+    text, rows = press("m:deldata")                     # у продавца — подсказка, где удалить клиента
+    assert "Клиенты" in text and "lg:del" not in rows, text
+    text, rows = client_press("m:terms")
+    assert "ИП Иванов Иван Иванович" in text and "ИНН 771234567859" in text and "ОГРНИП 319774600123453" in text \
+        and "https://seller.example/oferta" in rows, (text, rows)
     text, rows = client_press("m:pay")
     assert "Тариф и оплата" in text and "Сейчас: «Стандарт»" in text and "Бизнес" in text and "py:3:90" in rows, text
-    text, rows = client_press("py:2:90")
+    text, rows = client_press("py:2:90")                # ⚖️ сначала согласие: без отметки — ни заявки, ни ссылки
+    assert "Перед оплатой" in text and "3750 ₽" in text and "без скрытых платежей" in text \
+        and "lg:tick:2:90" in rows and "⬜ Я согласен с условиями Оферты и Политикой конфиденциальности" in rows \
+        and "https://seller.example/oferta" in rows and "pd:2:90" not in rows, (text, rows)
+    text, rows = client_press("pd:2:90")                # подделанная «Я оплатил» — не проходит
+    assert "Перед оплатой" in text, text
+    text, rows = client_press("lg:go:2:90")
+    assert "отметь согласие" in text, text
+    assert not os.path.exists(os.path.join(w, "data", "clients", cid, "pay_request.json"))
+    text, rows = client_press("lg:tick:2:90")
+    assert "✅ Я согласен с условиями Оферты и Политикой конфиденциальности" in rows, rows
+    cons = json.load(open(os.path.join(w, "data", "clients", cid, "legal_consents.json")))
+    assert cons["500"]["docs"]["offer"] == "https://seller.example/oferta" and "name" not in cons["500"], cons
+    text, rows = client_press("lg:go:2:90")
     assert "«Про» на 90 дней — 3750 ₽" in text and "Сбер по номеру" in text and "pd:2:90" in rows, text
+    print("s8а ok: ⚖️ в боте клиента — реквизиты продавца; без отметки «Я согласен…» оплатить нельзя")
     until0 = json.load(open(os.path.join(w, "data", "clients.json")))[cid]["until"]
     text, rows = client_press("pd:2:90")
     assert "Заявка отправлена" in text, text
@@ -220,16 +251,41 @@ try:
     assert c["plan"] == "Стандарт" and abs(c["until"] - until1 - 30 * 86400) < 120, c
     assert not os.path.exists(os.path.join(w, "data", "clients", cid, "pay_request.json"))
     print("s9 ok: ЮKassa — клиенту ссылка на оплату, после оплаты бот продлился и сменил тариф сам")
+    # 10) 💳 цена в заявке не совпала с тарифом продавца (подделали или тариф подорожал) — платежа нет
+    n_pay = len(srv.payment_bodies)
+    json.dump({"status": "new", "mode": "online", "t": time.time(), "plan": "Стандарт", "days": 30, "price": 1},
+              open(os.path.join(w, "data", "clients", cid, "pay_request.json"), "w"))
+    srv.wait(lambda: any("Цена тарифа изменилась" in t for t in client_texts(5000)), what="клиенту: цена изменилась",
+             timeout=40)
+    assert len(srv.payment_bodies) == n_pay, srv.payment_bodies[n_pay:]
+    assert not os.path.exists(os.path.join(w, "data", "clients", cid, "pay_request.json"))
+    print("s10 ok: 💳 цена в заявке ≠ цене тарифа — платёж не создаётся, клиенту «выбери тариф заново»")
     print("s8 ok: клиент выбрал тариф и нажал «Я оплатил» — продавцу заявка, одна кнопка продлевает и меняет тариф")
 
     # 5) журнал клиента и удаление
     text, rows = press(f"m:cllog:{cid}")
     assert "Журнал" in text
+    text, rows = client_press("m:deldata")
+    assert "lg:del" in rows, rows
+    text, rows = client_press("lg:del")
+    assert "Запрос отправлен" in text, text
+    srv.wait(lambda: any("Запрос на удаление персональных данных" in t for t in srv.texts(100)),
+             what="продавцу: запрос на удаление данных", timeout=40)
+    note = [m["body"] for m in srv.to_chat(100) if "Запрос на удаление" in (m["body"].get("text") or "")]
+    assert len(note) == 1 and f"m:cldel:{cid}" in json.dumps(note) and "КотоБот" in note[0]["text"], note
+    text, rows = client_press("lg:del")
+    assert "уже" in text, text                          # повторно — продавца не дёргаем
+    time.sleep(21)
+    assert sum("Запрос на удаление" in t for t in srv.texts(100)) == 1, srv.texts(100)[-3:]
     press(f"a:cldelok:{cid}")
     srv.wait(lambda: not os.path.isdir(os.path.join(w, "data", "clients", cid)), what="клиент удалён")
+    assert any("данные удалены" in t for t in client_texts(5000)), client_texts(5000)[-2:]
     assert json.load(open(os.path.join(w, "data", "clients.json"))) == {}
-    arch = os.listdir(os.path.join(w, "data", "consent_archive"))
-    assert len(arch) == 1 and arch[0].startswith(cid) and "500" in json.load(open(os.path.join(w, "data", "consent_archive", arch[0])))
+    arch = sorted(os.listdir(os.path.join(w, "data", "consent_archive")))
+    assert len(arch) == 2 and all(a.startswith(cid) for a in arch), arch
+    for a in arch:                                      # права на контент и согласие с офертой — доказательства
+        assert "500" in json.load(open(os.path.join(w, "data", "consent_archive", a))), a
+    print("s5а ok: 🗑 запрос на удаление данных из бота клиента — продавцу один раз; удалил — клиенту подтверждение")
     print("s5 ok: журнал клиента виден продавцу; удаление останавливает бота и стирает его данные")
 
     # 7) основной бот перезапустили (хостинг гасит только его) — бот клиента не остаётся старой копией
@@ -278,17 +334,29 @@ bot.CLIENTS["c1"]["enabled"] = False
 assert bot.client_mode(bot.CLIENTS["c1"]) == "off" and "приостановлен" in bot.lock_text("off")
 assert "750" in bot.lock_text("expired")
 bot.LOCKED = "expired"; bot.GCFG["admins"] = [77]
+bot.CLIENT_MODE = True                                     # locked_answer работает только в боте клиента
 t, rows = bot.locked_answer({"payload": "x", "user": {"user_id": 77}})
 assert "закончилась" in t and "m:pay" in json.dumps(rows)
 t, rows = bot.locked_answer({"payload": "m:pay", "user": {"user_id": 77}})
 assert "Тарифы" in t and "py:0:30" in json.dumps(rows), t
 t, rows = bot.locked_answer({"payload": "pd:1:30", "user": {"user_id": 77}})
+assert "Перед оплатой" in t and not os.path.exists("pay_request.json"), t    # ⚖️ сначала согласие
+t, rows = bot.locked_answer({"payload": "lg:tick:1:30", "user": {"user_id": 77}})
+assert bot.CONSENT_ON in json.dumps(rows, ensure_ascii=False), rows
+t, rows = bot.locked_answer({"payload": "lg:go:1:30", "user": {"user_id": 77}})
+assert "pd:1:30" in json.dumps(rows), (t, rows)
+t, rows = bot.locked_answer({"payload": "pd:1:30", "user": {"user_id": 77}})
 assert "Заявка отправлена" in t and json.load(open("pay_request.json"))["plan"] == "Стандарт"
+t, rows = bot.locked_answer({"payload": "m:terms", "user": {"user_id": 77}})
+assert "Документы" in t, t                                # документы видно и без подписки
+t, rows = bot.locked_answer({"payload": "m:deldata", "user": {"user_id": 77}})
+assert "lg:del" in json.dumps(rows), (t, rows)            # и удалить свои данные — тоже
 t, rows = bot.locked_answer({"payload": "pd:1:30", "user": {"user_id": 5}})
 assert "закончилась" in t                                   # чужой не может слать заявки
 bot.LOCKED = "off"
 t, rows = bot.locked_answer({"payload": "m:pay", "user": {"user_id": 77}})
 assert "приостановлен" in t and rows == []
+bot.CLIENT_MODE = False
 SELLER.clear()
 bot.CLIENTS["cx"] = {"name": "Падучий"}
 for _ in range(3):

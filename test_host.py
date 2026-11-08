@@ -51,9 +51,17 @@ def shown():
     return json.dumps(OUT[-1], ensure_ascii=False) if OUT else "[]"
 
 
+def consent(uid, chat, plan):
+    """⚖️ Бот показал «Перед оплатой» — отметил «✅ Я согласен…» и нажал «💳 Перейти к оплате»."""
+    if f"lg:tick:{plan}" in shown():
+        press(uid, chat, f"lg:tick:{plan}")
+        press(uid, chat, f"lg:go:{plan}")
+
+
 def buy(uid, chat, plan):
-    """Выбрал тариф; если бот спросил почту для чека — «Пропустить» (чек на запасную почту)."""
+    """Выбрал тариф (согласие с офертой — если спросили); спросил почту для чека — «Пропустить»."""
     press(uid, chat, "py:" + plan)
+    consent(uid, chat, plan)
     if f"pe:{plan}" in shown():
         press(uid, chat, "pe:" + plan)
 
@@ -157,6 +165,9 @@ print("h8 ok: у хозяина панель всех кабинетов и уп
 bot.TENANTS["200"]["enabled"] = False; bot.TENANTS["200"]["until"] = 0
 _yk_real = bot.yk_keys
 bot.yk_keys = lambda: None
+t, r = bot.host_pay_manual("0:30", 200)
+assert "Перед оплатой" in t and "payreq" not in bot.TENANTS["200"], t     # ⚖️ без согласия — ни заявки
+bot.legal_callback("tick:0:30", 200)
 t, r = bot.host_pay_manual("0:30", 200)
 assert "payreq" in bot.TENANTS["200"] and "Заявка" in t
 bot.host_action(["clpayok", "200"], 1)
@@ -376,6 +387,7 @@ bot.promos()["FULL"] = {"kind": "pct", "value": 100, "max": 0, "used": [], "unti
 bot.TENANTS[k6]["until"] = time.time() - 1
 press(6001, 66000, "p:promo"); msg(6001, 66000, "FULL")
 press(6001, 66000, "py:1:90")
+consent(6001, 66000, "1:90")
 assert "бесплатно" in shown(), shown()
 press(6001, 66000, "pk:1:90")
 assert bot.tenant_mode(k6) == "run" and bot.TENANTS[k6]["plan"] == "Про" and "pay" not in bot.TENANTS[k6]
@@ -849,6 +861,7 @@ press(5001, 62000, "m:myt:2x10")
 assert "350 ₽ за 30 дней" in OUT[-1][0] and "py:c2x10:30" in shown(), OUT[-1][0]
 os.environ["YOOKASSA_SECRET_KEY"] = ""
 press(5001, 62000, "py:c2x10:30")
+consent(5001, 62000, "c2x10:30")
 assert "350 ₽" in OUT[-1][0], OUT[-1][0]
 press(5001, 62000, "pd:c2x10:30")
 assert bot.TENANTS[ckey]["payreq"]["plan"] == "Свой: 2 тем, 10 ист.", bot.TENANTS[ckey].get("payreq")
@@ -1629,6 +1642,7 @@ def receipt_of_last():
     pid = bot.TENANTS[ckey]["pay"]["pid"]
     return (srv.payments[pid].get("receipt") or {}).get("customer", {}).get("email")
 press(5001, 62000, "py:0:30")
+consent(5001, 62000, "0:30")
 assert EMAIL_ASK in shown() and "pe:0:30" in shown(), shown()           # сначала почта, ссылки ещё нет
 msg(5001, 62000, " Buyer@Mail.RU ")
 assert "yoomoney.ru/checkout" in shown() and receipt_of_last() == "buyer@mail.ru", (shown(), receipt_of_last())
@@ -2601,6 +2615,8 @@ print("h90 ok: 🧑 меню покупателя — 6 кнопок; настр
 bot.GCFG["yk_key"] = "test_secret"
 def pay_msgs(since):
     return [o for o in OUT[since:] if "yoomoney.ru/checkout" in json.dumps(o[1])]
+bot.TENANTS[bot.tenant_key(9100)].pop("pay", None)
+press(9100, 91000, "py:0:30"); consent(9100, 91000, "0:30")             # ⚖️ согласие — до любой оплаты
 bot.TENANTS[bot.tenant_key(9100)].pop("pay", None)
 n91 = len(OUT)
 press(9100, 91000, "pk:0:30")
