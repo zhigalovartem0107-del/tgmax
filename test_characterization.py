@@ -76,7 +76,7 @@ def item(i, ch="a", **kw):
 
 def run(items, minutes=180, **cfg):
     base = dict(queue_on=True, gap_min=20, night_on=False, urgent_on=True, urgent_max_h=3, smart_time=False,
-                auto_series=False, approval_on=False, stash_mode="off", max_age_h=24)
+                auto_series=False, approval_on=False, max_age_h=24)
     for k, v in dict(base, **cfg).items():
         bot.CFG[k] = v
     bot.QUEUE[:] = items

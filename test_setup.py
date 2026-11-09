@@ -24,15 +24,15 @@ def stamp(d, t):
     """Время изменения входа задаём явно: порядок «свежий/старый» не зависит от загрузки машины."""
     os.utime(os.path.join(d, "session.session"), (t, t))
 mk(os.path.join(root, "a", "bot1"), "BAD"); stamp(os.path.join(root, "a", "bot1"), 1000)
-mk(os.path.join(root, "b", "deep", "bot2"), "GOOD", settings__json='{"admins":[5]}', stash__json="[]", queue_t2__json="[]")
+mk(os.path.join(root, "b", "deep", "bot2"), "GOOD", settings__json='{"admins":[5]}', queue_t2__json="[]")
 stamp(os.path.join(root, "b", "deep", "bot2"), 2000)
-os.makedirs(os.path.join(root, "b", "deep", "bot2", "stash_media")); open(os.path.join(root, "b", "deep", "bot2", "stash_media", "a.jpg"), "w").write("x")
+os.makedirs(os.path.join(root, "b", "deep", "bot2", "queue_media")); open(os.path.join(root, "b", "deep", "bot2", "queue_media", "a.jpg"), "w").write("x")
 mk(os.path.join(root, "c"), "BAD"); stamp(os.path.join(root, "c"), 3000)   # самый свежий, тоже нерабочий
 mk(new, "BAD")                                   # и тут, в рабочей папке, вход протух
 bot.setup_data_dir(base=new, extra_roots=[root], check=check)
 assert open("session.session").read() == "GOOD", open("session.session").read()
 assert os.path.exists("session.session.bak") and os.path.exists("settings.json") and os.path.exists("queue_t2.json")
-assert os.path.exists("stash_media/a.jpg") and not os.path.exists("probe_session.session")
+assert os.path.exists("queue_media/a.jpg") and not os.path.exists("probe_session.session")
 print("s1 ok: протухшие входы пропущены, рабочий найден глубоко в папках и подтянут с настройками")
 
 # рабочий вход уже тут — ничего не ищем и не трогаем

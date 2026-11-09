@@ -998,8 +998,8 @@ assert "5001" not in bot.ANL_BUSY
 bot.analytics_send = real_send
 press(5001, 62000, "m:main")
 assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 6, OUT[-1]   # главное меню — 6 кнопок
-press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — закреп и пауза; тайника у покупателя нет
-assert "m:sh" not in shown() and "a:pause" in shown() and "m:pinset" in shown(), shown()
+press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — закреп и пауза
+assert "a:pause" in shown() and "m:pinset" in shown(), shown()
 print("h45 ok: аналитика — «подожди 1–2 минуты», без повторного запуска; главное меню — 6 кнопок, остальное в настройках")
 
 # 46) фильтр рекламы на реальных постах: розыгрыш «подпишись на чужие каналы» и «код, успей — активации ограничены» —
@@ -1692,11 +1692,11 @@ press(6500, 65000, "p:chadd"); bot.record_consent(6500); press(6500, 65000, "p:c
 with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]
 press(6500, 65000, "m:main")
-for adv in ("m:sh", "m:pinset", "m:anl"):
+for adv in ("m:pinset", "m:anl"):
     assert adv not in shown(), (adv, shown())                                      # главное меню — 6 кнопок
 assert "m:th" in shown() and "m:pay" in shown()
 press(6500, 65000, "m:more")                                                       # продвинутое — не в «Настройках» на бесплатном
-for adv in ("m:sh", "m:pinset", "m:anl"):
+for adv in ("m:pinset", "m:anl"):
     assert adv not in shown(), (adv, shown())
 feed["x"] = rss.replace("</channel>", """<item><title>Пост с картинкой</title><link>https://site.ru/65</link>
 <description>&lt;img src="https://site.ru/65.jpg"&gt; Текст поста</description><pubDate>Thu, 08 Oct 2026 12:00:00 +0000</pubDate></item></channel>""")
@@ -1882,8 +1882,8 @@ assert os.path.exists("sessions/acc1.session") and [x["name"] for x in bot.POOL.
 assert oct(os.stat("sessions/acc1.session").st_mode & 0o777) == "0o600"
 assert "Telegram Аккаунты" in OUT[-1][0] and "m:cltgaccdel:acc1" in shown()     # сразу список аккаунтов
 srv.blobs["acc2.session"] = telethon_session_bytes()
-said = send_file68("acc2.session")                                               # без «➕» — тоже в пул, не в тайник
-assert "добавлен" in said and "тайник" not in said and "mid-acc2.session" in srv.deleted, said
+said = send_file68("acc2.session")                                               # без «➕» — тоже в пул
+assert "добавлен" in said and "mid-acc2.session" in srv.deleted, said
 assert [x["name"] for x in bot.POOL.status()] == ["acc1", "acc2"]
 asyncio.run(bot.POOL.remove("acc2"))
 for fname, blob, why in (("bad.session", b"not a session", "не файл входа"),
@@ -2589,7 +2589,7 @@ assert "m:cl" not in shown(), shown()
 print("h89 ok: 👀 «Посмотреть меню покупателя» — те же 6 кнопок, что у покупателя, и «◀️» в панель")
 
 # 90) 🧑 меню покупателя — ровно 6 кнопок; в настройках «🛡 Фильтр рекламы» и «✍️ Подпись под постами»,
-#     без «Тайника», «Проверки каналов» и «Теста»; «📊 Статистика и Отчеты» — одна кнопка (статистика + отчёт)
+#     без «Проверки каналов» и «Теста»; «📊 Статистика и Отчеты» — одна кнопка (статистика + отчёт)
 contact90, bot.SELLER_CONTACT = bot.SELLER_CONTACT, "@reloader_admin"
 OUT.clear()
 msg(9100, 91000, "/start")
@@ -2601,8 +2601,8 @@ assert b90[4].get("intent") == "positive" and b90[5]["type"] == "link" and b90[5
 press(9100, 91000, "m:more")
 st90 = {b_["text"]: b_.get("payload") for b_ in buttons_of(OUT[-1][1])}
 assert st90.get("🛡 Фильтр рекламы") == "m:fl" and st90.get("✍️ Подпись под постами") == "m:sg", st90
-assert not {"m:sh", "m:iv", "m:ts", "m:st", "m:rp"} & set(st90.values()), st90
-assert "🧹 Реклама" not in st90 and "Тайник" not in OUT[-1][0] and "Проверка каналов" not in OUT[-1][0] \
+assert not {"m:iv", "m:ts", "m:st", "m:rp"} & set(st90.values()), st90
+assert "🧹 Реклама" not in st90 and "Проверка каналов" not in OUT[-1][0] \
     and "🧪 Тест" not in OUT[-1][0], OUT[-1][0]
 press(9100, 91000, "m:sr")
 assert "📊 Статистика и Отчеты" in OUT[-1][0] and "Опубликовано" in OUT[-1][0] and "Ежедневный отчёт" in OUT[-1][0], OUT[-1][0]
@@ -2875,7 +2875,7 @@ with bot.theme_ctx(th96):
 assert "не из твоих" not in OUT[-1][0], OUT[-1]
 print("h96 ok: ✋ карточки — только владельцу темы; «ничьим» и потерянным темам — никому; старые карточки не ломаются")
 
-# 97) 🗑 «Очистить старые каналы» (панель): все темы кабинета хозяина и «ничьи» — с очередью, тайником, карточками;
+# 97) 🗑 «Очистить старые каналы» (панель): все темы кабинета хозяина и «ничьи» — с очередью, карточками;
 #     покупатели не тронуты; потом — чистый кабинет; покупателю и чужому кабинету — нельзя
 legacy97 = bot.Theme("main", "Основная", "https://max.ru/old_main", None, {"channels": ["legacysrc"]},
                      legacy=True, owner=bot.host_id())

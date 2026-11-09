@@ -141,16 +141,6 @@ asyncio.run(bot.publish_due(None, main_t.chat_id))
 assert published[-1] == (100, "robl:1")
 print("t4 ok: каждая тема выкладывает в свой канал MAX")
 
-# тайник и расписание тоже по темам
-with bot.theme_ctx(t2):
-    bot.STASH.append({"id": "s1", "text": "кот", "photos": [], "videos": [], "sent": 0, "fails": 0})
-    CLOCK[0] += 4000
-    asyncio.run(bot.publish_due(None, t2.chat_id))
-    assert not bot.STASH
-assert SENT and SENT[-1][0] == 200 and "кот" in SENT[-1][1] and "cats" in SENT[-1][1]
-assert not bot.STASH
-print("t5 ok: тайник темы выкладывается в её канал с её подписью")
-
 def hm(text, uid=1):
     with bot.theme_ctx(bot.active_theme(uid)):
         bot.handle_message(uid, 111, "Gh", text, None)
@@ -171,27 +161,6 @@ assert "aaaa" not in bot.CFG["channels"]
 hm("/theme Основная")
 assert bot.META["active"]["1"] == "main"
 print("t6 ok: /theme переключает, каналы добавляются пачкой и только в выбранную тему")
-
-# «тайник пуст» пришло про тему «Коты», а админ сейчас в «Основной»: кнопка пополняет тайник «Котов»
-with bot.theme_ctx(t2):
-    bot.STASH.clear()
-    bot.STASH.append({"id": "s2", "text": "кот2", "photos": [], "videos": [], "sent": 0, "fails": 0})
-    NOTE_ROWS.clear()
-    assert asyncio.run(bot.publish_stash(t2.chat_id)) is True and not bot.STASH
-assert NOTE_ROWS and NOTE_ROWS[-1] and NOTE_ROWS[-1][0][0]["payload"] == "sf:t2", NOTE_ROWS
-assert "Коты" in NOTE_ROWS[-1][0][0]["text"]
-assert bot.active_theme(1) is main_t
-ANS = []
-bot.api_answer = lambda cid, text, rows=None: ANS.append((text, rows))
-with bot.theme_ctx(bot.active_theme(1)):
-    bot.handle_callback({"callback_id": "c1", "payload": "sf:t2", "user": {"user_id": 1}})
-assert bot.active_theme(1) is t2 and bot.PENDING.get(1) == "stashadd" and "Коты" in ANS[-1][0], ANS[-1]
-hm("свежий мем про кота")
-with bot.theme_ctx(t2):
-    assert [x["text"] for x in bot.STASH] == ["свежий мем про кота"], bot.STASH
-assert not any(x.get("text") == "свежий мем про кота" for x in bot.STASH)
-bot.PENDING.clear(); hm("/theme Основная")
-print("t6b ok: «пополнить тайник» из уведомления пополняет тайник той темы, про которую уведомление")
 
 # «🌐 для всех тем»: настройка из меню меняется во всех темах; каналы у каждой свои; выключил — снова по одной
 ANS = []

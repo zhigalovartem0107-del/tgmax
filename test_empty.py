@@ -18,9 +18,9 @@ def item(status="ok", **kw):
     it = {"id": f"a:{len(bot.QUEUE)}", "ch": "a", "date": NOW, "enq": NOW, "text": "x", "status": status}
     it.update(kw); bot.QUEUE.append(it); return it
 
-# 1) пусто и тайник пуст -> предупреждение, второй раз сразу не повторяется
+# 1) пусто -> предупреждение, второй раз сразу не повторяется
 bot.check_empty(NOW)
-assert len(NOTES) == 1 and "На ближайший час постов нет" in NOTES[0] and "Тайник пуст" in NOTES[0], NOTES
+assert len(NOTES) == 1 and "На ближайший час постов нет" in NOTES[0] and "Очередь пуста" in NOTES[0], NOTES
 bot.check_empty(NOW + 600); assert len(NOTES) == 1
 bot.check_empty(NOW + 3 * 3600 + 10); assert len(NOTES) == 2          # напоминание через 3 часа
 print("e1 ok: предупреждает один раз, напоминает через 3 часа")
@@ -49,14 +49,12 @@ bot.PUB["last_pub"] = NOW + 600                  # слот уйдёт за гр
 bot.check_empty(NOW); assert len(NOTES) == 1
 print("e4 ok: плановый пост учитывается по паузе")
 
-# 5) тайник с мемами закрывает дыру; ждущие одобрения упоминаются
+# 5) ждущие одобрения упоминаются в предупреждении
 NOTES.clear(); bot.QUEUE.clear(); bot.THEMES[0].flags["empty_at"] = 0; bot.PUB["last_pub"] = NOW - 7200
-bot.STASH.append({"id": "s", "text": "мем", "photos": [], "videos": []})
-bot.check_empty(NOW); assert not NOTES
-bot.STASH.clear(); item("pending"); item("pending")
+item("pending"); item("pending")
 bot.check_empty(NOW)
 assert len(NOTES) == 1 and "Ждут одобрения: 2" in NOTES[0], NOTES
-print("e5 ok: тайник считается, ждущие одобрения в сообщении")
+print("e5 ok: ждущие одобрения — в сообщении")
 
 # 6) выключено / ночь / сразу после запуска -> молчит
 NOTES.clear(); bot.QUEUE.clear(); bot.THEMES[0].flags["empty_at"] = 0

@@ -1,6 +1,6 @@
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
-"""Файлы: PDF, архивы, музыка, голосовые — из Telegram (со входом и без) и из тайника уходят в MAX файлом."""
+"""Файлы: PDF, архивы, музыка, голосовые — из Telegram (со входом и без) уходят в MAX файлом."""
 import asyncio, datetime, importlib.util, os, sys, tempfile, time, types
 sys.path.insert(0, ROOT)
 from fake_max import FakeMax
@@ -177,32 +177,26 @@ b = srv.messages[-1]["body"]
 assert srv.files[b["attachments"][0]["payload"]["token"]] == ("voice_23.ogg", b"OggS"), b
 print("f3 ok: без входа: пост с PDF пропущен целиком (без текста и сообщений), голосовое переносится")
 
-# 4) тайник: переслал боту файл в MAX — он выходит тем же файлом
+# 4) пересланное боту сообщение: текст и файл (имя, токен, ссылка) достаются из вложенного сообщения
 msg = {"body": {"text": "", "attachments": []}, "link": {"type": "forward", "message": {
     "text": "Схема", "attachments": [{"type": "file", "filename": "схема.pdf", "payload": {"token": "maxfile1", "url": "https://x/f"}}]}}}
 text, atts = bot.extract_content(msg)
 assert text == "Схема" and atts == [{"kind": "file", "url": "https://x/f", "token": "maxfile1", "name": "схема.pdf"}], atts
-bot.STASH.clear()
-item, info = bot.stash_add(1, text, atts)
-assert item["files"][0]["token"] == "maxfile1" and "файл" in info, info
-assert asyncio.run(bot.publish_stash(5)) is True
-b = srv.messages[-1]["body"]
-assert b["attachments"] == [{"type": "file", "payload": {"token": "maxfile1"}}] and b["text"].startswith("Схема"), b
-print("f4 ok: файл, пересланный боту, кладётся в тайник и выходит тем же файлом")
+print("f4 ok: из пересланного боту сообщения достаются текст и файл (имя, токен, ссылка)")
 
 # 5) отчёт за день картинкой: посты, просмотры из MAX, лучший пост, источники
 import json as _json
 t0 = bot.THEMES[0]; t0.chat_id = 5; t0.link = "https://max.ru/knit"
 bot.PUB["day_posts"] = []; bot.QUEUE.clear()
 mids = []
-for i, (txt, ch) in enumerate([("Пуловер спицами 🧶 схема", "knit"), ("Шапка крючком", "knit"), ("Мем", "тайник")]):
+for i, (txt, ch) in enumerate([("Пуловер спицами 🧶 схема", "knit"), ("Шапка крючком", "knit"), ("Мем", "memes")]):
     mid = bot.send_max(5, txt, [], None)
     bot.record_pub(mid, ch, txt)
     mids.append(mid)
 srv.views.update({mids[0]: 1500, mids[1]: 320})
 st = bot.day_stats(t0)
-assert st["posts"] == 3 and st["views"] == 1820 and st["top"]["text"].startswith("Пуловер") and st["stash"] == 1, st
-assert st["sources"] == [("knit", 2)], st["sources"]
+assert st["posts"] == 3 and st["views"] == 1820 and st["top"]["text"].startswith("Пуловер"), st
+assert st["sources"] == [("knit", 2), ("memes", 1)], st["sources"]
 SENT_IMG = []
 bot.api_send = lambda chat, text, rows=None, token=None: SENT_IMG.append((chat, text, token)) or "m"
 bot.GCFG["admin_chats"] = {"1": 111}; bot.CFG["admin_chats"] = {"1": 111}

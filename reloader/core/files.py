@@ -36,7 +36,18 @@ def load_json_safe(path, default):
     return data
 
 
-_WRITE_LOCK = threading.Lock()
+_LOCKS, _LOCKS_GUARD = {}, threading.Lock()
+
+
+def _file_lock(path):
+    """Замок на один файл: один и тот же файл пишется строго по очереди (у записи общий path.tmp), а разные —
+    одновременно. Общий замок на всё заставлял цикл бота ждать, пока другой поток пишет на диск другой файл."""
+    key = os.path.abspath(path)
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = _LOCKS[key] = threading.Lock()
+        return lock
 
 
 def _write(path, data, private, sync):
@@ -57,7 +68,7 @@ def save_json(path, data, private=False, backup=False):
     """Атомарная запись: если процесс убили посередине, файл не повреждается.
     private — файл с ключами: читать и писать может только бот (права 600).
     backup — важный файл (настройки, кабинеты, темы): пишем на диск надёжно и держим копию path + ".bak"."""
-    with _WRITE_LOCK:
+    with _file_lock(path):
         _write(path, data, private, sync=backup)
         if backup:
             try:
@@ -67,10 +78,10 @@ def save_json(path, data, private=False, backup=False):
 
 
 DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",
-              "posted_history.json", "stash.json", "cards.json", "channel_id.txt"]
+              "posted_history.json", "cards.json", "channel_id.txt"]
 
 
-DATA_GLOBS = ["queue_*.json", "pub_state_*.json", "stash_*.json", "last_posts_*.json", "posted_history_*.json"]
+DATA_GLOBS = ["queue_*.json", "pub_state_*.json", "last_posts_*.json", "posted_history_*.json"]
 
 
 SKIP_DIRS = {"DCIM", "Pictures", "Movies", "Music", "Podcasts", "Telegram", "WhatsApp", "Alarms",

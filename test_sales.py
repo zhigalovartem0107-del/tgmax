@@ -168,6 +168,13 @@ try:
     text, rows = client_press("m:more")
     assert "tg:menu" in rows, "кнопка Telegram не вернулась"
     print("s4б ok: продавец включает/выключает клиенту кнопку «Telegram»")
+    # 🧹 тайника нет и у бота клиента. «🎭 Темы» в «Ещё настройки» у клиента осталась: в его главном меню списка
+    #    каналов нет — без неё тему не переключить и не завести
+    assert "m:th" in rows, rows
+    for screen_ in ("m:main", "m:gd", "m:hp", "m:more"):
+        text, rows = client_press(screen_)
+        assert not re.search(r"тайник|stash|🗃", text + rows, re.I) and '"m:sh' not in rows, (screen_, text, rows)
+    print("s4в ok: 🧹 у бота клиента нет тайника; «🎭 Темы» в «Ещё настройки» на месте")
 
     # 8) оплата из бота клиента: реквизиты продавца -> «Я оплатил» -> заявка продавцу -> «продлить» -> новый тариф
     press("m:cltar")

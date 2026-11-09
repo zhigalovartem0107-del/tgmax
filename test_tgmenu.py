@@ -376,7 +376,12 @@ assert bot.doc_info(by[7]) == {"id": 7, "name": "Схема.pdf", "size": 9} and
 assert bot.video_info(by[8]) == (50, 12) and not bot.doc_info(by[8])
 one = asyncio.run_coroutine_threadsafe(rc.get_messages("chan", ids=7), loop).result(10)
 p = asyncio.run_coroutine_threadsafe(one.download_media(file=os.path.abspath("dl_test.pdf")), loop).result(10)
-assert open(p, "rb").read() == b"DATA7" and not [d for d in os.listdir(".") if d.startswith("tmp")]
+assert open(p, "rb").read() == b"DATA7"
+left_tmp = lambda: [d for d in os.listdir(".") if d.startswith("tmp")]
+deadline = _time.time() + 5         # продавец убирает свою временную папку сразу после отправки файла — ждём её
+while left_tmp() and _time.time() < deadline:
+    _time.sleep(0.05)
+assert not left_tmp(), left_tmp()
 bot.TG_CLIENT = bot.ClientBox(rc)
 text, rows = press("tg:menu")
 assert "общий аккаунт" in text and "Ничего делать не нужно" in text, text

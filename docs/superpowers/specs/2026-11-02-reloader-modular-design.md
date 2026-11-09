@@ -32,7 +32,7 @@ Release 1 is done when:
   `apply_text` (224), `host_screen` (176), `handle_message` (162), `run_command` (128), `host_action` (113).
 - Concurrency: an asyncio loop (Telethon reading, per-theme schedulers, background loop) plus threads
   (MAX menu polling, the client-bot supervisor, the hub, broadcasts).
-- State: about 15 kinds of JSON files in the data folder (settings, themes, tenants, queue/pub/stash/history per
+- State: about 15 kinds of JSON files in the data folder (settings, themes, tenants, queue/pub/history per
   theme, cards, ad model, autodel, consent, social, clients), plus `session.session` (Telegram login).
 - Tests: 16 suites, about 5,500 lines. 15 of them load the whole file as one module `bot` and replace
   **56 distinct names** with fakes (`bot.api_send = …`, `bot.notify = …`, `bot.publish_item = …`).
@@ -66,7 +66,7 @@ reloader-bot/                       # new GitHub repo
     log.py                          # print -> bot.log, journal, log_exc
     files.py                        # data folder, load_json/save_json, session discovery
     state.py                        # runtime registries: PENDING, FLASH, BIND, codes, DENIED, NET, ... (one home)
-    themes.py                       # Theme, CUR context, CFG/QUEUE/STASH/PUB proxies, theme_ctx
+    themes.py                       # Theme, CUR context, CFG/QUEUE/PUB proxies, theme_ctx
     timeutil.py                     # night mode, fmt_min/fmt_date/n_word, schedule time helpers
     clean_chat.py                   # bot messages vanish after an hour, one menu message (AUTODEL)
   storage/
@@ -88,7 +88,6 @@ reloader-bot/                       # new GitHub repo
     social.py                       # TikTok, VK, YouTube, Rutube, RSS
     publisher.py                    # compose, split, publish_item, fetch_files, to_stuck
     queue.py                        # approve, batches, publish_due, last_slot, urgent, series
-    stash.py
     analytics/stats.py · analytics/dashboard.py · analytics/report.py
     tenants.py                      # cabinets, free plan, limits, terms reminders
     payments/tariffs.py · payments/custom.py · payments/promos.py · payments/yookassa.py · payments/host_pay.py
@@ -96,7 +95,7 @@ reloader-bot/                       # new GitHub repo
   handlers/
     router.py                       # handle_update: gates (force-sub, lock), message/callback/bot_started
     screens/                        # one function per screen, registered by name (§6.3)
-      channels.py · schedule.py · filters.py · media.py · themes.py · admins.py · stash.py · smart.py · status.py
+      channels.py · schedule.py · filters.py · media.py · themes.py · admins.py · smart.py · status.py
     actions/                        # one function per button action, same split by area
     text_input.py                   # PENDING text answers, registered by action name
     commands.py                     # /commands
@@ -156,7 +155,7 @@ Modules refer to them as `state.PENDING`. No logic change; it just stops state f
 
 ### 6.5 Storage behind an interface
 `storage/repo.py` exposes the operations the code already performs (load/save settings, themes, tenants, a theme's
-queue/pub/stash/history, cards, consent). It writes exactly the same JSON files to the same places. Release 2 swaps
+queue/pub/history, cards, consent). It writes exactly the same JSON files to the same places. Release 2 swaps
 its implementation to SQLAlchemy without touching handlers or services.
 
 ## 7. Test strategy (the safety net)
@@ -194,7 +193,7 @@ reverted, not patched.
 | 3 | State | `core/state`, `core/themes`, `storage/repo`, `services/tenants` |
 | 4 | MAX layer | `services/max_api`, `services/cards`, `core/clean_chat` |
 | 5 | Telegram | `telegram/client`, `cdn`, `media`, `web`, `reader`, `shared`, `login`; `social` |
-| 6 | Publishing | `publisher`, `queue`, `stash`, `workers/scheduler` |
+| 6 | Publishing | `publisher`, `queue`, `workers/scheduler` |
 | 7 | Business features | `payments/*`, `promos`, `force_sub`, `broadcast`, `beta`, `sales`, `diagnostics` |
 | 8 | Handlers | router + registries; screens, actions, text input, commands, approval, admin panel (several sub-steps) |
 | 9 | Entry point | `app.py`, `main.py`, `workers/reader_loop.py`; client bots spawn `main.py` with their env |
@@ -209,7 +208,7 @@ Each line names the new module(s) and the existing tests that keep proving it wo
 sources and reading (`telegram/reader`, `web`, `social`: test_web, test_host h38/h44/h57); filters and ads
 (`filters/*`: test_host h30/h41/h46, characterization); duplicates (`dedupe`); queue, schedule, night, urgent, series,
 batches (`queue`: test_bot 1–15, test_host h53/h56); approval cards and stuck posts (`approval`, `cards`: test_bot
-9–9e, h42); media and files including CDN (`media`, `cdn`: test_cdn c1–c11, test_files); stash; analytics, daily
+9–9e, h42); media and files including CDN (`media`, `cdn`: test_cdn c1–c11, test_files); analytics, daily
 report and dashboard (`analytics/*`: h37/h48); themes (test_themes); host cabinets, free plan, limits (`tenants`: h1–h8,
 h58); payments, YooKassa, promos, custom tariff (`payments/*`: h3/h31/h40/h62); ad broadcast (h59); force subscription
 (h60/h61); beta features (h36); Telegram login from MAX (test_login, test_tgmenu); sales and client bots
@@ -229,7 +228,7 @@ test_setup, test_empty, test_main).
 ## 11. Release 2 (database) — outline only, separate design later
 
 SQLAlchemy 2 with SQLite (WAL). A **sync** engine, since Reloader uses threads as well as asyncio. Models: Tenant,
-Theme (settings as a JSON column), SourceChannel, QueueItem, PublishedPost (history), Card, StashItem, HeldAd, Promo,
+Theme (settings as a JSON column), SourceChannel, QueueItem, PublishedPost (history), Card, HeldAd, Promo,
 PaymentLog, Consent. On first start it imports the existing JSON files and keeps them untouched as a backup.
 `storage/repo.py` switches implementation; handlers and services don't change. In that release the test suites move
 to direct module imports and the facade is deleted.

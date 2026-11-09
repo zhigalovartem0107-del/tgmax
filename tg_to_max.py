@@ -1,7 +1,6 @@
 """
 Репост из нескольких Telegram-каналов в канал MAX.
 Управление — через меню прямо в MAX (напиши своему боту /start) или командами через / (/help).
-Есть тайник с мемами: когда очередь пуста, бот выкладывает пост оттуда.
 
 Установка:   pip install telethon requests
 """
@@ -39,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110614            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110615            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -183,9 +182,8 @@ def setup_data_dir(base=None, extra_roots=None, check=None):
             for name in names:
                 if os.path.exists(os.path.join(src, name)) and not os.path.exists(name):
                     shutil.copy2(os.path.join(src, name), name)
-            for sub in ("stash_media", "queue_media"):
-                if os.path.isdir(os.path.join(src, sub)) and not os.path.exists(sub):
-                    shutil.copytree(os.path.join(src, sub), sub)
+            if os.path.isdir(os.path.join(src, "queue_media")) and not os.path.exists("queue_media"):
+                shutil.copytree(os.path.join(src, "queue_media"), "queue_media")
             print(f"Рабочий вход найден в {src} — скопировал сюда вместе с настройками. Код не нужен ✅")
             return
         os.remove("probe_session.session")
@@ -323,8 +321,6 @@ SETTINGS_FILE = "settings.json"        # настройки из меню
 QUEUE_FILE = "queue.json"              # очередь постов на публикацию
 PUB_FILE = "pub_state.json"            # когда и что публиковали (для расписания)
 MEDIA_DIR = "queue_media"              # фото постов, ждущих в очереди
-STASH_FILE = "stash.json"              # тайник: мемы про запас
-STASH_DIR = "stash_media"              # файлы из тайника
 CARDS_FILE = "cards.json"              # карточки одобрения в чатах админов (чтобы их чистить)
 THEMES_FILE = "themes.json"            # темы: свои каналы, свой канал MAX, свои настройки
 
@@ -365,11 +361,6 @@ DEFAULTS = {
     "max_age_h": 24,                   # пост, ждущий в очереди дольше, удаляется
     "later_min": 60,                   # кнопка «⏰ Через…» на карточке поста: через сколько минут выложить
     "auto_series": False,              # посты одного канала сами выходят пачкой (ВЫКЛ: именно это выкладывало «кучей»)
-    "stash_on": True,                  # тайник: если очередь пуста, выкладывать из него
-    "stash_mode": "empty",             # когда выкладывать из тайника: empty — очередь пуста, every — раз в N часов,
-                                       # hours — в заданные часы
-    "stash_every_h": 2,
-    "stash_hours": [12, 18],
     "empty_warn_on": True,             # предупреждать админов, если на ближайший час нет постов
     # админы бота в MAX (первый — владелец); заполняется через меню
     "admins": [],
@@ -622,20 +613,20 @@ if GCFG.get("owner_id") and GCFG["owner_id"] not in GCFG["admins"]:
 # Общие для всех тем. Всё остальное — настройки конкретной темы.
 GLOBAL_KEYS = {"paused", "interval", "admins", "admin_names", "admin_chats",
                "report_on", "report_hour", "owner_id", "owner_chat"}
-STAT_KEYS = ("published", "dups", "errors", "expired", "blocked", "rejected", "urgent", "stash", "ads")
+STAT_KEYS = ("published", "dups", "errors", "expired", "blocked", "rejected", "urgent", "ads")
 
 
 def theme_files(tid):
-    """Файлы данных темы tid (не первой основной): очередь, публикации, тайник, последние посты, история, реклама."""
+    """Файлы данных темы tid (не первой основной): очередь, публикации, последние посты, история, реклама."""
     def sfx(base):
         root, ext = os.path.splitext(base)
         return f"{root}_{tid}{ext}"
-    return {"queue": sfx(QUEUE_FILE), "pub": sfx(PUB_FILE), "stash": sfx(STASH_FILE),
+    return {"queue": sfx(QUEUE_FILE), "pub": sfx(PUB_FILE),
             "state": sfx(STATE_FILE), "history": sfx(HISTORY_FILE), "adheld": sfx("ads_held.json")}
 
 
 class Theme:
-    """Тема = свои каналы-источники + свой канал MAX + своя очередь, тайник, расписание и фильтры.
+    """Тема = свои каналы-источники + свой канал MAX + своя очередь, расписание и фильтры.
     Все темы работают одновременно; в меню ты выбираешь, какую настраиваешь."""
 
     def __init__(self, tid, name, link, chat_id=None, own=None, legacy=False, owner=""):
@@ -644,7 +635,7 @@ class Theme:
         self.legacy = legacy                        # первая тема хранит данные в старых файлах
         self.own = own if own is not None else {}   # настройки темы
         if legacy:
-            self.f = {"queue": QUEUE_FILE, "pub": PUB_FILE, "stash": STASH_FILE,
+            self.f = {"queue": QUEUE_FILE, "pub": PUB_FILE,
                       "state": STATE_FILE, "history": HISTORY_FILE, "adheld": "ads_held.json"}
         else:
             self.f = theme_files(tid)
@@ -655,13 +646,12 @@ class Theme:
         self.pub.update(load_json(self.f["pub"], {}))
         self.stats = {k: 0 for k in STAT_KEYS}
         self.stats.update(self.pub.get("stats", {}))
-        self.stash = load_json(self.f["stash"], [])
         self.adheld = load_json(self.f["adheld"], [])   # что отсеяно как реклама (для «🧠 Учить фильтр»)
         self.saved_ids = load_json(self.f["state"], {})
         self.history = load_json(self.f["history"], [])
         self.last_ids = {}                          # последний обработанный пост по каждому каналу
         self.force = {"until": 0}                   # до этого времени публикуем без ожидания
-        self.flags = {"stash_now": False, "test": False, "empty_at": 0}
+        self.flags = {"test": False, "empty_at": 0}
         self.lock = None                            # asyncio.Lock, создаётся при запуске
 
     def to_json(self):
@@ -870,7 +860,7 @@ class _ThemeCfg:
 
 
 class _ListProxy:
-    """Список текущей темы (QUEUE, STASH) — ведёт себя как обычный list."""
+    """Список текущей темы (QUEUE, ADHELD) — ведёт себя как обычный list."""
 
     def __init__(self, attr):
         self._a = attr
@@ -909,7 +899,6 @@ class _DictProxy(_ListProxy):
 
 CFG = _ThemeCfg()
 QUEUE = _ListProxy("queue")            # посты, ждущие публикации
-STASH = _ListProxy("stash")            # тайник: [{id, text, photos, videos, ...}]
 ADHELD = _ListProxy("adheld")          # отсеянная реклама: последние 15, можно вернуть кнопкой «не реклама»
 PUB = _DictProxy("pub")                # когда и что публиковали (для расписания)
 STATS = _DictProxy("stats")
@@ -917,7 +906,6 @@ LAST_IDS = _DictProxy("last_ids")
 FORCE = _DictProxy("force")
 FLAGS = _DictProxy("flags")            # запросы из меню/команд для планировщика
 BAD = {}                               # канал -> когда повторить попытку (не открылся)
-STASH_LOCK = threading.Lock()
 CARDS = load_json(CARDS_FILE, [])      # [{chat, mid, ref, del_at, t}]
 CARDS_LOCK = threading.Lock()
 
@@ -942,12 +930,6 @@ def save_pub():
     t = cur()
     t.pub["stats"] = dict(t.stats)
     save_json(t.f["pub"], t.pub)
-
-
-def save_stash():
-    t = cur()
-    with STASH_LOCK:
-        save_json(t.f["stash"], t.stash)
 
 
 def save_last_ids():
@@ -1027,15 +1009,13 @@ def create_theme(name, owner=""):
 
 
 def delete_theme(t, force=False):
-    """Удаляет тему вместе с очередью и тайником. Первую (основную) удалить нельзя — кроме очистки
+    """Удаляет тему вместе с очередью. Первую (основную) удалить нельзя — кроме очистки
     в host-режиме (force): там основная тема — пережиток обычного бота, без неё всё работает."""
     if t not in THEMES or (t.legacy and not (force and HOST_MODE)):
         return
     with theme_ctx(t):
         for it in list(QUEUE):
             drop_item(it)
-        for it in list(STASH):
-            stash_remove(it, save=False)
     THEMES.remove(t)
     for uid, tid in list(META["active"].items()):
         if tid == t.id:
@@ -2071,13 +2051,13 @@ def _check_attachments(r, expected):
 
 def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
     attachments = []
-    for p in image_paths:                 # путь к файлу или {"token": ...} (из тайника)
+    for p in image_paths:                 # путь к файлу или {"token": ...} (уже загружено в MAX)
         token = p["token"] if isinstance(p, dict) else upload_image(p)
         attachments.append({"type": "image", "payload": {"token": token}})
     if video_path:
         token = video_path["token"] if isinstance(video_path, dict) else upload_video(video_path)
         attachments.append({"type": "video", "payload": {"token": token}})
-    if file_path:                         # путь к файлу или {"token": ..., "kind": "file"/"audio"} (из тайника)
+    if file_path:                         # путь к файлу или {"token": ..., "kind": "file"/"audio"} (уже в MAX)
         if isinstance(file_path, dict):
             attachments.append({"type": file_path.get("kind") or "file", "payload": {"token": file_path["token"]}})
         else:
@@ -2242,8 +2222,8 @@ def note_denied(chat_id, e):
             return
         notify("⛔ Не могу публиковать в канал этой темы: MAX ответил «нет прав».\n\n"
                "Что сделать: зайди в канал MAX → Админы → добавь бота админом с правом публиковать сообщения. "
-               "Если тема привязана не к тому каналу — 🎭 Темы → эта тема → 🔗 Канал MAX.\n\n"
-               "Посты и тайник не удаляю — выложу, как только появится доступ (проверяю раз в 10 минут).")
+               "Если тема привязана не к тому каналу — «🎭 Мои каналы» → тема → «📢 Канал MAX».\n\n"
+               "Посты не удаляю — выложу, как только появится доступ (проверяю раз в 10 минут).")
 
 
 def note_allowed(chat_id):
@@ -2287,13 +2267,13 @@ def make_report(title=None):
         return STATS.get(k, 0) - base.get(k, 0)
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
     return ("📈 Отчёт" + (f" · 🎭 {title}" if title else "") + "\n\n"
-            f"Опубликовано: {d('published')} (срочных: {d('urgent')}, из тайника: {d('stash')})\n"
+            f"Опубликовано: {d('published')} (срочных: {d('urgent')})\n"
             f"Дублей пропущено: {d('dups')}\n"
             f"Рекламы отсеяно: {d('ads')}\n"
             f"Отсеяно стоп-словами: {d('blocked')}\n"
             f"Отклонено вручную: {d('rejected')}\n"
             f"Ошибок: {d('errors')}\n\n"
-            f"Сейчас в очереди: {len(QUEUE)} (ждут одобрения: {pend}) · в тайнике: {len(STASH)}")
+            f"Сейчас в очереди: {len(QUEUE)} (ждут одобрения: {pend})")
 
 
 def pin_post(chat, mid):
@@ -2419,13 +2399,12 @@ def day_stats(t, now=None):
     for p in posts:
         hours[time.localtime(p["t"]).tm_hour] += 1
     return {"name": t.name, "link": t.link or "", "posts": len(posts),
-            "stash": sum(1 for p in posts if p["ch"] == "тайник"),
             "views": sum(p["views"] for p in seen) if seen else None,
             "avg": round(sum(p["views"] for p in seen) / len(seen)) if seen else None,
             "top": max(seen, key=lambda p: p["views"]) if seen else None,
-            "sources": Counter(p["ch"] for p in posts if p["ch"] != "тайник").most_common(3),
+            "sources": Counter(p["ch"] for p in posts).most_common(3),
             "hours": hours, "dups": STATS.get("dups", 0) - base.get("dups", 0),
-            "errors": STATS.get("errors", 0) - base.get("errors", 0), "stash_left": len(STASH),
+            "errors": STATS.get("errors", 0) - base.get("errors", 0),
             "ads": STATS.get("ads", 0) - base.get("ads", 0)}
 
 
@@ -2858,10 +2837,10 @@ def report_image(stats, path, all_stats=None, page=""):
             d.text((x0 + 32, ty + 42), "просмотры появятся, когда посты наберут их в MAX" if s["posts"] else
                    "за сутки постов не было", font=f["r24"], fill=muted)
         src = "  ·  ".join(f"@{c} — {n}" for c, n in s["sources"]) or "—"
-        foot = (f"Источники: {src}" + (f"  ·  из тайника: {s['stash']}" if s["stash"] else ""))
+        foot = f"Источники: {src}"
         d.text((x0 + 32, ty + 125), wrap(foot, f["r20"], x1 - x0 - 64, 1)[0] if foot else "", font=f["r20"], fill=muted)
         d.text((x0 + 32, ty + 160), f"Повторов отсеяно: {s['dups']}  ·  рекламы: {s.get('ads', 0)}  ·  "
-               f"ошибок: {s['errors']}  ·  в тайнике: {s['stash_left']}", font=f["r20"], fill=muted)
+               f"ошибок: {s['errors']}", font=f["r20"], fill=muted)
         y += card_h + 30
     d.text((W // 2, H - 45), "TG → MAX", font=f["r20"], fill=line, anchor="mm")
     img.save(path, "PNG", optimize=True)
@@ -3424,16 +3403,6 @@ def rights_rows(uid=None):
     return [[B("✅ Подтверждаю", "rk:ok")], [B("📄 Условия", "m:terms")]] + prompt_nav(uid)
 
 
-def stash_fill_rows():
-    """Кнопка «пополнить тайник» именно этой темы: нажал — бот переключает на неё, а не пополняет ту, где ты сейчас."""
-    name = f" «{cur().name}»" if len(THEMES) > 1 else ""
-    return [[B(f"➕ Пополнить тайник{name}"[:60], f"sf:{cur().id}")]]
-
-
-def stash_prompt():
-    return PROMPTS["stashadd"] + (f"\n\n🎭 Тема: {cur().name}" if len(THEMES) > 1 else "")
-
-
 def fmt_iv(s):
     return f"{s} сек" if s < 60 else f"{s // 60} мин"
 
@@ -3740,42 +3709,6 @@ def _screen(name, uid=None):
     elif name == "st":
         text = "📊 Статус\n\n" + status_text()
         rows = [[B("🔄 Обновить", "m:st")], back]
-    elif name == "sh":
-        ph = sum(1 for x in STASH if x.get("photos"))
-        vd = sum(1 for x in STASH if x.get("videos"))
-        tx = sum(1 for x in STASH if not x.get("photos") and not x.get("videos") and not x.get("files"))
-        text = (f"🗃 Тайник: {on_off(CFG['stash_on'])}\n\n"
-                f"Внутри: {len(STASH)} (с фото: {ph}, с видео: {vd}, только текст: {tx})\n\n"
-                f"⏱ Выкладываю по одному: {stash_mode_text()}. Ночью — нет.\n\n"
-                "Пополнить: «➕ Добавить» и кидай мемы — фото, видео, текст, можно пересылать. "
-                "Или просто скинь боту фото/видео в любой момент.")
-        mode = CFG["stash_mode"]
-        rows = [[B(f"🗃 Тайник: {on_off(CFG['stash_on'])}", "a:shon")],
-                [B(("✅ " if mode == "empty" else "") + "Когда пусто", "a:shmode:empty"),
-                 B(("✅ " if mode == "every" else "") + "Раз в N ч", "a:shmode:every"),
-                 B(("✅ " if mode == "hours" else "") + "По часам", "a:shmode:hours")]]
-        if mode == "every":
-            rows.append([B("➖ 1 ч", "a:shev:-1"), B(f"раз в {CFG['stash_every_h']} ч", "m:sh"), B("➕ 1 ч", "a:shev:1")])
-        if mode == "hours":
-            rows.append([B("🕐 Задать часы", "p:shhours")])
-        rows += [[B("➕ Добавить", "p:stashadd"), B("📋 Список", "m:shl")],
-                 [B("📤 Выложить сейчас", "a:shnow"), B("🗑 Очистить", "m:shc")], back]
-    elif name == "shl":
-        lines, rows = [], []
-        for i, it in enumerate(STASH[:10]):
-            icon = "🎬" if it.get("videos") else ("🖼" if it.get("photos") else ("📎" if it.get("files") else "📝"))
-            extra = f" +{len(it['photos'])} фото" if len(it.get("photos", [])) > 1 else ""
-            snip = plain_snip(it.get("text"), 40)
-            lines.append(f"{i + 1}. {icon} {snip}{extra}")
-        text = f"📋 Тайник ({len(STASH)})\n\n" + ("\n".join(lines) or "пусто") + \
-            ("\n…и ещё " + str(len(STASH) - 10) if len(STASH) > 10 else "") + \
-            "\n\nВыходят по порядку, сверху вниз. Нажми номер, чтобы убрать."
-        btns = [B(f"❌ {i + 1}", f"a:shdel:{i}") for i in range(min(10, len(STASH)))]
-        rows = [btns[i:i + 5] for i in range(0, len(btns), 5)]
-        rows.append([B("◀️ Тайник", "m:sh")])
-    elif name == "shc":
-        text = f"🗑 Очистить тайник? Удалится всё: {len(STASH)} шт."
-        rows = [[B("✅ Да, очистить", "a:shclr"), B("Нет", "m:sh")]]
     elif name == "th":
         mine = my_themes(uid)
         lines = []
@@ -3783,7 +3716,7 @@ def _screen(name, uid=None):
             with theme_ctx(t):
                 chans = len(CFG["channels"])
                 lines.append(f"{'✅' if t is active_theme(uid) else '▫️'} {i + 1}. {t.name} · каналов: {chans} · "
-                             f"очередь: {len(QUEUE)} · тайник: {len(STASH)}"
+                             f"очередь: {len(QUEUE)}"
                              + ("" if t.chat_id else " · ⚠️ канал MAX не привязан"))
         text = ("🎭 Темы\n\nКаждая тема читает свои каналы Telegram и выкладывает в свой канал MAX. "
                 "Отмеченная ✅ — та, которую ты сейчас настраиваешь.\n\n"
@@ -3792,7 +3725,7 @@ def _screen(name, uid=None):
         if len(mine) > 1:
             on = all_mode(uid)
             text += ("\n\n🌐 Настройки сразу для всех тем: " + ("ВКЛ — всё, что меняешь в меню (фильтры, расписание, "
-                     "тайник, видео…), меняется во всех темах. Каналы у каждой темы свои." if on else
+                     "видео…), меняется во всех темах. Каналы у каждой темы свои." if on else
                      "выкл — меняешь только выбранную тему."))
             rows.append([B(f"🌐 Для всех тем: {'вкл' if on else 'выкл'}", "a:allmode")])
         rows += [[B("➕ Новая тема", "p:themenew"), B("⚙️ Эта тема", "m:thm")], back]
@@ -3851,7 +3784,7 @@ def _screen(name, uid=None):
                 [B(("✅ " if h == 24 else "") + "24 ч", "a:adh:24"), B(("✅ " if h == 48 else "") + "48 ч", "a:adh:48"),
                  B(("✅ " if h == 168 else "") + "7 дн", "a:adh:168")], back]
     elif name == "thd":
-        text = f"🗑 Удалить тему «{cur().name}»? Очередь и тайник этой темы пропадут."
+        text = f"🗑 Удалить тему «{cur().name}»? Очередь этой темы пропадёт."
         rows = [[B("✅ Да, удалить", "a:thdel"), B("Нет", "m:thm")]]
     elif name == "lg":
         own = cur().owner if HOST_MODE else ""
@@ -3871,7 +3804,7 @@ def _screen(name, uid=None):
             text += "\n\n🏢 Продавец:\n" + req
         rows = ([[LB("❓ Поддержка", link)]] if link else []) + [[B("📄 Документы и реквизиты", "m:legal")], back]
     elif name == "hp":
-        text = help_text(uid) + "\n\nМожно просто скинуть боту фото/видео/пересланное — улетит в тайник."
+        text = help_text(uid)
         rows = [back]
     elif name == "gd":
         text = guide_text()
@@ -3928,15 +3861,15 @@ def _screen(name, uid=None):
                 "🛡 Фильтр рекламы — слова: строки с ними бот вырезает из постов\n"
                 "✍️ Подпись под постами — текст в конце каждого поста\n"
                 f"👥 Админы — дать управлять ботом ещё кому-то (до {LIMIT_ADMINS})\n"
-                "🎭 Темы — несколько каналов MAX, у каждого свои источники\n"
-                "📜 Журнал — что бот сделал с каждым постом\n"
+                + ("" if HOST_MODE else "🎭 Темы — несколько каналов MAX, у каждого свои источники\n")
+                + "📜 Журнал — что бот сделал с каждым постом\n"
                 + ("" if not show_tg(uid) else "🔑 Telegram — твой аккаунт Telegram: файлы, закрытые каналы, большие видео\n")
                 + "🧠 Умное — умное время, хэштеги, авто-оценка, строгие дубли и реклама\n"
                 + "❓ Команды — быстрые команды через /\n"
                 + "📄 Условия — правила использования бота")
         rows = [[B("🎬 Видео", "m:vid"), B("🔁 Повторы", "m:dd")],
                 [B("🛡 Фильтр рекламы", "m:fl"), B("👥 Админы", "m:ad")],
-                [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
+                ([] if HOST_MODE else [B("🎭 Темы", "m:th")]) + [B("📜 Журнал", "m:lg")],   # у покупателя — «🎭 Мои каналы»
                 *([[B("🔑 Telegram", "tg:menu")]] if show_tg(uid) else []),
                 [B("🧠 Умное", "m:ai"), B("❓ Команды", "m:hp")],
                 [B("✍️ Подпись под постами", "m:sg"), B("⏳ Расписание", "m:q")],
@@ -3956,15 +3889,14 @@ def _screen(name, uid=None):
                 f"Расписание: {'пауза ' + fmt_min(CFG['gap_min']) if CFG['queue_on'] else 'выкл'} · "
                 f"в очереди: {len(QUEUE)}\n"
                 f"Опубликовано: {STATS['published']} · дублей пропущено: {STATS['dups']}\n"
-                f"Одобрение: {'вкл' if CFG['approval_on'] else 'выкл'} · ночь: {'вкл' if CFG['night_on'] else 'выкл'}\n"
-                f"Тайник: {len(STASH)} шт. ({'вкл' if CFG['stash_on'] else 'выкл'})")
+                f"Одобрение: {'вкл' if CFG['approval_on'] else 'выкл'} · ночь: {'вкл' if CFG['night_on'] else 'выкл'}")
         rows = [[B("📡 Каналы", "m:ch"), B("🎬 Видео", "m:vid")],
                 [B("⏳ Расписание", "m:q"), B("🔁 Дубли", "m:dd")],
                 [B("🧹 Фильтры", "m:fl"), B("✍️ Подпись", "m:sg")],
                 [B("⏱ Интервал", "m:iv"), B("👥 Админы", "m:ad")],
                 [B("✋ Одобрение", "m:ap"), B("📈 Отчёт", "m:rp")],
                 [B("📊 Статус", "m:st"), B("🧪 Тест", "m:ts")],
-                [B("🗃 Тайник", "m:sh"), B("❓ Команды", "m:hp")],
+                [B("❓ Команды", "m:hp")],
                 [B("📌 Закреп и автоудаление", "m:pinset")],
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
                 [B("🧠 Умное", "m:ai"), B("🔎 Проверка", "m:dg")] + ([B("🔑 Telegram", "tg:menu")] if show_tg(uid) else []),
@@ -4034,7 +3966,6 @@ PROMPTS = {
                  "клиентам во всех сообщениях об оплате и поддержке.",
     "clpayset": "Пришли, как тебе платить — этот текст клиенты увидят при оплате. Например:\n«Перевод на Сбербанк "
                 "по номеру +7…, получатель Артём Ж. После перевода нажми «Я оплатил».»",
-    "shhours": "Пришли часы, в которые выкладывать из тайника, через запятую. Например: 12, 18 или 9, 13, 17, 21.",
     "chadd": "Пришли каналы Telegram, из которых брать посты: @name или t.me/name "
              "(можно несколько — через пробел или с новой строки).",
     "clsrcadd": ("Пришли каналы Telegram для этой темы покупателя: @name или t.me/name "
@@ -4061,8 +3992,6 @@ PROMPTS = {
     "delrw": "Пришли слово слева (то, что заменяется), чтобы убрать эту замену.",
     "addur": "Пришли слово-триггер для срочных постов (или несколько через запятую).",
     "delur": "Пришли слово-триггер, которое нужно убрать.",
-    "stashadd": "Кидай мемы в тайник: фото, видео, файлы, текст, можно пересылать из других чатов. "
-                "Каждое сообщение — отдельный пост. Закончишь — жми «Готово».",
 }
 
 
@@ -4180,14 +4109,6 @@ def apply_text(action, text, uid=None):
         if not can_panel(uid) or CLIENT_MODE:
             return "Нет доступа.", "main"
         return clients_text(action, text, uid)
-    if action == "shhours":
-        hrs = sorted({int(x) for x in re.findall(r"\d{1,2}", text) if 0 <= int(x) <= 23})
-        if not hrs:
-            return "Не понял часы. Пример: 12, 18", "sh"
-        CFG["stash_hours"] = hrs
-        CFG["stash_mode"] = "hours"
-        save_cfg()
-        return "Тайник: выкладываю в " + ", ".join(f"{h:02d}:00" for h in hrs) + " ✅", "sh"
     if action == "chadd" and need_rights(uid):
         return "Сначала подтверди права на контент.", "rights"
     if action == "chadd":
@@ -4599,15 +4520,6 @@ def do_action(act, uid=None):
     elif p[0] == "later":
         CFG["later_min"] = max(5, min(720, CFG["later_min"] + int(p[1])))
         scr = "q"
-    elif p[0] == "shon":
-        CFG["stash_on"] = not CFG["stash_on"]
-        scr = "sh"
-    elif p[0] == "shmode" and len(p) > 1 and p[1] in ("empty", "every", "hours"):
-        CFG["stash_mode"] = p[1]
-        scr = "sh"
-    elif p[0] == "shev":
-        CFG["stash_every_h"] = max(1, min(24, CFG["stash_every_h"] + int(p[1])))
-        scr = "sh"
     elif p[0] == "qdel":
         ref = ":".join(p[1:])
         it = next((x for x in QUEUE if x["id"] == ref), None)
@@ -4617,21 +4529,6 @@ def do_action(act, uid=None):
             bump("rejected")
             save_queue()
         scr = "ql"
-    elif p[0] == "shdel":
-        i = int(p[1])
-        if 0 <= i < len(STASH):
-            stash_remove(STASH[i])
-        scr = "shl"
-    elif p[0] == "shclr":
-        for it in list(STASH):
-            stash_remove(it, save=False)
-        save_stash()
-        scr = "sh"
-    elif p[0] == "shnow":
-        if STASH:
-            FLAGS["stash_now"] = True
-            notify("🗃 Выкладываю из тайника…")
-        scr = "sh"
     elif p[0] == "chdel":
         i = int(p[1])
         if 0 <= i < len(CFG["channels"]):
@@ -4656,11 +4553,11 @@ SPREAD_LABELS = {"ad_keywords": "рекламные слова", "old_signatures
                  "replacements": "автозамены", "trusted_sites": "надёжные сайты", "urgent_words": "слова срочных",
                  "signature_text": "текст подписи", "signature_on": "подпись вкл/выкл", "gap_min": "пауза между постами",
                  "queue_on": "расписание", "video_on": "видео", "approval_on": "проверка постов",
-                 "night_on": "ночной режим", "stash_on": "тайник", "dedupe_on": "повторы", "ads_skip": "фильтр рекламы"}
+                 "night_on": "ночной режим", "dedupe_on": "повторы", "ads_skip": "фильтр рекламы"}
 
 
 LAST_SCREEN = {}       # админ -> экран меню, с которого он пришёл (туда ведёт «◀️ Назад» из ввода)
-SPREAD_QUIET = {"chadd", "chdel", "thlink", "themenew", "thname", "stashadd", "trendwords"}   # своё у темы — «для всех» не про них
+SPREAD_QUIET = {"chadd", "chdel", "thlink", "themenew", "thname", "trendwords"}   # своё у темы — «для всех» не про них
 
 
 def prompt_nav(uid):
@@ -4747,13 +4644,6 @@ def handle_callback(cb):
     elif kind == "tg":
         PENDING.pop(uid, None)
         text, rows = tg_screen(uid) if rest == "menu" else tg_callback(rest, uid)
-    elif kind == "sf":                                     # «пополнить тайник» из уведомления: тема из кнопки
-        t = theme_by_id(rest) or cur()
-        META["active"][str(uid)] = t.id
-        save_cfg()
-        CUR.set(t)
-        PENDING[uid] = "stashadd"
-        text, rows = stash_prompt(), [[B("✅ Готово", "m:sh")]]
     elif kind == "lg":                                     # ⚖️ согласие, удаление данных, отписка от рекламы
         text, rows = legal_callback(rest, uid, cb.get("_chat"))
     elif kind == "py" and (CLIENT_MODE or HOST_MODE):      # выбрал тариф и срок
@@ -4779,13 +4669,15 @@ def handle_callback(cb):
     elif kind == "p" and rest == "chadd" and need_rights(uid):
         PENDING.pop(uid, None)
         text, rows = RIGHTS_TEXT, rights_rows(uid)
+    elif kind == "p" and rest not in PROMPTS and rest.split(":")[0] not in PROMPTS:
+        PENDING.pop(uid, None)                             # старая кнопка ввода — такой настройки больше нет
+        text, rows = screen("main", uid)
     elif kind == "p":
         PENDING[uid] = rest
-        cancel = ([[B("✅ Готово", "m:sh")]] if rest == "stashadd" else []) + prompt_nav(uid)
+        cancel = prompt_nav(uid)
         if rest == "thlink":
             cancel = [[B("📋 Выбрать канал из списка", "m:chpick")]] + cancel
-        text, rows = (stash_prompt() if rest == "stashadd" else
-                      PROMPTS.get(rest, PROMPTS.get(rest.split(":")[0], "Пришли текст."))), cancel
+        text, rows = PROMPTS.get(rest, PROMPTS.get(rest.split(":")[0])), cancel
         if all_mode(uid) and rest not in SPREAD_QUIET and not rest.startswith("cl"):
             text += ("\n\n🌐 Режим «для всех тем»: изменится только эта настройка — во всех твоих темах; "
                      "свои слова и подписи других тем останутся.")
@@ -4913,7 +4805,7 @@ def approve(rest, uid, chat=None):
         return _approve(rest, uid, chat)
 
 
-# ---------- ТАЙНИК ----------
+# ---------- ВЛОЖЕНИЯ ИЗ СООБЩЕНИЙ ----------
 def extract_content(msg):
     """Из сообщения MAX (в т.ч. пересланного) достаёт текст и фото/видео."""
     msg = msg or {}
@@ -4951,84 +4843,6 @@ def fetch_file(url, base, default_ext):
     return path
 
 
-def video_urls(att):
-    """Ссылки на скачивание видео из MAX: из самого сообщения и через /videos/{token}."""
-    urls = []
-    if att.get("url"):
-        urls.append(att["url"])
-    if att.get("token"):
-        try:
-            r = S.get(f"{MAX_API}/videos/{att['token']}", headers=HEADERS, timeout=30)
-            if r.status_code == 200:
-                u = r.json().get("urls") or {}
-                for k in ("mp4_720", "mp4_1080", "mp4_480", "mp4_360", "mp4_240", "mp4_144"):
-                    if u.get(k):
-                        urls.append(u[k])
-        except Exception as e:
-            print("Тайник: /videos не ответил:", e)
-    return urls
-
-
-def stash_add(uid, text, atts):
-    """Кладёт сообщение в тайник. Возвращает (элемент или None, текст-ответ админу)."""
-    os.makedirs(STASH_DIR, exist_ok=True)
-    sid = f"s{int(time.time() * 1000)}{random.randint(10, 99)}"
-    photos, videos, files, problems = [], [], [], []
-    for n, a in enumerate(atts):
-        base = f"{STASH_DIR}/{sid}_{n}"
-        if a["kind"] in ("file", "audio"):              # документ/музыка: пересылаем тем же токеном
-            if a.get("token"):
-                files.append({"token": a["token"], "kind": a["kind"], "name": a.get("name", "")})
-            else:
-                problems.append("файл")
-        elif a["kind"] == "image":
-            path = None
-            if a.get("url"):
-                try:
-                    path = fetch_file(a["url"], base, ".jpg")
-                except Exception as e:
-                    print("Тайник: фото не скачалось:", e)
-            if path or a.get("token"):
-                photos.append({"path": path, "token": a.get("token")})
-            else:
-                problems.append("фото")
-        else:
-            path = None
-            for url in video_urls(a):
-                try:
-                    path = fetch_file(url, base, ".mp4")
-                    break
-                except Exception as e:
-                    print("Тайник: видео не скачалось:", e)
-            if path or a.get("token"):
-                videos.append({"path": path, "token": a.get("token")})
-            else:
-                problems.append("видео")
-    text = (text or "").strip()
-    warn = f"\n⚠️ Не удалось сохранить: {', '.join(problems)}" if problems else ""
-    if not (text or photos or videos or files):
-        return None, "Пусто — нечего класть в тайник." + warn
-    item = {"id": sid, "text": text, "photos": photos, "videos": videos, "files": files,
-            "added": time.time(), "by": uid, "sent": 0, "fails": 0}
-    STASH.append(item)
-    save_stash()
-    kind = "видео" if videos else ("фото" if photos else ("файл" if files else "текст"))
-    return item, f"✅ В тайнике: {len(STASH)} (добавил: {kind}){warn}"
-
-
-def stash_remove(it, save=True):
-    for p in it.get("photos", []) + it.get("videos", []):
-        if p.get("path"):
-            try:
-                os.remove(p["path"])
-            except OSError:
-                pass
-    if it in STASH:
-        STASH.remove(it)
-    if save:
-        save_stash()
-
-
 # ---------- КОМАНДЫ через / ----------
 COMMAND_HELP = [
     ("menu", "Главное меню"),
@@ -5039,10 +4853,6 @@ COMMAND_HELP = [
     ("approve", "Одобрить все ждущие посты (пойдут по расписанию)"),
     ("pause", "Поставить бота на паузу"),
     ("resume", "Снять с паузы"),
-    ("stash", "Тайник с мемами"),
-    ("add", "Кидать мемы в тайник"),
-    ("done", "Закончить добавление в тайник"),
-    ("stashnow", "Выложить пост из тайника сейчас"),
     ("gap", "Пауза между постами в минутах, например /gap 45"),
     ("later", "Задержка кнопки «Через…», например /later 90"),
     ("theme", "Темы: /theme — список, /theme 2 — переключить"),
@@ -5077,8 +4887,6 @@ def guide_text():
             + "каждый новый пост сначала приходит тебе сюда с кнопками «✅ Сейчас», «⏰ Через…» и "
             "«❌ Пропустить». Не хочешь нажимать — выключи, и посты пойдут сами.\n"
             "✍️ Подпись — твой текст под каждым постом (например, название канала).\n"
-            "🗃 Тайник — запас своих постов: просто кинь боту фото, видео или текст — он выложит их, "
-            "когда новых постов нет.\n"
             "⏸ Пауза — остановить публикации, ▶️ Продолжить — запустить снова.\n"
             + ("" if NO_TG else "🔑 Telegram (в «⚙️ Ещё настройки») — подключи свой аккаунт Telegram, чтобы "
                "переносились файлы (PDF и т.п.), большие видео и посты закрытых каналов. Нужны только номер и код.\n")
@@ -5097,7 +4905,7 @@ def client_main(uid=None):
     has_ch = bool(CFG["channels"])
     soc = feature_on("social")
     src = "каналов Telegram" + (" и соцсетей" if soc else "")
-    free = on_free(t)                                # 🆓 тайник, закреп и аналитика — у платных тарифов
+    free = on_free(t)                                # 🆓 закреп и аналитика — у платных тарифов
     adv_stats = feature_on("stats") and not free
     if t.chat_id and has_ch:
         state = ("⏸ на паузе — посты не выходят, нажми «▶️ Продолжить»" if CFG["paused"] else
@@ -5128,7 +4936,6 @@ def client_main(uid=None):
              "✋ Проверка постов — показывать тебе пост перед выходом или нет\n"
              "✍️ Подпись — твой текст под каждым постом\n"
              + ("" if free else
-                "🗃 Тайник — запасные посты: выходят, когда новых нет\n"
                 "📌 Закреп и автоудаление — закреплять новый пост, удалять старые через N часов\n")
              + ("📊 Аналитика — в какие дни и часы у канала больше просмотров\n" if adv_stats else "")
              + "⚙️ Ещё настройки — фильтр рекламы, видео, повторы, отчёт, темы\n"
@@ -5142,7 +4949,7 @@ def client_main(uid=None):
             [B("📡 Откуда брать посты" + (" (Telegram, соцсети)" if soc else " (Telegram)"), "m:ch")],
             [B("📢 Куда выкладывать (канал MAX)", "m:thm" if t.chat_id else "m:chpick")],
             [B("⏳ Расписание", "m:q"), B("✋ Проверка постов", "m:ap")],
-            [B("✍️ Подпись", "m:sg")] + ([] if free else [B("🗃 Тайник", "m:sh")]),
+            [B("✍️ Подпись", "m:sg")],
             *([] if free else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
             *([[B("📊 Аналитика: когда смотрят", "m:anl")]] if adv_stats else []),
             [B("⚙️ Ещё настройки", "m:more")] + pay_btn,
@@ -5252,7 +5059,7 @@ def run_command(cmd, arg, uid, chat_id):
             if pend:
                 say(f"Выкладывать нечего: {pend} ждут одобрения (/approve или кнопки на карточках).")
             else:
-                say("Очередь пуста." + (" Есть тайник — /stashnow." if STASH else ""))
+                say("Очередь пуста.")
         else:
             it = min(ok, key=prio_key)
             it["manual"], it["at"], it["retry_at"] = True, 0, 0
@@ -5281,19 +5088,8 @@ def run_command(cmd, arg, uid, chat_id):
         CFG["paused"] = False
         save_cfg()
         say("▶️ Работаю.")
-    elif cmd == "stash":
-        show("sh")
-    elif cmd in ("add", "stashadd"):
-        PENDING[uid] = "stashadd"
-        say(stash_prompt(), [[B("✅ Готово", "m:sh")]])
-    elif cmd in ("done", "cancel"):
-        show("sh" if cmd == "done" else "main")
-    elif cmd == "stashnow":
-        if STASH:
-            FLAGS["stash_now"] = True
-            say("🗃 Выкладываю из тайника (через пару секунд).")
-        else:
-            say("Тайник пуст — /add, чтобы пополнить.")
+    elif cmd == "cancel":
+        show("main")
     elif cmd == "gap":
         v = num(0, 720)
         if v is None:
@@ -5616,18 +5412,9 @@ def handle_message(uid, chat_id, name, text, msg=None):
         run_command(cmd.split("@")[0].strip().lower(), arg.strip(), uid, chat_id)
         return
     action = PENDING.get(uid)
-    if action == "predict":                                # 🔮 черновик на оценку — не в тайник и не в очередь
+    if action == "predict":                                # 🔮 черновик на оценку — не в очередь
         PENDING.pop(uid, None)
         predict_start(uid, chat_id, content, atts)
-        return
-    if action == "stashadd":                               # режим добавления: всё присланное — в тайник
-        if not atts and t.lower() in ("готово", "done", "хватит"):
-            PENDING.pop(uid, None)
-            m, rows = screen("sh", uid)
-            send_screen(chat_id, m, rows)
-            return
-        _, info = stash_add(uid, content, atts)
-        api_send(chat_id, info, [[B("✅ Готово", "m:sh")]])
         return
     if action and action.startswith("tg_") and t:          # подключение Telegram: ключи, номер, код
         answer, rows = tg_text(uid, action, t, ((msg or {}).get("body") or {}).get("mid"))
@@ -5650,7 +5437,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
             send_screen(chat_id, *screen("main", uid))
         return
     if action == "clsess" or (HOST_MODE and can_panel(uid) and session_atts(atts)):   # 👤 .session — в пул
-        if action == "clsess":                            # (и без «➕»: файл .session от хозяина — не в тайник)
+        if action == "clsess":                            # (и без «➕»: файл .session от хозяина — тоже в пул)
             PENDING.pop(uid, None)
         if not can_panel(uid):
             send_screen(chat_id, *screen("main", uid))
@@ -5690,9 +5477,6 @@ def handle_message(uid, chat_id, name, text, msg=None):
                      file_path=CODE_EXPORT.pop(uid))
         m, rows = screen(scr, uid)
         send_screen(chat_id, m, rows)
-    elif atts:                                             # просто скинул фото/видео — в тайник
-        _, info = stash_add(uid, content, atts)
-        api_send(chat_id, info + "\n(без команды — сохранил в тайник)", [[B("🗃 Тайник", "m:sh")]])
     else:
         m, rows = screen("main", uid)
         send_screen(chat_id, m, rows)
@@ -6787,99 +6571,6 @@ def mark_published(it):
     save_queue()
 
 
-async def publish_stash(chat_id):
-    """Выкладывает следующий пост из тайника. True — выложено."""
-    it = next((x for x in STASH if x.get("retry_at", 0) <= time.time()), None)
-    if it is None:
-        return False
-    text = compose_text(it.get("text", ""), it.get("ch", ""))
-
-    def media(lst):
-        out = []
-        for p in lst:
-            if p.get("path") and os.path.exists(p["path"]):
-                out.append(p["path"])
-            elif p.get("token"):
-                out.append({"token": p["token"]})
-        return out
-    files = [{"token": x["token"], "kind": x.get("kind", "file")} for x in it.get("files", []) if x.get("token")]
-    parts = build_parts(text, media(it.get("photos", [])), media(it.get("videos", [])), files)
-    try:
-        for i, (t, imgs, v, fl) in enumerate(parts):
-            if i < it.get("sent", 0):
-                continue                               # эта часть уже ушла в прошлую попытку
-            mid = await asyncio.to_thread(send_part, chat_id, t, imgs, v, fl)
-            if mid and not it.get("mid0"):
-                it["mid0"] = mid
-            if mid:
-                it.setdefault("mids", []).append(mid)
-            it["sent"] = i + 1
-            save_stash()
-    except ChatDenied as e:
-        await asyncio.to_thread(note_denied, chat_id, e)
-        it["retry_at"] = DENIED.get(chat_id, time.time() + 600)
-        save_stash()
-        return False
-    except Exception as e:
-        if is_temporary(e):
-            retry_later(it, e, "Тайник")
-            save_stash()
-            return False
-        it["fails"] = it.get("fails", 0) + 1
-        it["retry_at"] = time.time() + 120
-        bump("errors")
-        print(f"Тайник: ошибка публикации (попытка {it['fails']}):", e)
-        if it["fails"] >= 3:
-            stash_remove(it, save=False)
-            await asyncio.to_thread(notify, f"⚠️ Пост из тайника не удалось выложить, убрал его.\nПричина: {str(e)[:150]}")
-        save_stash()
-        return False
-    stash_remove(it)
-    note_allowed(chat_id)
-    record_pub(it.get("mid0"), "тайник", it.get("text", ""), mids=it.get("mids"))
-    PUB["stash_last"] = time.time()
-    PUB["stash_slot"] = time.strftime("%Y%m%d%H", time.localtime(time.time()))
-    PUB["last_pub"] = time.time()
-    bump("published")
-    bump("stash")
-    print(f"Тайник: выложен пост, осталось {len(STASH)}")
-    if len(STASH) <= 2:
-        await asyncio.to_thread(notify, f"🗃 В тайнике осталось: {len(STASH)}. Подкинь ещё мемов — кнопка ниже.",
-                                True, stash_fill_rows())
-    return True
-
-
-def stash_due(now):
-    """Пора ли выкладывать из тайника — по выбранному режиму (ночь проверяется раньше)."""
-    if not CFG["stash_on"] or not STASH:
-        return False
-    mode = CFG["stash_mode"]
-    if mode == "every":
-        return now - PUB.get("stash_last", 0) >= CFG["stash_every_h"] * 3600 and now - PUB["last_pub"] >= 300
-    if mode == "hours":
-        lt = time.localtime(now)
-        return lt.tm_hour in CFG["stash_hours"] and PUB.get("stash_slot") != time.strftime("%Y%m%d%H", lt)
-    if any(x.get("status", "ok") == "ok" for x in QUEUE):
-        return False                                   # в очереди уже есть что выкладывать
-    return now - PUB["last_pub"] >= max(CFG["gap_min"], 10) * 60
-
-
-def stash_mode_text():
-    mode = CFG["stash_mode"]
-    if mode == "every":
-        return f"раз в {fmt_min(CFG['stash_every_h'] * 60)}, даже если в очереди есть посты"
-    if mode == "hours":
-        hrs = ", ".join(f"{h:02d}:00" for h in sorted(CFG["stash_hours"])) or "часы не заданы"
-        return f"в {hrs} каждый день"
-    return f"когда в очереди пусто, не чаще раза в {fmt_min(max(CFG['gap_min'], 10))}"
-
-
-async def maybe_stash(chat_id, now):
-    """Выкладывает из тайника, если по режиму пора."""
-    if stash_due(now):
-        await publish_stash(chat_id)
-
-
 async def publish_due(client, chat_id):
     now = time.time()
     if not theme_live(cur()):
@@ -6917,11 +6608,7 @@ async def publish_due(client, chat_id):
 
     if in_night() and not force:
         return                                       # ночью ничего не выходит
-    if CFG["stash_mode"] != "empty":                 # тайник по своему расписанию — независимо от очереди
-        await maybe_stash(chat_id, now)
     if not ready:
-        if CFG["stash_mode"] == "empty":
-            await maybe_stash(chat_id, now)
         return
 
     # 2) срочные посты — без паузы расписания (но не больше N в час) и не пачкой: по одному, минута между постами
@@ -6944,8 +6631,6 @@ async def publish_due(client, chat_id):
 
     # 3) обычные посты по расписанию: один пост за паузу
     if smart_hold(now, ready, limit):                # 🧠 умное время: холодный час — ждём лучшего
-        if CFG["stash_mode"] == "empty":
-            await maybe_stash(chat_id, now)
         return
     gap = max(CFG["gap_min"] * 60 if CFG["queue_on"] else 0, MIN_GAP_SEC)   # даже без расписания — не пачкой
     if free:
@@ -6986,7 +6671,7 @@ TICK = 5               # как часто планировщик проверя
 
 
 def upcoming_posts(now, horizon=3600):
-    """Сколько постов выйдет в ближайший час: назначенные, по расписанию и из тайника."""
+    """Сколько постов выйдет в ближайший час: назначенные и по расписанию."""
     gap = CFG["gap_min"] * 60 if CFG["queue_on"] else 0
     n, auto_ok = 0, False
     for x in QUEUE:
@@ -6998,15 +6683,6 @@ def upcoming_posts(now, horizon=3600):
             auto_ok = True
     if auto_ok and last_slot() + gap <= now + horizon:
         n += 1
-    queue_has_ok = any(x.get("status", "ok") == "ok" for x in QUEUE)
-    if CFG["stash_on"] and STASH:
-        if CFG["stash_mode"] == "every":
-            n += PUB.get("stash_last", 0) + CFG["stash_every_h"] * 3600 <= now + horizon
-        elif CFG["stash_mode"] == "hours":
-            n += any(h in CFG["stash_hours"] for h in (time.localtime(now).tm_hour,
-                                                      time.localtime(now + horizon).tm_hour))
-        elif not queue_has_ok and PUB["last_pub"] + max(CFG["gap_min"], 10) * 60 <= now + horizon:
-            n += 1
     return n
 
 
@@ -7027,13 +6703,9 @@ def check_empty(now):
     lines.append("Очередь пуста." if not QUEUE else f"В очереди: {len(QUEUE)}, но в этот час ничего не выйдет.")
     if later:
         lines.append("Следующий назначен на " + time.strftime("%H:%M", time.localtime(min(later))) + ".")
-    if not CFG["stash_on"]:
-        lines.append("Тайник выключен.")
-    elif not STASH:
-        lines.append("Тайник пуст — подкинь мемов: кнопка ниже.")
     if pend:
         lines.append(f"Ждут одобрения: {pend} — /approve")
-    notify("\n".join(lines), rows=stash_fill_rows() if CFG["stash_on"] and not STASH else None)
+    notify("\n".join(lines))
 
 
 async def scheduler(client, t):
@@ -7047,10 +6719,6 @@ async def scheduler(client, t):
             continue
         try:
             async with t.lock:
-                if FLAGS["stash_now"]:
-                    FLAGS["stash_now"] = False
-                    if not await publish_stash(t.chat_id):
-                        await asyncio.to_thread(notify, "🗃 Из тайника не вышло (пусто или ошибка) — смотри консоль.")
                 await publish_due(client, t.chat_id)
             await asyncio.to_thread(check_empty, time.time())
         except Exception:
@@ -7077,7 +6745,7 @@ def check_rights_all(now=None):
                 journal("⛔ Проверка прав: бот больше не админ канала MAX этой темы")
                 notify("⛔ Проверка прав: бот больше не админ канала MAX этой темы — посты выходить не смогут.\n\n"
                        "Что сделать: канал MAX → Админы → добавь бота админом с правом публиковать сообщения.\n"
-                       "Посты и тайник не пропадут — выложу, как только права вернутся.")
+                       "Посты не пропадут — выложу, как только права вернутся.")
             elif r is True and RIGHTS_TOLD.pop(t.chat_id, None):
                 journal("✅ Проверка прав: бот снова админ канала MAX")
                 notify("✅ Права в канале MAX вернулись — публикую дальше.")
@@ -8873,7 +8541,7 @@ PREDICT_ASK = ("🔮 Прогноз поста\n\nПришли сюда черн
                "постами твоего канала MAX и скажет:\n\n"
                "• ⭐ оценку из 10;\n• 👁 сколько примерно просмотров наберёт;\n• ⏰ лучшее время выложить;\n"
                "• что улучшить (и совет ИИ, если подключены ключи).\n\n"
-               "Черновик никуда не публикуется и не попадает в очередь или тайник.")
+               "Черновик никуда не публикуется и не попадает в очередь.")
 
 
 def predict_start(uid, chat, text, atts=()):
@@ -11007,7 +10675,7 @@ def tg_text(uid, step, t, mid=None):
 # ---------- ПРОДАЖА: БОТЫ КЛИЕНТОВ ----------
 # Продавец (владелец этого бота) в меню «💼 Клиенты» добавляет клиента по токену его бота MAX. Бот клиента —
 # этот же файл, запущенный отдельным процессом со своей папкой clients/<id>/ и TGMAX_CLIENT=1. Срок кончился
-# или продавец выключил — бот клиента перезапускается в режиме «оплатите» (настройки и тайник сохраняются).
+# или продавец выключил — бот клиента перезапускается в режиме «оплатите» (настройки сохраняются).
 CLIENTS_FILE = "clients.json"
 CLIENTS_DIR = "clients"
 CLIENTS = {} if CLIENT_MODE else load_json(CLIENTS_FILE, {})
@@ -11682,7 +11350,7 @@ def wipe_scope(uid):
 
 
 def wipe_themes(themes):
-    """Удаляет темы целиком: очередь, тайник, отсеянное, файлы и карточки на одобрение.
+    """Удаляет темы целиком: очередь, отсеянное, файлы и карточки на одобрение.
     Возвращает (тем, источников, постов в очереди)."""
     n_src = n_posts = 0
     gone = {t.id for t in themes}
@@ -12652,7 +12320,7 @@ def lock_text(mode):
     if mode == "off":
         return f"⛔ Бот приостановлен — посты не выходят. Все настройки сохранены.\n\nНапиши: {SELLER_CONTACT}"
     p30, p90 = my_prices()
-    return (f"⛔ Подписка на бота закончилась — посты не выходят. Все настройки, каналы и тайник сохранены.\n\n"
+    return (f"⛔ Подписка на бота закончилась — посты не выходят. Все настройки и каналы сохранены.\n\n"
             f"Продлить: {p30} ₽ за 30 дней или {p90} ₽ за 90 дней — кнопка «💳 Тариф и оплата».\n"
             f"Вопросы: {SELLER_CONTACT}")
 
@@ -13496,7 +13164,7 @@ def host_screen(name, uid):
                 lines.append(f"• {t.name} — источников: {len(CFG['channels'])}, в очереди: {len(QUEUE)}"
                              + (", канал MAX привязан" if t.chat_id else ""))
         return ("🗑 Очистить старые каналы?\n\nУдалю все темы твоего кабинета:\n" + "\n".join(lines)
-                + "\n\nКаналы MAX отвяжу, источники Telegram, очередь и тайник сотру, карточки на одобрение уберу. "
+                + "\n\nКаналы MAX отвяжу, источники Telegram и очередь сотру, карточки на одобрение уберу. "
                   "Кабинеты покупателей не трону. Вернуть нельзя.\n\n"
                   "Потом подключишь новые каналы: «🎭 Мои каналы (мой кабинет)»."), \
             [[B("✅ Да, очистить", "a:clwipeok")], [B("Нет", "m:cl")]]
@@ -13943,7 +13611,7 @@ def clients_screen(name, uid):
         text = f"📜 Журнал «{c['name']}» (последнее)\n\n" + ("\n".join(lines) or "пока пусто")
         return text[-3500:], [[B("🔄 Обновить", f"m:cllog:{cid}")], [B("◀️ Клиент", f"m:clc:{cid}")]]
     if kind == "cldel":
-        text = (f"🗑 Удалить клиента «{c['name']}»? Его бот остановится, настройки и тайник будут удалены. "
+        text = (f"🗑 Удалить клиента «{c['name']}»? Его бот остановится, настройки будут удалены. "
                 "Вернуть нельзя.")
         return text, [[B("✅ Да, удалить", f"a:cldelok:{cid}"), B("Нет", f"m:clc:{cid}")]]
     return None
@@ -14281,7 +13949,7 @@ async def diag_telegram(client, themes=None):
                     else:
                         out.append((False, f"@{ch}: не читается ({type(e).__name__}: {str(e)[:60]})"))
             pend = sum(1 for x in QUEUE if x.get("status") == "pending")
-            out.append((True, f"Тема «{t.name}»: в очереди {len(QUEUE)}, ждут одобрения {pend}, в тайнике {len(STASH)}"))
+            out.append((True, f"Тема «{t.name}»: в очереди {len(QUEUE)}, ждут одобрения {pend}"))
     return out
 
 

@@ -184,17 +184,18 @@ joined = "".join(p["body"].get("text", "") for p in parts)
 assert "Абзац номер 0" in joined and "Абзац номер 24" in joined, (len(joined), joined[-150:])
 print("e12 ok: длинный пост разрезан на части <4000 символов, фото в первой, ничего не потеряно")
 
-# 13) тайник: админ присылает мем боту -> /stashnow выкладывает его в канал
+# 13) фото админа боту без команды в канал не уходит; /stashnow — как незнакомая команда (список команд)
 img = {"type": "image", "payload": {"url": srv.url + "/files/meme.jpg", "token": "memetok"}}
+n_ch, n_dm = len(srv.to_chat(5000)), len(srv.to_chat(CH))
 srv.push({"update_type": "message_created", "message": {"sender": {"user_id": ADMIN, "first_name": "Gh"},
           "recipient": {"chat_id": CH, "chat_type": "dialog"}, "body": {"text": "смешной мем", "attachments": [img]}}})
-srv.wait(lambda: any("В тайнике: 1" in t for t in srv.texts(CH)), what="мем сохранён в тайник")
+srv.wait(lambda: len(srv.to_chat(CH)) > n_dm, what="бот ответил на фото")
 srv.user_message(ADMIN, CH, "/stashnow")
-srv.wait(lambda: any("смешной мем" in x["body"].get("text", "") for x in srv.to_chat(5000)), what="мем из тайника в канале")
-sm = next(x for x in srv.to_chat(5000) if "смешной мем" in x["body"].get("text", ""))
-assert has_att(sm, "image"), sm["body"]
-srv.wait(lambda: not bot.THEMES[0].stash, what="тайник опустел после публикации")
-print("e13 ok: мем из чата сохранён в тайник и выложен командой /stashnow с картинкой")
+srv.wait(lambda: any(t.startswith("❓ Команды") for t in srv.texts(CH)[n_dm:]), what="/stashnow — список команд")
+time.sleep(2)                                           # несколько тиков планировщика (TICK 0.3 с)
+assert len(srv.to_chat(5000)) == n_ch, srv.to_chat(5000)[n_ch:]
+assert not any("тайник" in t.lower() for t in srv.texts(CH)[n_dm:]), srv.texts(CH)[n_dm:]
+print("e13 ok: фото боту без команды в канал не уходит; /stashnow — список команд, как на незнакомую")
 
 # 14) тема: создаём через меню новую тему со своим каналом MAX и своим источником
 srv.press(ADMIN, CH, "p:themenew")

@@ -26,7 +26,7 @@ bot.publish_item = fake_publish_item
 bot.notify = lambda text, tag=True, rows=None: NOTES.append(text)
 bot.api_send = lambda chat, text, rows=None, token=None: API.append((chat, text, rows))
 bot.upload_image = lambda p: "tok"
-bot.send_max = lambda chat, text, imgs, vid=None: SENT.append(("stash", text, len(imgs), bool(vid)))
+bot.send_max = lambda chat, text, imgs, vid=None: SENT.append(("send", text, len(imgs), bool(vid)))
 
 CFG = bot.CFG
 CFG["admin_chats"] = {"1": 111}
@@ -42,7 +42,7 @@ def run(coro):
 
 
 def reset():
-    bot.QUEUE.clear(); bot.STASH.clear(); SENT.clear(); NOTES.clear(); API.clear()
+    bot.QUEUE.clear(); SENT.clear(); NOTES.clear(); API.clear()
     bot.PUB.update({"last_pub": 0, "ch_last_date": {}, "ch_last_pub": {}, "series": {}, "urgent_times": []})
     bot.FORCE["until"] = 0
 
@@ -130,34 +130,14 @@ assert not bot.QUEUE, bot.QUEUE
 assert bot.approve("gno:" + p1["grp"], 1)[0] == "Этот пост уже обработан."
 print("4b ok: «пропустить все» + повторное нажатие безопасно")
 
-# 5) тайник: очередь пуста -> выкладывает по одному раз в паузу
+# 5) очередь пуста или пост ждёт одобрения — бот ничего не выкладывает сам (запасных постов нет)
 reset()
-bot.STASH.extend([{"id": "s1", "text": "мем 1", "photos": [], "videos": [], "sent": 0, "fails": 0},
-                  {"id": "s2", "text": "мем 2", "photos": [{"path": None, "token": "T"}], "videos": [], "sent": 0, "fails": 0},
-                  {"id": "s3", "text": "мем 3", "photos": [], "videos": [], "sent": 0, "fails": 0}])
-due()
-assert SENT and SENT[0][0] == "stash" and "мем 1" in SENT[0][1], SENT
-assert len(bot.STASH) == 2
-due()
-assert len(SENT) == 1                                 # пауза ещё не прошла
-CLOCK[0] += 3601; due()
-assert SENT[1][2] == 1, SENT                         # второй мем — с фото по токену
-assert len(bot.STASH) == 1
-assert any("осталось: 1" in n for n in NOTES), NOTES
-print("5 ok: тайник по одному, предупреждает, что мало")
-
-# 5b) в очереди есть пост — тайник не трогаем; пост ждёт одобрения — тайник работает
-reset()
-bot.STASH.append({"id": "s1", "text": "мем", "photos": [], "videos": [], "sent": 0, "fails": 0})
-item(1, "a", status="ok", at=CLOCK[0] + 5000, manual=True)
-due()
+due(); CLOCK[0] += 3601; due()
 assert SENT == [], SENT
-reset()
-bot.STASH.append({"id": "s1", "text": "мем", "photos": [], "videos": [], "sent": 0, "fails": 0})
 item(1, "a", status="pending")
 due()
-assert SENT and SENT[0][0] == "stash"
-print("5b ok: тайник не мешает очереди")
+assert SENT == [], SENT
+print("5 ok: пустая очередь — ничего не выходит; пост на одобрении сам не выходит")
 
 # 6) команды
 bot.CLAIM_CODE = None
@@ -177,48 +157,10 @@ bot.handle_message(1, 111, "Gh", "/resume", None); assert not CFG["paused"]
 bot.handle_message(1, 111, "Gh", "/skip", None); assert len(bot.QUEUE) == 1
 bot.handle_message(1, 111, "Gh", "/quatsch", None)
 assert "Команды" in API[-1][1]
-for c in ("status", "queue", "stash", "help", "menu", "report"):
+for c in ("status", "queue", "help", "menu", "report"):
     bot.handle_message(1, 111, "Gh", "/" + c, None)
 CFG["gap_min"] = 60; CFG["later_min"] = 60
 print("6 ok: команды работают")
-
-# 7) добавление в тайник: фото, видео, пересылка, текст
-reset()
-def fake_fetch(url, base, ext):
-    path = base + ext
-    open(path, "wb").write(b"x" * 10)
-    return path
-bot.fetch_file = fake_fetch
-bot.video_urls = lambda a: [a["url"]] if a.get("url") else []
-bot.handle_message(1, 111, "Gh", "/add", None)
-assert bot.PENDING.get(1) == "stashadd"
-img = {"type": "image", "payload": {"url": "http://x/a.jpg", "token": "ti"}}
-vid = {"type": "video", "payload": {"url": "http://x/v.mp4", "token": "tv"}}
-m1 = {"body": {"text": "смешной мем", "attachments": [img, img]}}
-m2 = {"body": {"text": "", "attachments": [vid]}}
-m3 = {"body": {"text": "", "attachments": []}, "link": {"type": "forward", "message": {"text": "пересланный", "attachments": [img]}}}
-m4 = {"body": {"text": "просто текст"}}
-for m in (m1, m2, m3, m4):
-    bot.handle_message(1, 111, "Gh", m["body"]["text"], m)
-assert len(bot.STASH) == 4, bot.STASH
-assert len(bot.STASH[0]["photos"]) == 2 and bot.STASH[1]["videos"] and bot.STASH[2]["text"] == "пересланный"
-assert bot.PENDING.get(1) == "stashadd"                # режим не слетел
-bot.handle_message(1, 111, "Gh", "готово", {"body": {"text": "готово"}})
-assert 1 not in bot.PENDING
-bot.handle_message(1, 111, "Gh", "", m2)                # без режима тоже кладёт
-assert len(bot.STASH) == 5
-saved = bot.load_json(bot.STASH_FILE, [])
-assert len(saved) == 5
-print("7 ok: тайник принимает фото/видео/пересылку/текст и сохраняется на диск")
-
-# 8) публикация тайника с локальными файлами (фото+видео)
-CLOCK[0] += 10000
-n0 = len(bot.STASH)
-due()
-assert len(bot.STASH) == n0 - 1
-first_files = [p["path"] for p in saved[0]["photos"]]
-assert not any(os.path.exists(p) for p in first_files), "файлы выложенного мема должны удаляться"
-print("8 ok: выложенный мем удаляется вместе с файлами")
 
 # 9) видео не скачалось: пост НЕ выходит калекой, а ждёт решения админа
 bot.VIDEO_RETRY_PAUSES[:] = [0, 0]
@@ -438,7 +380,7 @@ bot.handle_message(1, 111, "Gh", "/approve", None)
 bot.purge_cards(); assert len(DEL) == 1
 print("11d ok: /approve чистит карточку у второго админа")
 
-# 12) нет прав на канал (MAX 403 chat.denied): посты и тайник НЕ удаляются, админам — одно сообщение,
+# 12) нет прав на канал (MAX 403 chat.denied): посты НЕ удаляются, админам — одно сообщение,
 #     канал не долбим каждую минуту; появились права — всё выходит
 denied = {"on": True}
 def max_send(chat, text, imgs, vid=None):
@@ -448,23 +390,28 @@ def max_send(chat, text, imgs, vid=None):
 bot2.send_max = max_send
 RIGHTS = {"v": False}
 bot2.bot_rights = lambda chat: RIGHTS["v"]
-bot2.QUEUE.clear(); bot2.STASH.clear(); NOTES.clear(); sent2.clear()
+bot2.QUEUE.clear(); NOTES.clear(); sent2.clear()
+def q_item(n):
+    it = {"id": f"q:{n}", "ch": "q", "date": time.time(), "enq": time.time(), "text": f"пост {n}", "photos": [],
+          "vids": [], "sent": 0, "fails": 0, "urgent": False, "status": "ok"}
+    bot2.QUEUE.append(it)
+    return it
 # одиночный случайный отказ MAX — админам не пишем, пробуем снова через 2 минуты
-bot2.STASH.append({"id": "s0", "text": "мем0", "photos": [], "videos": [], "added": 0, "sent": 0, "fails": 0})
-assert asyncio.run(bot2.publish_stash(777)) is False and not NOTES
-assert 0 < bot2.DENIED[777] - time.time() <= 130 and len(bot2.STASH) == 1
-denied["on"] = False; bot2.DENIED.clear(); bot2.STASH[0]["retry_at"] = 0
-assert asyncio.run(bot2.publish_stash(777)) is True and 777 not in bot2.DENY_N
+q0 = q_item(0)
+assert asyncio.run(bot2.publish_item(None, 777, q0)) == "retry" and not NOTES
+assert 0 < bot2.DENIED[777] - time.time() <= 130 and q0 in bot2.QUEUE
+denied["on"] = False; bot2.DENIED.clear(); q0["retry_at"] = 0
+assert asyncio.run(bot2.publish_item(None, 777, q0)) == "ok" and 777 not in bot2.DENY_N and sent2
 assert not any("прав" in n for n in NOTES), NOTES
-denied["on"] = True; sent2.clear(); NOTES.clear()
+denied["on"] = True; sent2.clear(); NOTES.clear(); bot2.QUEUE.clear()
 # MAX отказывает, но сам говорит, что бот — админ: это сбой, «нет прав» не пишем
 RIGHTS["v"] = True
-bot2.STASH.append({"id": "s9", "text": "мем9", "photos": [], "videos": [], "added": 0, "sent": 0, "fails": 0})
+q9 = q_item(9)
 for _ in range(5):
-    bot2.STASH[0]["retry_at"] = 0
-    assert asyncio.run(bot2.publish_stash(777)) is False
+    q9["retry_at"] = 0
+    assert asyncio.run(bot2.publish_item(None, 777, q9)) == "retry"
 assert not NOTES, NOTES
-RIGHTS["v"] = False; bot2.STASH.clear(); bot2.DENY_N.clear()
+RIGHTS["v"] = False; bot2.QUEUE.clear(); bot2.DENY_N.clear()
 # проверка прав раз в час: без постов; одно сообщение, когда права пропали, и одно — когда вернулись
 NOTES.clear(); bot2.RIGHTS_RECHECK_SEC = 0; bot2.RIGHTS_TOLD.clear()
 saved_chat = bot2.THEMES[0].chat_id; bot2.THEMES[0].chat_id = 777
@@ -485,24 +432,17 @@ assert "могу публиковать" in bot2.rights_note(777)
 RIGHTS["v"] = False
 print("12в ok: проверка прав раз в час — без постов, «права пропали» и «вернулись» по одному разу")
 print("12a ok: случайный отказ MAX и отказ при живых правах админа — без ложного «нет прав»")
-bot2.STASH.append({"id": "s1", "text": "мем", "photos": [], "videos": [], "added": 0, "sent": 0, "fails": 0})
-for _ in range(4):
-    bot2.STASH[0]["retry_at"] = 0
-    assert asyncio.run(bot2.publish_stash(777)) is False
-assert len(bot2.STASH) == 1 and bot2.STASH[0].get("fails", 0) == 0, bot2.STASH
-assert sum("нет прав" in n for n in NOTES) == 1, NOTES
-qi = {"id": "q:1", "ch": "q", "date": time.time(), "enq": time.time(), "text": "пост", "photos": [], "vids": [],
-      "sent": 0, "fails": 0, "urgent": False, "status": "ok"}
-bot2.QUEUE.append(qi)
+qi = q_item(1)
 for _ in range(4):
     qi["retry_at"] = 0
     assert asyncio.run(bot2.publish_item(None, 777, qi)) == "retry"
-assert qi in bot2.QUEUE and qi.get("fails", 0) == 0 and sum("нет прав" in n for n in NOTES) == 1
+assert qi in bot2.QUEUE and qi.get("fails", 0) == 0 and sum("нет прав" in n for n in NOTES) == 1, NOTES
+assert "«🎭 Мои каналы» → тема → «📢 Канал MAX»" in next(n for n in NOTES if "нет прав" in n)
 assert bot2.DENIED.get(777, 0) > time.time()
 denied["on"] = False
-bot2.DENIED.clear(); bot2.STASH[0]["retry_at"] = 0
-assert asyncio.run(bot2.publish_stash(777)) is True and not bot2.STASH and sent2
-print("12 ok: нет прав на канал — посты и тайник целы, одно сообщение админам, после выдачи прав всё выходит")
+bot2.DENIED.clear(); qi["retry_at"] = 0
+assert asyncio.run(bot2.publish_item(None, 777, qi)) == "ok" and sent2
+print("12 ok: нет прав на канал — посты целы, одно сообщение админам, после выдачи прав всё выходит")
 assert bot2.plain_snip("**😎** **Есть у нас художники**", 40) == "😎 Есть у нас художники"
 print("12b ok: в списке очереди нет значков ** разметки")
 
@@ -520,37 +460,6 @@ assert pp["status"] == "ok"
 text, rows = bot.screen("ql", 1)
 assert "ТВОЕГО" not in text and "a:qapr" not in str(rows)
 print("13 ok: очередь — понятная подпись у постов на одобрении, кнопки «Показать карточки» и «Одобрить все»")
-
-# 14) расписание тайника: «раз в N часов» (даже если в очереди есть посты), «по часам», «когда пусто»
-reset(); CFG["night_on"] = False
-save_clock = CLOCK[0]
-real_send = bot.send_max
-STASHED = []
-bot.send_max = lambda chat, text, imgs, vid=None: STASHED.append(text)
-def stash_item(n):
-    bot.STASH.append({"id": f"st{n}", "text": f"мем {n}", "photos": [], "videos": [], "added": 0, "sent": 0, "fails": 0})
-for n in range(4):
-    stash_item(n)
-bot.do_action("shmode:every", 1); bot.do_action("shev:1", 1)          # 2 -> 3 часа
-assert CFG["stash_mode"] == "every" and CFG["stash_every_h"] == 3
-CLOCK[0] = time.mktime((2027, 1, 15, 10, 0, 0, 0, 0, -1)); bot.PUB["stash_last"] = 0; bot.PUB["last_pub"] = 0
-item(60, "a", at=CLOCK[0] + 99999, manual=True)                          # в очереди есть пост на потом
-due(); assert len(STASHED) == 1, STASHED                                  # тайник не ждёт пустой очереди
-CLOCK[0] += 2 * 3600; due(); assert len(STASHED) == 1                     # 2 ч < 3 ч
-CLOCK[0] += 3600 + 1; due(); assert len(STASHED) == 2
-text, rows = bot.screen("sh", 1)
-assert "раз в 3 ч" in text and "a:shev:1" in str(rows), text
-# по часам: 12 и 18, по одному за час
-bot.handle_message(1, 111, "Gh", "x", None)
-bot.PENDING[1] = "shhours"; bot.handle_message(1, 111, "Gh", "18, 12, 99", None)
-assert CFG["stash_hours"] == [12, 18] and CFG["stash_mode"] == "hours"
-CLOCK[0] = time.mktime((2027, 1, 16, 11, 30, 0, 0, 0, -1)); due(); assert len(STASHED) == 2
-CLOCK[0] = time.mktime((2027, 1, 16, 12, 5, 0, 0, 0, -1)); due(); assert len(STASHED) == 3
-CLOCK[0] += 600; due(); assert len(STASHED) == 3                          # в этот час уже было
-CLOCK[0] = time.mktime((2027, 1, 16, 18, 1, 0, 0, 0, -1)); due(); assert len(STASHED) == 4
-bot.do_action("shmode:empty", 1); assert CFG["stash_mode"] == "empty"
-bot.send_max = real_send; bot.STASH.clear(); CLOCK[0] = save_clock
-print("14 ok: тайник — раз в N часов (даже при непустой очереди), по заданным часам, по-старому «когда пусто»")
 
 # 15) очередь: убрать конкретный пост кнопкой ❌ N (у других не трогаем)
 reset()

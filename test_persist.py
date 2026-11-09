@@ -129,4 +129,35 @@ r = subprocess.run([sys.executable, "main.py"], cwd=app, env=BASE, capture_outpu
 assert f"CWD {os.path.join(os.path.realpath(app), 'data')}" in r.stdout.replace(app, os.path.realpath(app)), r.stdout
 print("p5 ok: 💾 TG_MAX_DIR — данные бота на постоянном диске; без неё — папка data рядом с ботом")
 
+# 6) запись файлов не ждёт чужих: пока одна запись висит на fsync (медленный диск хостинга), другой файл пишется
+#    сразу — цикл бота не стоит; а ОДИН и тот же файл по-прежнему пишется строго по очереди (временный .tmp общий)
+import threading                                                       # noqa: E402
+import reloader.core.files as F                                        # noqa: E402
+held, real_fsync = threading.Event(), F.os.fsync
+F.os.fsync = lambda fd: held.wait(10)                                   # «диск» отвечает, только когда отпустим
+try:
+    d6 = tempfile.mkdtemp()
+    slow, fast = os.path.join(d6, "tenants.json"), os.path.join(d6, "pub_state.json")
+    t_slow = threading.Thread(target=save_json, args=(slow, {"n": 1}), kwargs={"backup": True})
+    t_slow.start()
+    t_fast = threading.Thread(target=save_json, args=(fast, {"last_pub": 1}))
+    t_fast.start()
+    t_fast.join(2)
+    assert not t_fast.is_alive(), "запись pub_state ждёт, пока другой поток пишет tenants.json на диск"
+    assert load_json(fast, {}) == {"last_pub": 1}
+    t_same = threading.Thread(target=save_json, args=(slow, {"n": 2}), kwargs={"backup": True})
+    t_same.start()
+    t_same.join(0.5)
+    assert t_same.is_alive(), "второй писатель того же файла должен ждать первого (общий .tmp)"
+    held.set()
+    for th in (t_slow, t_same):
+        th.join(10)
+        assert not th.is_alive()
+    assert load_json(slow, {}) == {"n": 2} and load_json(slow + ".bak", {}) == {"n": 2}
+    assert not [x for x in os.listdir(d6) if x.endswith(".tmp")]
+finally:
+    held.set()
+    F.os.fsync = real_fsync
+print("p6 ok: 💾 запись одного файла не ждёт медленной записи другого; один и тот же файл — строго по очереди")
+
 print("ВСЕ ТЕСТЫ СОХРАННОСТИ НАСТРОЕК ПРОШЛИ")

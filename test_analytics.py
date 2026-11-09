@@ -240,13 +240,13 @@ assert bot.anl_background("off", "x", 10, 10, "aurora") is None
 bot.ai_image.generate, bot.ai_keys = real_gen, real_keys
 print("a6 ok: кнопки «🖼 Карточка канала», «🌐 Сводка», «🔮 Прогноз», «Фон: узор/без фона/ИИ»; ИИ не смог — узор")
 
-# 7) 🔮 прогноз из меню: черновик не уходит в тайник/очередь, «печатает…», ответ с оценкой и советом ИИ
+# 7) 🔮 прогноз из меню: черновик не уходит в очередь, «печатает…», ответ с оценкой и советом ИИ
 real_ready, real_ask = bot.ai_llm_ready, bot.ai_ask_text
 bot.ai_llm_ready = lambda: True
 bot.ai_ask_text = lambda text, *a, **k: "Добавь в начало главную цифру."
 assert bot.do_action("predict", 1) == "predict" and bot.PENDING[1] == "predict"
 assert bot.screen("predict", 1)[0] == bot.PREDICT_ASK
-stash_before, queue_before, n_msg = len(bot.STASH), len(bot.QUEUE), len(srv.messages)
+queue_before, n_msg = len(bot.QUEUE), len(srv.messages)
 srv.actions.clear()
 draft = "Вышло большое обновление игры! Что думаете?"
 bot.handle_message(1, 111, "Я", draft, {"body": {"text": draft, "attachments": [
@@ -266,13 +266,13 @@ def wait_msg(n0, word, sec=20):
 
 ans = wait_msg(n_msg, "🔮 Прогноз поста")
 assert "«mychannel»" in ans and "⭐ Оценка:" in ans and "👁 Ожидаемо:" in ans and "Добавь в начало главную цифру" in ans, ans
-assert len(bot.STASH) == stash_before and len(bot.QUEUE) == queue_before, "черновик — не в тайник и не в очередь"
+assert len(bot.QUEUE) == queue_before, "черновик — не в очередь"
 assert (111, "typing_on") in srv.actions, srv.actions
 n_msg = len(srv.messages)
 bot.run_command("predict", "Короткий текст без картинки", 1, 111)          # /predict текст — сразу
 assert "Добавь фото" in wait_msg(n_msg, "🔮 Прогноз поста")
 bot.ai_llm_ready, bot.ai_ask_text = real_ready, real_ask
-print("a7 ok: 🔮 черновик → оценка, просмотры, лучшее время, советы и совет ИИ; «печатает…»; не в тайник")
+print("a7 ok: 🔮 черновик → оценка, просмотры, лучшее время, советы и совет ИИ; «печатает…»; не в очередь")
 
 # 8) ⏱ скорость: учёт по запросам, нажатиям и файлам; медленное — строка в лог и «печатает…»; /perf
 assert bot.perf_endpoint("GET", srv.url + "/chats/-70123456/members/me?x=1") == "GET /chats/{id}/members/me"
