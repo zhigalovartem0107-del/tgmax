@@ -39,6 +39,8 @@ class FakeMax:
         self.file_mimes = {}               # токен файла -> MIME-тип, с которым его загрузили
         self.not_ready = 0                 # столько раз ответить «attachment.not.ready» на отправку с видео
         self.drop_attachments = False      # имитация: MAX принял сообщение, но потерял вложения
+        self.drop_attachments_n = 0        # то же, но только у стольких следующих сообщений с вложениями (сбой)
+        self.fail_uploads = {"image": 0, "video": 0, "file": 0}   # столько загрузок файла ответят 500 (сбой MAX)
         self.fail_updates = 0              # столько раз ответить 500 на /updates
         self.subscriptions = []            # вебхуки; пока они есть, long polling (/updates) ничего не получает
         self.fail_messages = 0             # столько раз ответить 502 на отправку сообщения (MAX перегружен)
@@ -193,6 +195,10 @@ class FakeMax:
                     return self._send(200, resp)
                 m = re.fullmatch(r"/upload/(image|video|file)/(\d+)", p)
                 if method == "POST" and m:
+                    with outer.lock:
+                        if outer.fail_uploads.get(m.group(1), 0) > 0:
+                            outer.fail_uploads[m.group(1)] -= 1
+                            return self._send(500, {"code": "internal.error", "message": "upload backend error"})
                     if m.group(1) == "file":                  # как настоящий MAX: токен файла — в ответе на загрузку
                         fm = re.search(rb'filename="([^"]*)"\r\n((?:[^\r]*\r\n)*)\r\n(.*)\r\n--', raw or b"", re.S)
                         tok = f"ftok{m.group(2)}"
@@ -230,7 +236,14 @@ class FakeMax:
                         mid = f"mid-{outer._mid}"
                         outer.messages.append({"chat_id": int(q.get("chat_id", 0)), "body": body, "mid": mid,
                                                "token": self.headers.get("Authorization")})
-                        shown = [] if outer.drop_attachments else atts
+                        media = [a for a in atts if a.get("type") in ("image", "video", "file", "audio")]
+                        kept = [a for a in atts if a not in media]   # кнопки — тоже «вложение», их MAX не теряет
+                        shown = kept if outer.drop_attachments else atts
+                        if media and outer.drop_attachments_n > 0:
+                            outer.drop_attachments_n -= 1
+                            shown = kept
+                        if media and shown is kept:           # в канале сообщение и правда без файла
+                            outer.messages[-1]["body"] = dict(body, attachments=kept)
                     return self._send(200, {"message": {"body": {"mid": mid, "attachments": shown}}})
                 if method == "GET" and p == "/v3/me":         # ЮKassa: данные магазина (проверка ключей)
                     return self._send(200, {"account_id": "123456", "test": True, "status": "enabled"})
@@ -258,7 +271,8 @@ class FakeMax:
                     return self._send(200, {"messages": hist[:int(q.get("count", 50))]})
                 if method == "GET" and p == "/messages":         # посты канала со статистикой просмотров
                     want = set((q.get("message_ids") or "").split(","))
-                    out = [{"body": {"mid": m["mid"], "text": m["body"].get("text")},
+                    out = [{"body": {"mid": m["mid"], "text": m["body"].get("text"),
+                                     "attachments": m["body"].get("attachments") or []},
                             **({"stat": {"views": outer.views[m["mid"]]}} if m["mid"] in outer.views else {})}
                            for m in outer.messages if m["mid"] in want]
                     out += [{"body": h["body"], "stat": {"views": outer.views[h["body"]["mid"]]}}

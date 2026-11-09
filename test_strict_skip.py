@@ -37,6 +37,7 @@ bot.send_max = _send
 bot.CFG["approval_on"] = False
 bot.CFG["dedupe_on"] = False
 bot.FRESH_SEC = 0
+bot.MAX_RETRY_PAUSES = [0, 0, 0]                       # повторы отправки в MAX — без пауз в тесте
 NOW = datetime.datetime.now(datetime.timezone.utc)
 
 def item(vids=(), docs=(), text="Новое видео", iid="a:1"):
@@ -64,7 +65,7 @@ assert any("Skipped: download failed" in x for x in LOG), LOG
 no_links_no_buttons()
 print("strict 1 ok: не скачалось — пост пропущен, в журнале причина, без текста и кнопок")
 
-# 2) отправка в MAX не удалась: пост с медиа пропущен, без повторной отправки текстом
+# 2) отправка в MAX не удалась и после 3 повторов: пост с медиа пропущен — без отправки текстом без видео
 async def _ok_download(client, ch, vid):
     path = os.path.join(tempfile.mkdtemp(), "v.mp4"); open(path, "wb").write(b"v" * 10)
     return path, None
@@ -73,14 +74,14 @@ FAIL["send"] = True
 LOG.clear(); SENT.clear(); API.clear(); NOTES.clear()
 it2 = item(vids=[2], iid="a:2"); bot.QUEUE[:] = [it2]
 assert asyncio.run(bot.publish_item(Client(), 5, it2)) == "dropped"
-assert len(SENT) == 1 and it2 not in bot.QUEUE, (SENT, bot.QUEUE)
-assert any("Skipped: upload failed" in x for x in LOG), LOG
+assert len(SENT) == 4 and all(s_[2] for s_ in SENT) and it2 not in bot.QUEUE, (SENT, bot.QUEUE)   # всегда с видео
+assert any("Skipped: upload failed" in x and "(4 attempts)" in x for x in LOG), LOG
 no_links_no_buttons()
 # текстовый пост без медиа при сбое сети — как и раньше, остаётся в очереди
 txt = item(text="Просто текст", iid="a:3"); bot.QUEUE[:] = [txt]
 assert asyncio.run(bot.publish_item(Client(), 5, txt)) == "retry" and txt in bot.QUEUE
 FAIL["send"] = False
-print("strict 2 ok: сбой отправки — пост с медиа пропущен; текст без медиа ждёт, как раньше")
+print("strict 2 ok: сбой отправки — 3 тихих повтора, потом пост с медиа пропущен; текст без медиа ждёт, как раньше")
 
 # 3) файл больше 250 МБ в посте: пост не попадает в очередь вообще; в журнале причина; сообщений нет
 class BigDoc:

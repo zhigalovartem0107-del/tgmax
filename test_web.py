@@ -72,6 +72,7 @@ print("w3 ok: клиент отдаёт новые посты, последни�
 # интеграция: тот же process_channel, что и с Telegram
 SENT, NOTES, API = [], [], []
 bot.send_max = lambda chat, t, imgs, vid=None: SENT.append((t[:30], len(imgs), bool(vid)))
+bot.upload_image = bot.upload_video = bot.upload_file = lambda path: "tok"     # файлы «в MAX» — без сети
 bot.api_send = lambda chat, t, rows=None, token=None: API.append((t, rows)) or "m"
 bot.notify = lambda t, tag=True, rows=None: NOTES.append(t)
 def _dl(url, dest):

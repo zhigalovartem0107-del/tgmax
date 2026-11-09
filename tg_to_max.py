@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110616            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110617            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -2014,13 +2014,13 @@ def _upload_big(path, kind, mime):
             return S.post(url, data=f, headers=headers, timeout=900)
 
     order = (stream, multipart) if size > STREAM_FROM else (multipart, stream)
-    last = None
+    last, status = None, None
     for attempt in order:
         try:
             up = attempt()
         except Exception as e:
             print(f"  загрузка {what} ({attempt.__name__}) не прошла: {e}")
-            last = str(e)
+            last, status = f"{type(e).__name__}: {e}"[:200], None
             continue
         if up.status_code < 300:
             token = info.get("token")
@@ -2031,22 +2031,31 @@ def _upload_big(path, kind, mime):
                 return token
             last = f"MAX не выдал токен: {up.text[:150]}"
             continue
-        last = f"{up.status_code} {up.text[:150]}"
+        last, status = f"{up.status_code} {up.text[:150]}", up.status_code
         print(f"  загрузка {what} ({attempt.__name__}) не прошла: {last}")
-    raise RuntimeError(f"Загрузка {what} не удалась: {last}")
+    raise RuntimeError(f"MAX upload failed with HTTP {status}: {last[4:]}" if status else f"MAX upload failed: {last}")
 
 
-def _check_attachments(r, expected):
-    """MAX мог принять сообщение, но потерять вложения. Не молчим об этом."""
+def _lost_attachments(r, chat_id, mid, expected):
+    """MAX мог принять сообщение, но потерять вложение. Ответ на отправку показал меньше вложений — переспрашиваем
+    MAX само сообщение: потеря подтвердилась — (осталось, отправили); всё на месте — None."""
     if not expected:
-        return
+        return None
     try:
         got = len(((r.json().get("message") or {}).get("body") or {}).get("attachments") or [])
     except Exception:
-        return
-    if got < expected:
-        journal(f"⚠️ MAX принял сообщение, но вложений в нём {got} из {expected}")
-        notify(f"⚠️ В MAX пост вышел без части вложений ({got} из {expected}). Если повторяется — пришли bot.log.")
+        return None
+    if got >= expected:
+        return None
+    if mid:
+        with contextlib.suppress(Exception):
+            rr = S.get(f"{MAX_API}/messages", params={"chat_id": chat_id, "message_ids": mid}, headers=HEADERS,
+                       timeout=20)
+            msgs = rr.json().get("messages") if rr.status_code == 200 else None
+            body = ((msgs or [{}])[0] or {}).get("body") or {}
+            if "attachments" in body:
+                got = len(body.get("attachments") or [])
+    return (got, expected) if got < expected else None
 
 
 def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
@@ -2077,17 +2086,23 @@ def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
             print("  MAX не ответил вовремя, считаю сообщение отправленным")
             return
         if r.status_code == 200:
-            _check_attachments(r, len(attachments))
+            mid = None
             with contextlib.suppress(Exception):
-                return ((r.json().get("message") or {}).get("body") or {}).get("mid")
-            return None
+                mid = ((r.json().get("message") or {}).get("body") or {}).get("mid")
+            lost = _lost_attachments(r, chat_id, mid, len(attachments))
+            if lost:                                 # сообщение без файла в канале не оставляем — повторит вызывающий
+                if mid:
+                    with contextlib.suppress(Exception):
+                        delete_msg(mid)
+                raise AttachmentsLost(f"MAX dropped the attachment ({lost[0]} of {lost[1]} kept)")
+            return mid
         if "not.ready" in r.text or "not.processed" in r.text:
             time.sleep(3)
             continue
         if r.status_code == 403 or "chat.denied" in r.text or "chat.not.found" in r.text:
             raise ChatDenied(f"MAX ошибка {r.status_code}: {r.text[:200]}")
         if r.status_code == 429 or r.status_code >= 500:
-            raise MaxTemporary(f"MAX ошибка {r.status_code}: {r.text[:200]}")
+            raise MaxTemporary(f"MAX send failed with HTTP {r.status_code}: {r.text[:150]}")
         if r.status_code == 400 and body.get("format") and re.search(r"format|markdown|pars", r.text, re.I):
             body.pop("format")                       # MAX не понял разметку — шлём тем же текстом без неё
             if text:
@@ -2156,6 +2171,57 @@ def send_post(chat_id, text, images, videos, files=()):
 
 class MaxTemporary(RuntimeError):
     """MAX временно не принимает (перегружен, 5xx, 429) — пробовать позже, пост не выбрасывать."""
+
+
+class AttachmentsLost(MaxTemporary):
+    """MAX принял сообщение, но без вложения (сообщение уже убрано из канала) — отправить ещё раз."""
+
+
+MAX_RETRY_PAUSES = [2, 5, 10]   # повторы загрузки файла и отправки части поста в MAX (сек): 3 раза, коротко, молча
+
+
+def why(e):
+    """Точная причина сбоя — для журнала админа (покупателю её не показываем)."""
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return f"HTTP {e.response.status_code}"
+    if isinstance(e, (asyncio.TimeoutError, requests.Timeout)):
+        return f"timed out ({type(e).__name__})"
+    return f"{type(e).__name__}: {e}"[:220]
+
+
+def upload_why(e):
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return f"MAX upload failed with HTTP {e.response.status_code}"
+    msg = str(e)
+    return msg[:220] if msg.startswith("MAX upload failed") else f"MAX upload failed: {why(e)}"
+
+
+def _size(n):
+    return f"{n / 1048576:.1f} МБ" if n >= 1048576 else f"{max(1, n // 1024)} КБ"
+
+
+def upload_retry(kind, path, what):
+    """Файл -> токен MAX. Сбой (HTTP 5xx/429, обрыв, таймаут, MAX не выдал токен) — до 3 повторов с короткой паузой.
+    Каждая попытка — в bot.log; не вышло — MediaUploadFailed с точной причиной."""
+    fn = {"image": upload_image, "video": upload_video, "file": upload_file}[kind]
+    size = os.path.getsize(path) if path and os.path.exists(path) else 0
+    attempts, err = len(MAX_RETRY_PAUSES) + 1, "?"
+    for n in range(attempts):
+        t0 = time.monotonic()
+        try:
+            tok = fn(path)
+            print(f"📎 {what}: загружено в MAX ({_size(size)}, {time.monotonic() - t0:.1f} с"
+                  + (f", с {n + 1}-й попытки" if n else "") + ")")
+            return tok
+        except Exception as e:
+            err = upload_why(e)
+            code = e.response.status_code if isinstance(e, requests.HTTPError) and e.response is not None else 0
+            last = n == attempts - 1 or (400 <= code < 500 and code not in (408, 429))   # 4xx — повтор не поможет
+            print(f"📎 {what}: загрузка в MAX не прошла (попытка {n + 1}/{attempts}): {err}"
+                  + ("" if last else f" — повтор через {MAX_RETRY_PAUSES[n]} с"))
+            if last:
+                raise MediaUploadFailed(f"upload failed: {what.split(': ', 1)[-1]} — {err} ({n + 1} attempts)") from e
+            time.sleep(MAX_RETRY_PAUSES[n])
 
 
 def is_temporary(e):
@@ -5965,11 +6031,44 @@ def is_followup(it):
     return 0 <= it["date"] - last <= burst and PUB["series"].get(ch, 0) < CFG["burst_max"]
 
 
-VIDEO_RETRY_PAUSES = [3, 10]      # паузы между попытками скачать видео из Telegram (сек)
+VIDEO_RETRY_PAUSES = [2, 5, 10]   # повторы скачивания файла из Telegram (сек): 3 раза, коротко, молча
+DL_TIMEOUT_MIN = 90               # одна попытка скачать файл из Telegram: 90 с + по 128 КБ/с на размер файла
 
 
 class MediaLost(Exception):
     """Вложение поста потерялось или не скачалось: без решения админа пост без него не выходит."""
+
+
+class MediaUploadFailed(MediaLost):
+    """Файл не загрузился в MAX и после повторов: пост не выходит вовсе (без «огрызка» без файла)."""
+
+
+class DownloadTimeout(Exception):
+    """Попытка скачать файл из Telegram длилась дольше положенного (Telegram «завис»)."""
+
+
+def media_size(msg):
+    d = getattr(msg, "document", None) or getattr(msg, "video", None)
+    return int(getattr(d, "size", 0) or 0)
+
+
+async def tg_fetch(msg, dest, ch, what):
+    """Одна попытка скачать вложение из Telegram — не дольше DL_TIMEOUT_MIN + размер / 128 КБ/с. В bot.log —
+    размер и время. Зависло — DownloadTimeout («File download timed out after N s»)."""
+    limit = DL_TIMEOUT_MIN + media_size(msg) / (128 * 1024)
+    t0 = time.monotonic()
+    try:
+        path = await asyncio.wait_for(tg_media(msg, dest, ch), limit)
+    except asyncio.TimeoutError:
+        raise DownloadTimeout(f"File download timed out after {limit:.0f} s") from None
+    if path and os.path.exists(path) and os.path.getsize(path) > 0:
+        print(f"📎 {what}: скачано из Telegram ({_size(os.path.getsize(path))}, {time.monotonic() - t0:.1f} с)")
+    return path
+
+
+def dl_retry_note(what, n, attempts, err):
+    print(f"📎 {what}: из Telegram не скачалось (попытка {n + 1}/{attempts}): {err}"
+          + (f" — повтор через {VIDEO_RETRY_PAUSES[n]} с" if n < attempts - 1 else ""))
 
 
 def has_image(m):
@@ -6272,7 +6371,7 @@ async def web_media(ch, mid, dest):
 
 
 async def download_photo(m, dest, ch=None):
-    path = await tg_media(m, dest, ch)
+    path = await tg_fetch(m, dest, ch, f"[{ch or '?'}] фото {getattr(m, 'id', '?')}")
     return path if path and os.path.exists(path) and os.path.getsize(path) > 0 else None
 
 
@@ -6285,22 +6384,33 @@ async def ensure_photos(client, it):
     ids = it.get("pids") or []
     os.makedirs(MEDIA_DIR, exist_ok=True)
     out = []
+    attempts = len(VIDEO_RETRY_PAUSES) + 1
     for i, p in enumerate(photos):
         if os.path.exists(p):
             out.append(p)
             continue
-        got = None
-        if i < len(ids):
+        got, err, n = None, "у поста нет номера фото — докачать нечем", 0
+        what = f"[{it['ch']}] пост {it['id']}: фото {i + 1}/{len(photos)}"
+        for n in range(attempts if i < len(ids) else 0):     # сбой Telegram — до 3 повторов, молча
             try:
                 msg = await client.get_messages(it["ch"], ids=ids[i])
-                if msg and has_image(msg):
-                    got = await download_photo(msg, p, it["ch"])
+                if not msg or not has_image(msg):
+                    err = "пост удалён или в нём больше нет фото"
+                    break                                      # повторять бессмысленно
+                got = await download_photo(msg, p, it["ch"])
+                if got:
+                    break
+                err = "Telegram отдал пустой файл"
             except Exception as e:
-                print(f"[{it['ch']}] фото {ids[i]} не докачалось: {e}")
+                err = str(e) if isinstance(e, DownloadTimeout) else why(e)
+            dl_retry_note(what, n, attempts, err)
+            if n < attempts - 1:
+                await asyncio.sleep(VIDEO_RETRY_PAUSES[n])
         if got:
             out.append(got)
         else:
-            raise MediaLost(f"download failed: photo {i + 1} of {len(photos)}")
+            raise MediaLost(f"download failed: photo {i + 1} of {len(photos)} — {err}"
+                            + (f" ({n + 1} attempts)" if i < len(ids) else ""))
     return out
 
 
@@ -6336,22 +6446,22 @@ async def download_video(client, ch, vid):
             elif have_whole(dest, getattr(video_doc(msg), "size", 0)):
                 return dest, None
             else:
-                path = await tg_media(msg, dest, ch)
+                path = await tg_fetch(msg, dest, ch, f"[{ch}] видео {vid}")
                 if path and os.path.exists(path) and os.path.getsize(path) > 0:
                     return path, None
                 err = "Telegram отдал пустой файл"
         except Exception as e:
-            err = f"{type(e).__name__}: {e}"[:150]
+            err = str(e) if isinstance(e, DownloadTimeout) else why(e)
             pause = max(pause, min(int(getattr(e, "seconds", 0) or 0), 120))   # FloodWait
         if os.path.exists(dest):                       # огрызок после обрыва
             try:
                 os.remove(dest)
             except OSError:
                 pass
+        dl_retry_note(f"[{ch}] видео {vid}", n, attempts, err)
         if n < attempts - 1:
-            print(f"[{ch}] видео {vid}: попытка {n + 1} не удалась ({err}), повторю...")
             await asyncio.sleep(pause)
-    return None, err
+    return None, f"{err} ({n + 1} attempts)"
 
 
 async def download_doc(client, ch, d):
@@ -6372,7 +6482,7 @@ async def download_doc(client, ch, d):
             elif have_whole(dest, getattr(msg.document, "size", 0)):
                 return dest, None
             else:
-                path = await tg_media(msg, dest, ch)
+                path = await tg_fetch(msg, dest, ch, f"[{ch}] файл {d['name']}")
                 if path and os.path.exists(path) and os.path.getsize(path) > 0:
                     return path, None
                 err = "Telegram отдал пустой файл"
@@ -6380,14 +6490,14 @@ async def download_doc(client, ch, d):
             err = str(e)
             break
         except Exception as e:
-            err = f"{type(e).__name__}: {e}"[:150]
+            err = str(e) if isinstance(e, DownloadTimeout) else why(e)
             pause = max(pause, min(int(getattr(e, "seconds", 0) or 0), 120))   # FloodWait
         with contextlib.suppress(OSError):
             os.remove(dest)
+        dl_retry_note(f"[{ch}] файл {d['name']}", n, attempts, err)
         if n < attempts - 1:
-            print(f"[{ch}] файл {d['name']}: попытка {n + 1} не удалась ({err}), повторю...")
             await asyncio.sleep(pause)
-    return None, err
+    return None, f"{err} ({n + 1} attempts)"
 
 
 
@@ -6407,9 +6517,31 @@ async def fetch_files(client, it, parts):
             path, err = await download_doc(client, it["ch"], ref)
             what = f"file {ref['name']}"
         if not path:
-            raise MediaLost(f"download failed: {what} ({str(err)[:120]})")
+            raise MediaLost(f"download failed: {what} — {str(err)[:220]}")
         files[i] = path
     return files
+
+
+class SendFailed(RuntimeError):
+    """Часть поста с файлом не ушла в MAX и после повторов."""
+
+
+def upload_parts(it, parts, files, only=None):
+    """Все вложения поста — в MAX ДО первого сообщения (каждое — с повторами). Не загрузилось — MediaUploadFailed:
+    пост не выходит вовсе. {номер части: (фото-токены, видео-токен, файл-токен)}; only — одна часть (перезагрузка)."""
+    out = {}
+    for i, (kind, _t, imgs, ref) in enumerate(parts):
+        if i < it.get("sent", 0) or (only is not None and i != only):
+            continue
+        lbl = f"[{it['ch']}] пост {it['id']}"
+        if kind == "img":
+            out[i] = ([{"token": upload_retry("image", p, f"{lbl}: фото {k + 1}")} for k, p in enumerate(imgs)],
+                      None, None)
+        elif kind == "vid":
+            out[i] = ([], {"token": upload_retry("video", files[i], f"{lbl}: видео")}, None)
+        elif kind == "doc":
+            out[i] = ([], None, {"token": upload_retry("file", files[i], f"{lbl}: файл {ref['name']}"), "kind": "file"})
+    return out
 
 
 def drop_file(path):
@@ -6429,9 +6561,40 @@ def item_has_media(it):
     return bool(it.get("photos") or it.get("vids") or it.get("docs"))
 
 
+def admin_log(text):
+    """Сбой с файлами и повторы — только админу бота: bot.log и его журнал. Покупатель этого не видит — ни в чате,
+    ни в своём «📜 Журнал»: в host-режиме запись без кабинета видна только хозяину (с пометкой, чей кабинет);
+    у бота клиента — bot.log (продавец смотрит его в «💼 Клиенты» → клиент → «📜 Журнал»)."""
+    t = cur()
+    if HOST_MODE and t.owner:
+        text += f" · кабинет «{(TENANTS.get(t.owner) or {}).get('name') or t.owner}» ({t.owner}), тема «{t.name}»"
+    if CLIENT_MODE:
+        print(text)
+        return
+    tok = CUR.set(None) if HOST_MODE else None
+    try:
+        journal(text)
+    finally:
+        if tok is not None:
+            CUR.reset(tok)
+
+
+def rollback_post(it):
+    """Пост не вышел целиком — уже отправленные его части убираем из канала: «огрызка» без файла не остаётся."""
+    mids = [m for m in it.get("mids") or [] if m]
+    for mid in mids:
+        with contextlib.suppress(Exception):
+            delete_msg(mid)
+    if mids:
+        print(f"📎 [{it['ch']}] пост {it['id']}: убрал из канала уже отправленные части ({len(mids)}) — "
+              "пост не вышел целиком")
+    it.update(sent=0, mids=[], mid0=None)
+
+
 def skip_post(it, reason):
-    """Пост пропускаем целиком: причина — в журнал. Без текста без вложения, без ссылок, без кнопок, без сообщений."""
-    journal(f"[{it['ch']}] пост {it['id']}: Skipped: {reason}")
+    """Пост пропускаем целиком: причина — в журнал админа. Без текста без вложения, без ссылок, без кнопок, без
+    сообщений покупателю."""
+    admin_log(f"📎 [{it['ch']}] пост {it['id']}: Skipped: {reason}")
     resolve_cards([it["id"]])                        # старые карточки этого поста — убрать
     drop_item(it)
     save_queue()
@@ -6461,8 +6624,8 @@ async def publish_item(client, chat_id, it):
             raise
         it["retry_at"] = time.time() + 600
         save_queue()
-        journal(f"⏱ [{it['ch']}] пост {it['id']} публиковался больше {PUBLISH_TIMEOUT // 60} мин (зависло) — "
-                "прервал, повторю через 10 мин; остальные посты выходят")
+        admin_log(f"⏱ [{it['ch']}] пост {it['id']} публиковался больше {PUBLISH_TIMEOUT // 60} мин (зависло) — "
+                  "прервал, повторю через 10 мин; остальные посты выходят")
         return "retry"
     finally:
         perf_add("tg", "публикация поста в MAX (с файлами)", time.monotonic() - t0)
@@ -6503,29 +6666,52 @@ async def _publish_item(client, chat_id, it):
             parts.append(("txt", text, [], None))
         parts += [("txt", c, [], None) for c in extra]       # хвост длинного текста — отдельными сообщениями
         files = await fetch_files(client, it, parts)   # всё — ДО первой отправки: пост не выходит кусками
+        media = item_has_media(it)
+        att = await asyncio.to_thread(upload_parts, it, parts, files) if media else {}   # и в MAX — тоже до неё
+
+        async def send_retry(i, t):
+            """Часть поста с файлом: MAX перегружен (5xx/429), обрыв, «принял, но потерял вложение» — тихо
+            повторяем до 3 раз; потерянное вложение загружаем заново. Не вышло — SendFailed (пост откатим)."""
+            attempts = len(MAX_RETRY_PAUSES) + 1
+            for n in range(attempts):
+                imgs_, vid_, fl_ = att.get(i, ([], None, None))
+                try:
+                    return await snd(chat_id, t, imgs_, vid_, *([fl_] if fl_ else []))
+                except ChatDenied:
+                    raise
+                except Exception as e:
+                    if not is_temporary(e):
+                        raise
+                    err, last = why(e) if not isinstance(e, MaxTemporary) else str(e)[:220], n == attempts - 1
+                    print(f"📎 [{it['ch']}] пост {it['id']}, часть {i + 1}/{len(parts)}: MAX не принял сообщение "
+                          f"(попытка {n + 1}/{attempts}): {err}" + ("" if last else f" — повтор через {MAX_RETRY_PAUSES[n]} с"))
+                    if last:
+                        raise SendFailed(f"part {i + 1} of {len(parts)} — {err} ({attempts} attempts)") from e
+                    await asyncio.sleep(MAX_RETRY_PAUSES[n])
+                    if isinstance(e, AttachmentsLost):     # вложение потерялось — загружаем его заново
+                        att.update(await asyncio.to_thread(upload_parts, it, parts, files, i))
+
         for i, (kind, t, imgs, ref) in enumerate(parts):
             if i < it.get("sent", 0):
                 continue                           # эта часть уже ушла в прошлую попытку
-            path = files.get(i)
-            if kind == "doc":
-                await snd(chat_id, t, [], None, path)
-                drop_file(path)
-            elif kind == "vid":
-                await snd(chat_id, t, [], path)
-                drop_file(path)
+            if media:
+                await send_retry(i, t)
             else:
                 await snd(chat_id, t, imgs, None)
+            if kind in ("doc", "vid"):
+                drop_file(files.get(i))
             it["sent"] = i + 1
             save_queue()
         if it.get("waits"):
             resolve_cards([it["id"]])                  # дождались файла — карточка «Что делать?» больше не нужна
-            journal(f"[{it['ch']}] пост {it['id']}: файл скачался с {it['waits'] + 1}-й попытки — вышел целиком")
+            admin_log(f"[{it['ch']}] пост {it['id']}: файл скачался с {it['waits'] + 1}-й попытки — вышел целиком")
         bump("published")
         note_allowed(chat_id)
         record_pub(it.get("mid0"), it["ch"], it.get("text", ""), it.get("raw"), it.get("buttons", 0), it.get("mids"))
         journal(f"[{it['ch']}] опубликован пост {it['id']}")
         return "ok"
     except MediaLost as e:
+        await asyncio.to_thread(rollback_post, it)    # «огрызок» прошлой попытки (если был) — из канала
         return skip_post(it, str(e))
     except AiUnavailable as e:                          # 🤖 все ключи ИИ исчерпаны — пост пропускаем
         return skip_post(it, f"AI keys exhausted ({str(e)[:300]})")
@@ -6535,8 +6721,9 @@ async def _publish_item(client, chat_id, it):
         save_queue()
         return "retry"
     except Exception as e:
-        if item_has_media(it):                        # вложение не ушло в MAX — пост пропускаем целиком
-            return skip_post(it, f"upload failed: {str(e)[:120]}")
+        if item_has_media(it):                        # файл не ушёл в MAX и после повторов — пост не выходит вовсе:
+            await asyncio.to_thread(rollback_post, it)  # уже отправленные части — из канала
+            return skip_post(it, f"upload failed: {str(e)[:300]}")
         if is_temporary(e):
             retry_later(it, e, f"[{it['ch']}] пост {it['id']}")
             save_queue()
@@ -6902,7 +7089,7 @@ async def _process_channel(client, ch, fails, fresh):
                         p = await download_photo(m, dest, None if is_web_client(client) else ch)
                     except Exception as e:
                         p = None
-                        journal(f"[{ch}] фото {m.id} пока не скачалось ({type(e).__name__}) — докачаю перед публикацией")
+                        admin_log(f"📎 [{ch}] фото {m.id} пока не скачалось ({why(e)}) — докачаю перед публикацией")
                     img_paths.append(p or dest)        # нет файла — ensure_photos докачает его перед публикацией
                     pids.append(m.id)
                     if p:

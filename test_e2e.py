@@ -51,6 +51,7 @@ bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
 import traceback
 sys.excepthook = lambda *a: (traceback.print_exception(*a), os._exit(1))
 bot.TICK, bot.FRESH_SEC = 0.3, 1
+bot.MAX_RETRY_PAUSES = [0.1, 0.1, 0.1]                 # тихие повторы в MAX — без долгих пауз в тесте
 _sleep = time.sleep
 time.sleep = lambda s: _sleep(min(s, 0.3))          # «вложение не готово» не ждём по 3 секунды
 
@@ -141,16 +142,21 @@ FAIL.discard("src3"); bot.BAD["src3"] = 0                                       
 srv.wait(lambda: "src3" in bot.THEMES[0].last_ids, what="канал подхвачен")
 print("e7 ok: временно недоступный канал — одно уведомление, потом читается сам (раньше — никогда)")
 
-# 8) MAX потерял вложения -> бот сообщает
-srv.drop_attachments = True
+# 8) MAX принял пост, но «потерял» фото (разовый сбой) — бот молча убирает пост без фото и отправляет заново:
+#    в канале пост с фото; в чат — ни слова о сбое
 DATA["src1"].append(FMsg(14, "Новость с фото, которое MAX потеряет", photo=True))
 srv.wait(lambda: cards(CH, "ap:now:src1:14"), what="карточка")
-n = len(srv.to_chat(5000))
+n, c0 = len(srv.to_chat(5000)), len(srv.texts(CH))
+srv.drop_attachments_n = 1                              # следующее сообщение с фото — без фото
 srv.press(ADMIN, CH, "ap:now:src1:14")
-srv.wait(lambda: len(srv.to_chat(5000)) > n, what="публикация")
-srv.wait(lambda: any("без части вложений" in t for t in srv.texts(CH)), what="предупреждение о потерянных вложениях")
-srv.drop_attachments = False
-print("e8 ok: если MAX потерял вложения — админ получает предупреждение")
+srv.wait(lambda: any("потеряет" in (m["body"].get("text") or "") and has_att(m, "image")
+                     for m in srv.to_chat(5000)[n:]), what="пост с фото в канале")
+posts8 = [m for m in srv.to_chat(5000)[n:] if "потеряет" in (m["body"].get("text") or "")]
+assert len(posts8) == 2 and not has_att(posts8[0], "image") and posts8[0]["mid"] in srv.deleted, posts8
+assert has_att(posts8[1], "image") and posts8[1]["mid"] not in srv.deleted, posts8
+time.sleep(0.5)
+assert not any("вложени" in t or "не удал" in t for t in srv.texts(CH)[c0:]), srv.texts(CH)[c0:]
+print("e8 ok: MAX потерял фото — бот молча убрал пост без фото и отправил заново; в чат — ни слова")
 
 # 9) проверка и журнал
 srv.user_message(ADMIN, CH, "/check")

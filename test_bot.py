@@ -168,6 +168,8 @@ import importlib
 spec2 = importlib.util.spec_from_file_location("bot2", ROOT + "/tg_to_max.py")
 bot2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(bot2)
 bot2.VIDEO_RETRY_PAUSES[:] = [0, 0]
+bot2.MAX_RETRY_PAUSES = [0, 0, 0]
+bot2.upload_image = bot2.upload_video = bot2.upload_file = lambda path: "tok"   # файлы «в MAX» — без сети
 bot2.notify = lambda t, tag=True, rows=None: NOTES.append(t)
 sent2, api2 = [], []
 bot2.send_max = lambda chat, text, imgs, vid=None: sent2.append((text, len(imgs), vid))
