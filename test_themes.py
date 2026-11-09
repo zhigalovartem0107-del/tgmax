@@ -204,8 +204,16 @@ bot.PENDING[1] = "themenew"
 hm("Игры")
 t3 = bot.THEMES[-1]
 assert t3.name == "Игры" and bot.PENDING.get(1) == "thlink" and bot.META["active"]["1"] == t3.id
+BIND_HINT = ("Чтобы привязать канал, добавьте бота в администраторы и напишите любое сообщение в вашем канале, "
+             "который хотите привязать (после привязки его можно удалить).")
+n7 = len(API)
 hm("https://max.ru/games_ch")
 assert t3.link == "https://max.ru/games_ch" and t3.chat_id is None and bot.BIND["theme"] == t3.id
+assert API[n7][1] == BIND_HINT, API[n7:]                        # канал не нашёлся — одно короткое сообщение
+assert not any("Пришли каналы Telegram" in (a[1] or "") for a in API[n7:]), API[n7:]
+assert bot.PENDING.get(1) is None, bot.PENDING.get(1)           # источники здесь не спрашиваем
+with bot.theme_ctx(bot.active_theme(1)):                        # источники — кнопкой «📡 Каналы-источники» → «➕»
+    bot.handle_callback({"callback_id": "c7", "payload": "p:chadd", "user": {"user_id": 1}})
 assert bot.PENDING.get(1) == "chadd"
 hm("@gamesch")
 with bot.theme_ctx(t3):

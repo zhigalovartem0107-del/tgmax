@@ -3030,6 +3030,11 @@ with bot.theme_ctx(None):
 assert "привязан ✅" not in ans99, ans99
 print("h99 ok: 🔗 привязка канала и источников — после очистки/удаления темы и со старым вводом; права канала; themes.json")
 
+# 📢 не нашёл канал по ссылке — одно короткое понятное сообщение (без ID, web.max.ru и «Пришли каналы Telegram»)
+BIND_HINT = ("Чтобы привязать канал, добавьте бота в администраторы и напишите любое сообщение в вашем канале, "
+             "который хотите привязать (после привязки его можно удалить).")
+BIND_GONE = ("Не нашёл канал", "web.max.ru", "ID канала", "Пришли каналы Telegram", "Подтверди права")
+
 # 100) 📢 привязка канала MAX «напиши в канале любое сообщение»: тема ждёт канал по ссылке — пост без автора
 #      привязывает его и бот сообщает «привязан»; MAX не отдал список админов / отдал пустой — всё равно
 #      привязываем; чужой канал (в списке админов есть люди, но не владелец) — нет, и владельцу объясняем;
@@ -3125,7 +3130,7 @@ bot.PENDING[10000] = "thlink"
 n100 = len(OUT)
 msg(10000, 100000, "https://max.ru/hostwait100")                 # канал хозяина (из I)
 assert t100b.chat_id is None and host100.chat_id == 10004, (t100b.chat_id, host100.chat_id)
-assert told(n100, "уже привязан") and not told(n100, "Не нашёл канал"), [o[0][:120] for o in OUT[n100:]]
+assert told(n100, "уже привязан") and not told(n100, BIND_HINT), [o[0][:120] for o in OUT[n100:]]
 # L) канал у другой темы того же кабинета — переносим сюда
 other100 = bot.new_cabinet_theme(k100, "Вторая")
 other100.chat_id = 10005
@@ -3145,7 +3150,10 @@ t101 = bot.tenant_themes(k101)[0]
 bot.PENDING[10100] = "thlink"
 n101 = len(OUT)
 msg(10100, 101000, "https://max.ru/join/PRIV101")
-assert t101.chat_id is None and told(n101, "Не нашёл канал") and told(n101, "любое сообщение"), [o[0][:120] for o in OUT[n101:]]
+assert t101.chat_id is None and OUT[n101][0] == BIND_HINT, [o[0][:160] for o in OUT[n101:]]
+said101 = " ".join(o[0] for o in OUT[n101:])                   # новый покупатель без источников — раньше сразу
+assert not [w for w in BIND_GONE if w in said101], said101[:400]  # шли «Пришли каналы Telegram» и права на контент
+assert bot.PENDING.get(10100) is None, bot.PENDING.get(10100)
 srv.private[10101] = ("Приватный 101", "https://max.ru/join/OTHERLINK")   # MAX отдаёт другую ссылку
 n101 = len(OUT)
 channel_post(10101)                                              # автор поста неизвестен (как в MAX)
@@ -3220,7 +3228,8 @@ try:
     bot.PENDING[10200] = "thlink"
     n102 = len(OUT)
     msg(10200, 102000, "https://max.ru/nobody_knows_this")          # не знаем — честно и как быть
-    assert t102.chat_id is None and told(n102, "добавь снова") and told(n102, "web.max.ru"), [o[0][:160] for o in OUT[n102:]]
+    assert t102.chat_id is None and OUT[n102][0] == BIND_HINT, [o[0][:160] for o in OUT[n102:]]
+    assert not [w for w in BIND_GONE if any(w in o[0] for o in OUT[n102:])], [o[0][:160] for o in OUT[n102:]]
     # E) /channels: что пришло от MAX (счётчики событий), каналы из «бот добавлен», подсказка
     n102 = len(OUT)
     msg(1, 61000, "/channels")
