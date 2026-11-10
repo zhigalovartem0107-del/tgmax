@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110617            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110618            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -3898,16 +3898,21 @@ def _screen(name, uid=None):
                 "🖼 Карточка канала — подписчики и прирост (сегодня / 7 / 30 дней), график роста, просмотры "
                 "на пост за 24 / 48 / 72 часа и ER.\n"
                 "🌐 Сводка по всем каналам — вся сеть одной картинкой: подписчики, просмотры, общий ER, топ-3.\n"
-                "🔮 Прогноз поста — пришли черновик, бот оценит его до публикации.")
+                "🔮 Прогноз поста — пришли черновик, бот оценит его до публикации.\n"
+                "🕘 Чужой канал — просто перешли боту пост из него: подписчики и сколько подписалось и отписалось "
+                "(без привязки и без прав админа, если канал открытый).")
         rows = [[B("📊 Прислать картинку сейчас", "a:anl")],
                 [B("🖼 Карточка канала", "a:anlcard")],
                 [B("🌐 Сводка по всем каналам", "a:anlnet")],
                 [B("🔮 Прогноз поста", "a:predict")],
                 *([[B("🔥 Тренды", "m:trends")]] if feature_on("trends") else []),
+                [B("🕘 Недавние проверки", "m:fwr")],
                 [B(f"Фон карточек: {ANL_BG_NAMES[anl_bg_mode(uid)]}", "a:anlbg")],
                 [B("◀️ Панель", "m:cl") if HOST_MODE and can_panel(uid) else back[0]]]
     elif name == "trends" and feature_on("trends"):
         text, rows = trend_screen(uid)
+    elif name == "fwr":                                  # 🕘 Недавние проверки каналов (по пересланным постам)
+        text, rows = fwd_recent_screen(uid)
     elif name == "predict" and feature_on("stats"):
         text = PREDICT_ASK
         rows = [[B("◀️ Аналитика", "m:anl")]]
@@ -4709,6 +4714,8 @@ def handle_callback(cb):
     elif kind == "tg":
         PENDING.pop(uid, None)
         text, rows = tg_screen(uid) if rest == "menu" else tg_callback(rest, uid)
+    elif kind == "fw":                                     # 🕘 «Недавние проверки»: проверить канал снова
+        text, rows = fwd_callback(rest, uid, cb.get("_chat"))
     elif kind == "lg":                                     # ⚖️ согласие, удаление данных, отписка от рекламы
         text, rows = legal_callback(rest, uid, cb.get("_chat"))
     elif kind == "py" and (CLIENT_MODE or HOST_MODE):      # выбрал тариф и срок
@@ -4929,6 +4936,7 @@ COMMAND_HELP = [
     ("card", "🖼 Карточка канала; /card all — сводка по всем каналам"),
     ("predict", "🔮 Прогноз поста: оценка черновика до публикации"),
     ("trends", "🔥 Тренды: сигнал, когда по теме канала случилось вирусное"),
+    ("recent", "🕘 Недавние проверки каналов (перешли пост из любого канала — посчитаю подписчиков)"),
     ("help", "Список команд"),
 ]
 
@@ -5215,6 +5223,8 @@ def run_command(cmd, arg, uid, chat_id):
         show("lg")
     elif cmd == "report":
         say(make_report())
+    elif cmd in ("recent", "checks"):
+        show("fwr")
     elif cmd in ("legal", "yur", "rekvizity", "docs", "documents", "privacy", "deletedata"):
         if cmd in ("legal", "yur", "rekvizity") and legal_can_edit(uid):
             show("cllegal")                             # ⚖️ реквизиты — хозяину; остальным — документы
@@ -5477,6 +5487,10 @@ def handle_message(uid, chat_id, name, text, msg=None):
         run_command(cmd.split("@")[0].strip().lower(), arg.strip(), uid, chat_id)
         return
     action = PENDING.get(uid)
+    if not action and not (HOST_MODE and can_panel(uid) and session_atts(atts)) \
+            and (src := fwdw.source_of(msg, t)) is not None:      # 📊 пост из любого канала / ссылка на канал
+        in_background(fwd_check, uid, chat_id, src, name="fwd-check")
+        return
     if action == "predict":                                # 🔮 черновик на оценку — не в очередь
         PENDING.pop(uid, None)
         predict_start(uid, chat_id, content, atts)
@@ -6955,6 +6969,7 @@ async def background_loop():
                 RIGHTS_CHECK["next"] = time.time() + 3600
                 await asyncio.to_thread(check_rights_all)
                 await asyncio.to_thread(subs_snapshot_all)   # 📈 подписчики каналов — для графика роста
+                await asyncio.to_thread(fwd_snapshot_all)    # 🕘 и каналов из «Недавних проверок»
             if HOST_MODE and n % 4 == 0:                 # каждые ~20 сек проверяем онлайн-оплаты кабинетов
                 await asyncio.to_thread(host_pay_poll)
             if HOST_MODE and n % 180 == 0:               # ~раз в 15 мин — напоминания о сроке кабинетам
@@ -8528,6 +8543,165 @@ def subs_snapshot_all():
         subs_snapshot(cid, channel_subs(info))
 
 
+# ---------- 📊 ПРОВЕРКА КАНАЛА ПО ПЕРЕСЛАННОМУ ПОСТУ (без привязки канала и без прав админа) ----------
+from reloader.services.analytics import watch as fwdw  # noqa: E402
+
+FWD_FILE = "channel_checks.json"         # «🕘 Недавние проверки» и снимки числа подписчиков проверенных каналов
+FWD_WATCH = fwdw.Watch(FWD_FILE, save=save_json, load=load_json_safe)
+FWD_RETRY = "Не получилось связаться с MAX — перешли пост ещё раз через минуту."
+FWD_MAX_POLL = 300                       # каналов за один фоновый проход (раз в час)
+
+
+def fwd_probe(cid):
+    """GET /chats/{id}: (сведения, "ok") — MAX показал канал боту; ({}, "closed") — не показывает (403/404);
+    ({}, "error") — MAX не ответил (сеть, 5xx, 429): тогда не пугаем «закрытым каналом»."""
+    try:
+        r = S.get(f"{MAX_API}/chats/{cid}", headers=HEADERS, timeout=20)
+    except Exception:
+        return {}, "error"
+    if r.status_code == 200:
+        with contextlib.suppress(ValueError):
+            info = r.json()
+            return (info, "ok") if isinstance(info, dict) else ({}, "error")
+        return {}, "error"
+    return {}, ("error" if r.status_code >= 500 or r.status_code == 429 else "closed")
+
+
+def fwd_lookup(src):
+    """Канал по источнику: {"key", "title", "link", "subs", "state": "ok" | "closed" | "error"}. Публичный канал
+    Telegram — со страницы t.me; канал MAX — что MAX показывает боту (без прав админа — если канал открыт)."""
+    kind = src.get("kind")
+    if kind == "closed":
+        return {"key": None, "title": "", "link": "", "subs": None, "state": "closed"}
+    if kind == "tg":
+        name = src["username"]
+        out = {"key": f"tg:{name}", "title": f"@{name}", "link": f"https://t.me/{name}", "subs": None}
+        try:
+            page = web_fetch(f"https://t.me/{name}")
+        except (requests.ConnectionError, requests.Timeout):
+            return dict(out, state="error")
+        except Exception:
+            page = ""                                  # t.me: такого канала нет / закрыт
+        info = fwdw.parse_tme(page)
+        return dict(out, title=info["title"] or out["title"], subs=info["subs"],
+                    state="ok" if info["subs"] is not None else "closed")
+    if kind == "maxlink":
+        cid = resolve_chat_id(f"https://max.ru/{src['slug']}")
+        if cid is None:
+            return {"key": f"maxlink:{src['slug']}", "title": src["slug"], "link": f"https://max.ru/{src['slug']}",
+                    "subs": None, "state": "closed"}
+        src = {"kind": "max", "chat_id": cid}
+    cid = src["chat_id"]
+    info, state = fwd_probe(cid)
+    subs = channel_subs(info) if state == "ok" else None
+    if state == "ok" and subs is None:
+        state = "closed"                               # MAX показал канал, но без числа подписчиков
+    return {"key": f"max:{cid}", "title": str(info.get("title") or f"Канал {cid}")[:120],
+            "link": max_url(info.get("link")) or "", "subs": subs, "state": state, "chat_id": cid}
+
+
+def fwd_src_of_key(key):
+    kind, _, ref = (key or "").partition(":")
+    if kind == "max" and re.fullmatch(r"-?\d+", ref):
+        return {"kind": "max", "chat_id": int(ref)}
+    if kind == "tg" and ref:
+        return {"kind": "tg", "username": ref, "post": None}
+    if kind == "maxlink" and ref:
+        return {"kind": "maxlink", "slug": ref}
+    return None
+
+
+def fwd_rows(key):
+    return [[B("🔄 Обновить", f"fw:r:{key}")], [B("🕘 Недавние проверки", "m:fwr")]]
+
+
+def fwd_report(key, res):
+    j, l, tot = FWD_WATCH.deltas(key)
+    lines = [f"📊 {res['title']}", f"👥 Подписчиков сейчас: {anlimg.fmt_int(res['subs'])}", "", fwdw.stats_line(j, l, tot)]
+    if FWD_WATCH.points(key) <= 1:
+        lines.append("\n🕘 Начал следить сейчас — дальше считаю сам: раз в час смотрю, сколько подписчиков.")
+    else:
+        since = time.strftime("%d.%m %H:%M", time.localtime(FWD_WATCH.since(key)))
+        lines.append(f"\n🕘 Считаю с {since} — раз в час смотрю сам, сколько подписчиков.")
+    return "\n".join(lines)
+
+
+def fwd_check(uid, chat, src, announce=True):
+    """Проверка канала (в фоне — MAX и t.me не тормозят бота). Открытый канал: «Вижу пост из канала: …», потом
+    подписчики и «Подписалось / Отписалось / Итого». Закрытый — ровно одна фраза. MAX не ответил — «ещё раз»."""
+    try:
+        res = fwd_lookup(src)
+    except Exception:
+        log_exc("проверка канала")
+        res = {"state": "error"}
+    if res["state"] == "error":
+        api_send(chat, FWD_RETRY)
+        return
+    key = res.get("key")
+    if res["state"] == "closed":
+        if key:
+            FWD_WATCH.remember(str(uid), key, {"title": res["title"], "link": res["link"], "closed": True})
+            FWD_WATCH.save()
+        api_send(chat, fwdw.CLOSED_TEXT)
+        return
+    if announce:
+        api_send(chat, f"Вижу пост из канала: {res['title']}. Анализирую...")
+    first = FWD_WATCH.points(key) == 0
+    FWD_WATCH.remember(str(uid), key, {"title": res["title"], "link": res["link"], "closed": False})
+    if first and res.get("chat_id"):                   # канал бот уже знает (привязан) — есть история по дням
+        for day, n in sorted(subs_history(res["chat_id"]).items())[-7:]:
+            with contextlib.suppress(ValueError):
+                FWD_WATCH.snap(key, n, time.mktime(time.strptime(day, "%Y-%m-%d")) + 12 * 3600)
+    FWD_WATCH.snap(key, res["subs"])
+    FWD_WATCH.save()
+    api_send(chat, fwd_report(key, res), fwd_rows(key))
+
+
+def fwd_snapshot_all():
+    """Раз в час: число подписчиков каналов из «Недавних проверок» — так копятся «подписалось / отписалось»."""
+    keys = FWD_WATCH.watched()[:FWD_MAX_POLL]
+    for key in keys:
+        src = fwd_src_of_key(key)
+        if src is None:
+            continue
+        try:
+            res = fwd_lookup(src)
+        except Exception:
+            continue
+        if res["state"] == "ok":
+            FWD_WATCH.snap(key, res["subs"])
+    if keys:
+        FWD_WATCH.save()
+
+
+def fwd_recent_screen(uid):
+    """🕘 Недавние проверки: каналы, которые пользователь проверял, — свежие сверху, кнопка «проверить снова»."""
+    items = FWD_WATCH.recent(str(uid))
+    lines, rows = ["🕘 Недавние проверки", ""], []
+    for r in items:
+        if r["closed"]:
+            lines.append(f"🔒 {r['title']} — закрытый: добавь бота в администраторы канала")
+        else:
+            j, l, tot = r["deltas"]
+            since = time.strftime("%d.%m", time.localtime(r["since"])) if r["since"] else "—"
+            lines.append(f"📢 {r['title']} — {anlimg.fmt_int(r['subs'])} подписчиков · с {since}: "
+                         f"+{anlimg.fmt_int(j)} / -{anlimg.fmt_int(l)}")
+        rows.append([B(f"{'🔒' if r['closed'] else '🔄'} {r['title']}"[:60], f"fw:r:{r['key']}")])
+    if not items:
+        lines.append("Пока пусто.")
+    lines += ["", "Перешли мне пост из любого канала MAX (или пришли ссылку на канал Telegram или MAX) — посчитаю "
+                  "подписчиков: сколько подписалось и отписалось. Привязывать канал не нужно."]
+    return "\n".join(lines), rows + [[B("◀️ В меню", "m:main")]]
+
+
+def fwd_callback(rest, uid, chat):
+    """fw:r:<канал> — проверить снова (только канал из своих «Недавних проверок»)."""
+    act, _, key = (rest or "").partition(":")
+    if act == "r" and chat and FWD_WATCH.is_recent(str(uid), key) and (src := fwd_src_of_key(key)):
+        in_background(fwd_check, uid, chat, src, False, name="fwd-recheck")
+    return fwd_recent_screen(uid)
+
+
 def anl_channel(name, cid, known=()):
     """Цифры карточки канала: подписчики (+ снимок в историю), просмотры постов за неделю, ER24."""
     info = chat_info(cid)
@@ -8706,8 +8880,9 @@ def predict_history(cid):
     return got[1]
 
 
-def predict_text(text, photo=False, video=False, cid=None, name=None):
-    """Ответ «🔮 Прогноз поста»: оценка, ожидаемые просмотры, лучшее время, советы (+ совет ИИ, если есть ключи)."""
+def predict_text(text, photo=False, video=False, cid=None, name=None, with_p=False):
+    """Ответ «🔮 Прогноз поста»: оценка, ожидаемые просмотры, лучшее время, советы (+ совет ИИ, если есть ключи).
+    with_p — ещё и сами цифры прогноза (для карточки)."""
     hist = predict_history(cid) if cid else []
     p = anlpredict.predict(text, photo, video, hist, quality=post_quality(text, photo or video))
     out = anlpredict.explain(p, name)
@@ -8720,7 +8895,7 @@ def predict_text(text, photo=False, video=False, cid=None, name=None):
             _log_line(time.strftime("%H:%M:%S") + f" Прогноз: ИИ не ответил ({type(e).__name__}: {str(e)[:120]})")
         finally:
             perf_add("ai", "совет к посту", time.perf_counter() - t0)
-    return out
+    return (out, p) if with_p else out
 
 
 PREDICT_ASK = ("🔮 Прогноз поста\n\nПришли сюда черновик — текст, можно с фото или видео. Бот сравнит его с прошлыми "
@@ -8742,14 +8917,20 @@ def predict_start(uid, chat, text, atts=()):
     cid = t.chat_id if t is not None else None
 
     def run():
+        tok = None
         try:
             with chat_busy(chat):
                 name = (chat_info_cached(cid).get("title") or t.name) if cid else None
-                answer = predict_text(text, photo, video, cid, name)
+                answer, p = predict_text(text, photo, video, cid, name, with_p=True)
+            try:                                       # 🔮 карточка прогноза (чёрный, фиолетовый, розовый) + текст
+                bg = anl_background(anl_bg_mode(uid), name or "Прогноз поста", 1200, 675, "aurora")
+                tok = upload_card(anlimg.render_predict(p, card_font, bg, name), bg is not None)
+            except Exception:
+                log_exc("карточка прогноза")           # не вышла — ответ всё равно придёт текстом
         except Exception as e:
             log_exc("прогноз поста")
             answer = f"⚠️ Прогноз не получился: {type(e).__name__}. Попробуй ещё раз."
-        api_send(chat, answer, rows)
+        api_send(chat, answer, rows, tok) if tok else api_send(chat, answer, rows)
 
     threading.Thread(target=run, daemon=True, name="predict").start()
 

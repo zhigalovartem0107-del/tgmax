@@ -85,8 +85,8 @@ assert A.render_channel(A.channel_numbers(long_title, None, [], {}, NOW), F, bg,
 assert A.render_network(net, F).size == (1280, 704)
 wide = A.render_network(net, F, A.procedural_background(1280, 330, 7, "waves"))
 assert wide.size == (1280, 876)                                            # с фоном — баннер сверху (как у сетей)
-accent = sum(c for c, px in wide.getcolors(1 << 20) if all(abs(px[i] - A.ACCENT[i]) < 8 for i in range(3)))
-assert accent > 2000, accent                                               # цифры — фирменным цветом
+accent = sum(c for c, px in wide.getcolors(1 << 20) if all(abs(px[i] - A.HOTPINK[i]) < 8 for i in range(3)))
+assert accent > 2000, accent                                               # цифры — розовым #FF1493
 a1, a2 = A.procedural_background(600, 300, 42), A.procedural_background(600, 300, 42)
 assert a1.tobytes() == a2.tobytes(), "у канала всегда один и тот же узор"
 assert a1.tobytes() != A.procedural_background(600, 300, 43).tobytes()
@@ -391,7 +391,7 @@ assert [v for _, v, _ in jn["days"] if v is not None] == [4990], jn["days"]     
 assert A.render_channel(jn, F).size == (1200, 900)
 huge = A.channel_numbers("Огромный канал", 10 ** 12, [{"t": NOW - 30 * 3600, "views": 10 ** 13}], {}, NOW)
 img = A.render_channel(huge, F)
-assert img.size == (1200, 900) and img.getpixel((5, 450)) == A.PAGE, "огромные числа не вылезли за карточку"
+assert img.size == (1200, 900) and img.getpixel((5, 450)) == A.BG, "огромные числа не вылезли за карточку"
 for w, h in ((0, 5), (1, 1), (5, 0), (-3, 4), (None, "x")):
     bgx = A.procedural_background(w, h, 1)
     assert bgx.size[0] >= 1 and bgx.size[1] >= 1
