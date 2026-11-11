@@ -2,7 +2,7 @@
 
 Запрос — обычный chat/completions с modalities ["image", "text"]; картинка приходит в
 choices[0].message.images[*].image_url.url как data:image/...;base64,…  Нет ключа, лимит, ошибка — None,
-и бот рисует фон сам (процедурный узор)."""
+и бот берёт фон дня (фото природы с Unsplash или свой рисунок природы)."""
 import base64
 import re
 

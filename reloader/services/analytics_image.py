@@ -1,28 +1,43 @@
-"""Премиум-карточки аналитики MAX-каналов (Pillow) — строго в четырёх цветах.
+"""Дашборд Reloader — аналитика каналов картинкой 1280×800 (Pillow), свой дизайн.
 
-Канал: подписчики и прирост (сегодня / 7 / 30 дней), график роста, таблица по дням, просмотры на пост
-за 24/48/72 часа и ER24. Сеть каналов: всего подписчиков и просмотров, общий ER, топ-3 канала. Прогноз поста:
-оценка из 10, ожидаемые просмотры, лучшее время, советы.
-Палитра: фон #0A0A0A, линии и заголовки #9B30FF, цифры и акценты #FF1493, текст #FFFFFF — других цветов нет.
-Картинка-фон («узор» или рисунок ИИ) и фото канала перекрашиваются в эту палитру (фон — приглушённый
-фиолетовый по чёрному, фото — оттенки белого по чёрному). Только подсчёт и рисование — без сети и без состояния
-бота (данные приходят готовыми), поэтому легко проверяется тестами."""
+Тема — по московскому времени: с 06:00 до 17:00 светлая (светло-серый фон, тёмный текст), с 17:00 до 06:00 тёмная
+(#0A0A0A, белый текст); акценты в обеих — фиолетовый #9B30FF и розовый #FF1493. Фон — фото дня (природа) или свой
+рисунок природы: сильно размыт и под вуалью цвета темы, поверх — «стеклянные» панели.
+Картинки: канал, сеть каналов, прогноз поста, оценка потенциала и рекламный охват. Водяной знак «Reloader» (внизу
+справа) — только у рекламного охвата: её показывают рекламодателю; на обычной аналитике знака нет.
+Только подсчёт и рисование — без сети и без состояния бота (данные приходят готовыми), поэтому легко проверяется
+тестами."""
 import math
 import random
 import time
 import zlib
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-BG = (0x0A, 0x0A, 0x0A)         # #0A0A0A — фон: глубокий чёрный
-PURPLE = (0x9B, 0x30, 0xFF)     # #9B30FF — линии, рамки, заголовки
-HOTPINK = (0xFF, 0x14, 0x93)    # #FF1493 — цифры и акценты
-WHITE = (0xFF, 0xFF, 0xFF)      # #FFFFFF — текст
-PALETTE = (BG, PURPLE, HOTPINK, WHITE)
-BG_TINT = 0.30                  # картинка-фон: светлые места — не ярче 30% фиолетового по чёрному
+SIZE = (1280, 800)                      # все картинки — 16:10
+W, H = SIZE
+BG = (0x0A, 0x0A, 0x0A)                 # #0A0A0A — фон тёмной темы
+PURPLE = (0x9B, 0x30, 0xFF)             # #9B30FF — акцент
+HOTPINK = (0xFF, 0x14, 0x93)            # #FF1493 — второй акцент
+WHITE = (0xFF, 0xFF, 0xFF)
+INK = (0x14, 0x14, 0x18)                # текст светлой темы
+PAPER = (0xF4, 0xF4, 0xF7)              # фон светлой темы
+MSK = 3 * 3600                          # Москва — UTC+3 круглый год
+LIGHT_HOURS = (6, 17)                   # с 06:00 до 17:00 по Москве — светлая тема
+THEMES = {
+    "dark": {"name": "dark", "bg": BG, "text": WHITE, "muted": (160, 160, 174), "faint": (104, 104, 118),
+             "accent": PURPLE, "accent2": HOTPINK, "panel": (24, 24, 30, 210), "edge": (255, 255, 255, 30),
+             "track": (255, 255, 255, 34), "grid": (255, 255, 255, 22), "veil": BG, "veil_k": 0.80,
+             "glow": 0.22, "shadow": 0, "dot": (24, 24, 30)},
+    "light": {"name": "light", "bg": PAPER, "text": INK, "muted": (96, 96, 110), "faint": (150, 150, 162),
+              "accent": PURPLE, "accent2": HOTPINK, "panel": (255, 255, 255, 214), "edge": (20, 20, 24, 22),
+              "track": (20, 20, 24, 24), "grid": (20, 20, 24, 18), "veil": PAPER, "veil_k": 0.82,
+              "glow": 0.12, "shadow": 34, "dot": WHITE},
+}
 WEEK = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 MONTHS = ("янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек.")
 DAY = 86400
+MARGIN = 40
 
 
 # ---------- числа ----------
@@ -159,75 +174,6 @@ def network_numbers(channels, now=None):
             "now": now or time.time()}
 
 
-# ---------- цвета, шрифт и фигуры ----------
-def hex_color(c):
-    return "#%02X%02X%02X" % tuple(c[:3])
-
-
-def _mix(a, b, k):
-    return tuple(int(round(a[i] + (b[i] - a[i]) * k)) for i in range(3))
-
-
-def default_font(bold, size):
-    for name in (("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf") if bold else ("DejaVuSans.ttf", "LiberationSans-Regular.ttf")):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default(size)
-
-
-def _card(img, box, radius=28, alpha=255, outline=PURPLE, width=2):
-    """Панель: чёрная, в фиолетовой рамке (выделение — в розовой)."""
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle(box, radius, fill=BG + (alpha,), outline=outline + (255,), width=width)
-    img.alpha_composite(layer)
-
-
-def _text(d, xy, text, font, fill, anchor="la"):
-    d.text(xy, str(text), font=font, fill=fill, anchor=anchor)
-
-
-def _fit(d, text, font_fn, bold, size, width):
-    """Шрифт, при котором текст влезает в ширину (длинное название канала)."""
-    while size > 14:
-        f = font_fn(bold, size)
-        if d.textlength(str(text), font=f) <= width:
-            return f
-        size -= 2
-    return font_fn(bold, size)
-
-
-def _clip(d, text, font, width):
-    """Строка, обрезанная по ширине (с «…»)."""
-    text = str(text)
-    if d.textlength(text, font=font) <= width:
-        return text
-    while text and d.textlength(text + "…", font=font) > width:
-        text = text[:-1]
-    return text.rstrip() + "…"
-
-
-def _duotone(pic, light):
-    """Любая картинка → оттенки от #0A0A0A до цвета light (между ними — только смеси): чужих цветов нет."""
-    return ImageOps.colorize(ImageOps.grayscale(pic.convert("RGB")), black=BG, white=light)
-
-
-def _avatar(img, center, r, title, photo=None):
-    x, y = center
-    if photo is not None:
-        ph = _duotone(photo, WHITE).convert("RGBA").resize((2 * r, 2 * r))   # фото канала — оттенками белого
-        mask = Image.new("L", (2 * r, 2 * r), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, 2 * r - 1, 2 * r - 1), fill=255)
-        img.paste(ph, (x - r, y - r), mask)
-        return
-    d = ImageDraw.Draw(img)
-    d.ellipse((x - r, y - r, x + r, y + r), fill=PURPLE)
-    letter = (str(title or "?").strip()[:1] or "?").upper()
-    _text(d, (x, y), letter, default_font(True, r), WHITE, "mm")
-
-
-# ---------- фоны ----------
 def seed_of(text):
     return zlib.crc32(str(text or "").encode("utf-8"))
 
@@ -266,242 +212,893 @@ def procedural_background(w, h, seed, style="aurora"):
     return Image.blend(img, noise, 0.03)                       # (от того же seed — тот же фон)
 
 
-def _page(w, h, bg):
-    """Холст: глубокий чёрный; с картинкой-фоном — она растянута и перекрашена в приглушённый фиолетовый по
-    чёрному (узор или рисунок ИИ не приносит своих цветов)."""
-    if bg is None:
-        return Image.new("RGBA", (w, h), BG + (255,)), False
-    pic = bg.convert("RGB")
-    k = max(w / pic.width, h / pic.height)
-    pic = pic.resize((max(w, int(pic.width * k)), max(h, int(pic.height * k))))
-    left, top = (pic.width - w) // 2, (pic.height - h) // 2
-    return _duotone(pic.crop((left, top, left + w, top + h)), _mix(BG, PURPLE, BG_TINT)).convert("RGBA"), True
+# ---------- тема: по московскому времени ----------
+def theme_for(ts=None):
+    """«light» с 06:00 до 17:00 по Москве, иначе «dark»."""
+    ts = num(ts)
+    hour = time.gmtime((time.time() if ts is None else ts) + MSK).tm_hour
+    return "light" if LIGHT_HOURS[0] <= hour < LIGHT_HOURS[1] else "dark"
 
 
-# ---------- карточка канала ----------
-def render_channel(n, font=None, bg=None, photo=None, brand="Reloader"):
-    """Картинка 1200×900 по channel_numbers(...)."""
-    font = font or default_font
-    W, H = 1200, 900
-    img, art = _page(W, H, bg)
-    a = 235 if art else 255
-    _card(img, (32, 28, W - 32, 136), 34, a)
-    _avatar(img, (92, 82), 38, n["title"], photo)
+def _theme(theme, now):
+    return THEMES[theme if theme in THEMES else theme_for(now)]
+
+
+def _now(now, data=None):
+    """Время картинки: заданное явно, иначе — когда посчитаны цифры, иначе — сейчас."""
+    for x in (now, (data or {}).get("now") if isinstance(data, dict) else None):
+        if num(x) is not None and 0 < x < 4.1e9:
+            return x
+    return time.time()
+
+
+def tz_label(now=None):
+    """Подпись к часам сервера (по ним прогноз считает «лучшее время»): «время МСК» или честное смещение от UTC —
+    у самостоятельно запущенного бота часы могут быть не московские."""
+    lt = time.localtime(now)
+    off = lt.tm_gmtoff if lt.tm_gmtoff is not None else -time.timezone
+    if off == MSK:
+        return "время МСК"
+    h, m = divmod(abs(off) // 60, 60)
+    return f"время UTC{'+' if off >= 0 else '-'}{h}" + (f":{m:02d}" if m else "")
+
+
+def stamp(now):
+    """«10 нояб. 2026 · 13:05 МСК»."""
+    lt = time.gmtime(now + MSK)
+    return f"{lt.tm_mday} {MONTHS[lt.tm_mon - 1]} {lt.tm_year} · {lt.tm_hour:02d}:{lt.tm_min:02d} МСК"
+
+
+# ---------- цвета, шрифт и фигуры ----------
+def hex_color(c):
+    return "#%02X%02X%02X" % tuple(c[:3])
+
+
+def _mix(a, b, k):
+    return tuple(int(round(a[i] + (b[i] - a[i]) * k)) for i in range(3))
+
+
+def default_font(bold, size):
+    for name in (("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf") if bold else ("DejaVuSans.ttf", "LiberationSans-Regular.ttf")):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size)
+
+
+def _fit(d, text, font_fn, bold, size, width, low=14):
+    """Шрифт, при котором текст влезает в ширину (длинное название, огромное число)."""
+    while size > low:
+        f = font_fn(bold, size)
+        if d.textlength(str(text), font=f) <= width:
+            return f
+        size -= 2
+    return font_fn(bold, low)
+
+
+def _clip(d, text, font, width):
+    """Строка, обрезанная по ширине (с «…»)."""
+    text = str(text)
+    if d.textlength(text, font=font) <= width:
+        return text
+    while text and d.textlength(text + "…", font=font) > width:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+_MASKS = {}
+
+
+def _round_mask(w, h, r):
+    """Маска скруглённого прямоугольника с гладкими краями (рисуем вдвое крупнее и уменьшаем)."""
+    key = (w, h, r)
+    m = _MASKS.get(key)
+    if m is None:
+        if r <= 0:
+            m = Image.new("L", (w, h), 255)
+        else:
+            big = Image.new("L", (w * 2, h * 2), 0)
+            ImageDraw.Draw(big).rounded_rectangle((0, 0, w * 2 - 1, h * 2 - 1), r * 2, fill=255)
+            m = big.resize((w, h), Image.BOX)
+        if len(_MASKS) > 96:
+            _MASKS.clear()
+        _MASKS[key] = m
+    return m
+
+
+def _box(box):
+    x0, y0, x1, y1 = (int(round(v)) for v in box)
+    return x0, y0, max(x0, x1), max(y0, y1)
+
+
+def _fill(img, box, color, r=0):
+    """Скруглённая заливка цветом с прозрачностью (RGBA) — с гладкими краями."""
+    x0, y0, x1, y1 = _box(box)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    mask = _round_mask(w, h, max(0, min(int(r), w // 2, h // 2)))
+    a = color[3] if len(color) > 3 else 255
+    if a < 255:
+        mask = mask.point(lambda v: v * a // 255)
+    layer = Image.new("RGBA", (w, h), tuple(color[:3]) + (0,))
+    layer.putalpha(mask)
+    img.alpha_composite(layer, (x0, y0))
+
+
+def _hgrad(w, h, c0=PURPLE, c1=HOTPINK):
+    """Горизонтальный градиент фиолетовый → розовый."""
+    row = Image.new("RGB", (256, 1))
+    row.putdata([_mix(c0, c1, i / 255) for i in range(256)])
+    return row.resize((max(1, w), max(1, h)), Image.BILINEAR)
+
+
+def _grad_fill(img, box, r=0, alpha=255):
+    x0, y0, x1, y1 = _box(box)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    layer = _hgrad(w, h).convert("RGBA")
+    mask = _round_mask(w, h, max(0, min(int(r), w // 2, h // 2)))
+    layer.putalpha(mask if alpha >= 255 else mask.point(lambda v: v * alpha // 255))
+    img.alpha_composite(layer, (x0, y0))
+
+
+def _grad_text(img, xy, text, font, anchor="ls"):
+    """Текст, залитый градиентом фиолетовый → розовый (главная цифра картинки)."""
     d = ImageDraw.Draw(img)
-    _text(d, (152, 44), "СТАТИСТИКА КАНАЛА", font(True, 17), PURPLE)
-    _text(d, (150, 66), n["title"], _fit(d, n["title"], font, True, 38, W - 220), WHITE)
-    # подписчики
-    _card(img, (32, 160, 448, 424), 28, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (60, 190), "Подписчики", font(True, 26), PURPLE)
-    big = fmt_big(n["subs"])
-    _text(d, (58, 228), big, _fit(d, big, font, True, 74, 360), HOTPINK)
-    d.line([(60, 320), (420, 320)], fill=PURPLE, width=2)
-    for i, (lab, val) in enumerate((("Сегодня", n["today"]), ("7 дней", n["d7"]), ("30 дней", n["d30"]))):
-        x = 60 + i * 124
-        _text(d, (x, 338), lab, font(False, 19), WHITE)
-        _text(d, (x, 362), fmt_delta(val), font(True, 30), HOTPINK if val is not None else WHITE)
-    # просмотры на пост
-    _card(img, (468, 160, 864, 424), 28, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (494, 186), "Просмотры на пост", font(True, 26), PURPLE)
-    for i, h in enumerate((24, 48, 72)):
-        y = 232 + i * 61
-        if i == 0:
-            _card(img, (484, y - 2, 848, y + 52), 14, outline=HOTPINK)      # главное — в розовой рамке
-            d = ImageDraw.Draw(img)
-        _text(d, (500, y + 25), f"{h} часа" if h < 48 else f"{h} часов", font(False, 22), WHITE, "lm")
-        _text(d, (830, y + 25), fmt_big(n[f"v{h}"]), font(True, 32), HOTPINK, "rm")
-        if i:
-            d.line([(500, y - 6), (832, y - 6)], fill=PURPLE, width=1)
-    # ER24
-    _card(img, (884, 160, W - 32, 424), 28, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (910, 186), "ER24", font(True, 26), PURPLE)
-    er = fmt_pct(n["er24"])
-    _text(d, (908, 236), er, _fit(d, er, font, True, 64, 250), HOTPINK)
-    _text(d, (910, 330), "Просмотры за 24 часа", font(False, 19), WHITE)
-    _text(d, (910, 356), "к числу подписчиков", font(False, 19), WHITE)
-    # график
-    _card(img, (32, 448, 672, 846), 28, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (60, 470), "Динамика подписчиков", font(True, 28), PURPLE)
-    _text(d, (60, 508), "Последние 7 дней", font(False, 18), WHITE)
-    vals = [v for _, v, _ in n["days"] if v is not None]
-    x0, x1, y0, y1 = 116, 628, 568, 770
-    if vals:
-        lo, hi = min(vals), max(vals)
-        pad = max(1, (hi - lo) * 0.25 or hi * 0.02 or 1)
-        lo, hi = lo - pad, hi + pad
-        for k, frac in enumerate((1, 0.5, 0)):
-            yy = y0 + (y1 - y0) * (1 - frac)
-            d.line([(x0, yy), (x1, yy)], fill=PURPLE, width=1)
-            _text(d, (x0 - 14, yy), fmt_int(lo + (hi - lo) * frac), font(False, 15), WHITE, "rm")
-        step = (x1 - x0) / max(1, len(n["days"]) - 1)
-        pts = [(x0 + i * step, y0 + (y1 - y0) * (1 - (v - lo) / (hi - lo)))
-               for i, (_, v, _) in enumerate(n["days"]) if v is not None]
+    l, t, r, b = d.textbbox(xy, str(text), font=font, anchor=anchor)
+    w, h = int(math.ceil(r - l)) + 2, int(math.ceil(b - t)) + 2
+    if w <= 2 or h <= 2:
+        return
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).text((xy[0] - l + 1, xy[1] - t + 1), str(text), font=font, fill=255, anchor=anchor)
+    layer = _hgrad(w, h).convert("RGBA")
+    layer.putalpha(mask)
+    img.alpha_composite(layer, (int(l) - 1, int(t) - 1))
+
+
+class _Smooth:
+    """Слой для гладких линий, дуг и кругов: рисуем крупнее (ss раз) и уменьшаем — края без «лесенки»."""
+
+    def __init__(self, img, box, ss=3):
+        self.img, self.ss = img, ss
+        self.x0, self.y0, x1, y1 = _box(box)
+        self.x0, self.y0 = max(0, self.x0), max(0, self.y0)
+        self.w, self.h = max(1, min(img.width, x1) - self.x0), max(1, min(img.height, y1) - self.y0)
+        self.layer = Image.new("RGBA", (self.w * ss, self.h * ss), (0, 0, 0, 0))
+        self.d = ImageDraw.Draw(self.layer)
+
+    def _p(self, x, y):
+        return ((x - self.x0) * self.ss, (y - self.y0) * self.ss)
+
+    def line(self, pts, color, width):
         if len(pts) > 1:
-            area = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            ImageDraw.Draw(area).polygon(pts + [(pts[-1][0], y1), (pts[0][0], y1)], fill=PURPLE + (48,))
-            img.alpha_composite(area)
-            d = ImageDraw.Draw(img)
-            d.line(pts, fill=PURPLE, width=4, joint="curve")
-        for p in pts:
-            d.ellipse((p[0] - 6, p[1] - 6, p[0] + 6, p[1] + 6), fill=HOTPINK, outline=WHITE, width=2)
-    else:
-        _text(d, ((x0 + x1) / 2, (y0 + y1) / 2), "История копится: бот снимает число подписчиков раз в день",
-              font(False, 18), WHITE, "mm")
-    for i, (key, _, _) in enumerate(n["days"]):
-        xx = x0 + i * (x1 - x0) / max(1, len(n["days"]) - 1)
-        _text(d, (xx, 800), f"{key[8:10]}.{key[5:7]}", font(False, 15), WHITE, "mm")
-    # по дням
-    _card(img, (692, 448, W - 32, 846), 28, a)
+            self.d.line([self._p(*q) for q in pts], fill=color, width=max(1, int(width * self.ss)), joint="curve")
+            for q in (pts[0], pts[-1]):                     # круглые концы
+                self.circle(q, width / 2, color)
+
+    def circle(self, c, r, color):
+        x, y = self._p(*c)
+        rr = r * self.ss
+        self.d.ellipse((x - rr, y - rr, x + rr, y + rr), fill=color)
+
+    def arc(self, c, r, a0, a1, color, width):
+        x, y = self._p(*c)
+        rr, ww = (r + width / 2) * self.ss, width * self.ss
+        self.d.arc((x - rr, y - rr, x + rr, y + rr), a0, a1, fill=color, width=max(1, int(ww)))
+
+    def done(self):
+        self.img.alpha_composite(self.layer.resize((self.w, self.h), Image.LANCZOS), (self.x0, self.y0))
+
+
+def _shadow(img, box, r, alpha):
+    """Мягкая тень под панелью (светлая тема): рисуем вчетверо меньше, размываем, растягиваем."""
+    x0, y0, x1, y1 = _box(box)
+    pad = 20
+    w, h = x1 - x0 + 2 * pad, y1 - y0 + 2 * pad
+    q = 4
+    small = Image.new("L", (max(1, w // q), max(1, h // q)), 0)
+    ImageDraw.Draw(small).rounded_rectangle((pad // q, pad // q + 1, (w - pad) // q, (h - pad) // q + 1),
+                                            max(1, r // q), fill=alpha)
+    mask = small.filter(ImageFilter.GaussianBlur(2.5)).resize((w, h), Image.BILINEAR)
+    layer = Image.new("RGBA", (w, h), (46, 30, 80, 0))
+    layer.putalpha(mask)
+    img.alpha_composite(layer, (max(0, x0 - pad), max(0, y0 - pad)))
+
+
+def _panel(img, box, t, r=24):
+    """«Стеклянная» панель: полупрозрачная, со светлой (днём — тёмной) каймой в 1 пиксель."""
+    x0, y0, x1, y1 = _box(box)
+    if t["shadow"]:
+        _shadow(img, box, r, t["shadow"])
+    _fill(img, (x0, y0, x1, y1), t["edge"], r)
+    _fill(img, (x0 + 1, y0 + 1, x1 - 1, y1 - 1), t["panel"], r - 1)
+
+
+def _avatar(img, center, r, title, photo=None, font=None):
+    """Фото канала в круге; нет фото — первая буква на градиенте."""
+    x, y = int(center[0]), int(center[1])
+    mask = _round_mask(2 * r, 2 * r, r)
+    if photo is not None:
+        try:
+            pic = _cover(photo.convert("RGB"), 2 * r, 2 * r).convert("RGBA")
+            pic.putalpha(mask)
+            img.alpha_composite(pic, (x - r, y - r))
+            return
+        except Exception:
+            pass                                       # битое фото — буква
+    _grad_fill(img, (x - r, y - r, x + r, y + r), r)
+    letter = (str(title or "?").strip()[:1] or "?").upper()
+    ImageDraw.Draw(img).text((x, y), letter, font=(font or default_font)(True, int(r * 0.95)), fill=WHITE,
+                             anchor="mm")
+
+
+def _smooth(pts, n=10):
+    """Плавная линия через точки без лишних «горбов» (монотонная кубическая, Фритч — Карлсон)."""
+    k = len(pts)
+    if k < 3:
+        return list(pts)
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    d = [(ys[i + 1] - ys[i]) / ((xs[i + 1] - xs[i]) or 1) for i in range(k - 1)]
+    m = [d[0]] + [0.0 if d[i - 1] * d[i] <= 0 else (d[i - 1] + d[i]) / 2 for i in range(1, k - 1)] + [d[-1]]
+    for i in range(k - 1):
+        if d[i] == 0:
+            m[i] = m[i + 1] = 0.0
+            continue
+        a, b = m[i] / d[i], m[i + 1] / d[i]
+        s = a * a + b * b
+        if s > 9:
+            tau = 3 / math.sqrt(s)
+            m[i], m[i + 1] = tau * a * d[i], tau * b * d[i]
+    out = []
+    for i in range(k - 1):
+        h = xs[i + 1] - xs[i]
+        for j in range(n):
+            u = j / n
+            h00, h10 = 2 * u ** 3 - 3 * u ** 2 + 1, u ** 3 - 2 * u ** 2 + u
+            h01, h11 = -2 * u ** 3 + 3 * u ** 2, u ** 3 - u ** 2
+            out.append((xs[i] + u * h, h00 * ys[i] + h10 * h * m[i] + h01 * ys[i + 1] + h11 * h * m[i + 1]))
+    out.append(pts[-1])
+    return out
+
+
+# ---------- фон: фото дня или свой рисунок природы — размыт и под вуалью ----------
+def _cover(img, w, h):
+    """Картинка по размеру кадра: растянуть с запасом и обрезать по центру."""
+    k = max(w / max(1, img.width), h / max(1, img.height))
+    nw, nh = max(w, math.ceil(img.width * k)), max(h, math.ceil(img.height * k))
+    img = img.resize((nw, nh), Image.BILINEAR)
+    left, top = (nw - w) // 2, (nh - h) // 2
+    return img.crop((left, top, left + w, top + h))
+
+
+def _glow(size, color, center, radius, alpha):
+    """Мягкое пятно света (слой RGBA размера size)."""
+    w, h = size
+    layer = Image.new("RGBA", (w, h), color + (0,))
+    a = Image.new("L", (w, h), 0)
+    cx, cy, r = center[0] * w, center[1] * h, radius * w
+    ImageDraw.Draw(a).ellipse((cx - r, cy - r, cx + r, cy + r), fill=int(255 * alpha))
+    layer.putalpha(a.filter(ImageFilter.GaussianBlur(max(1, r * 0.45))))
+    return layer
+
+
+def backdrop(size, theme, photo=None, seed=0):
+    """Фон картинки: фото (или ничего) — по кадру, сильно размыто (резких мест не остаётся) и под вуалью цвета темы
+    (ночью — почти чёрной, днём — светлой); сверху — мягкие пятна фиолетового и розового. RGBA."""
+    t = theme if isinstance(theme, dict) else THEMES.get(theme) or THEMES["dark"]
+    w, h = max(8, int(size[0])), max(8, int(size[1]))
+    sw, sh = max(4, w // 8), max(4, h // 8)               # всё мягкое считаем в 1/8 размера — быстро
+    base = Image.new("RGB", (sw, sh), t["bg"])
+    if photo is not None:
+        try:
+            pic = _cover(photo.convert("RGB"), sw, sh).filter(ImageFilter.GaussianBlur(max(2, sw / 40)))
+            base = Image.blend(pic, Image.new("RGB", (sw, sh), t["veil"]), t["veil_k"])
+        except Exception:
+            pass                                       # битая картинка — просто цвет темы
+    small = base.convert("RGBA")
+    rnd = random.Random(seed)
+    small.alpha_composite(_glow((sw, sh), PURPLE, (0.08 + rnd.uniform(0, 0.08), 0.02), 0.42, t["glow"]))
+    small.alpha_composite(_glow((sw, sh), HOTPINK, (0.94 - rnd.uniform(0, 0.08), 1.0), 0.36, t["glow"] * 0.8))
+    return small.resize((w, h), Image.BICUBIC)
+
+
+_NATURE = {   # небо сверху, небо у горизонта, слои (дальний → ближний)
+    "mountains": ((34, 46, 96), (236, 168, 150), ((150, 140, 190), (104, 98, 156), (66, 64, 118), (34, 36, 74))),
+    "forest": ((40, 92, 104), (206, 226, 204), ((122, 160, 146), (74, 118, 104), (40, 82, 70), (16, 46, 40))),
+    "ocean": ((24, 54, 116), (250, 198, 168), ((44, 96, 150), (24, 64, 118), (12, 38, 84))),
+    "abstract": ((26, 16, 56), (90, 40, 120), ((155, 48, 255), (255, 20, 147), (60, 90, 220), (40, 200, 190))),
+}
+
+
+def _vgrad(w, h, c0, c1):
+    return ImageOps.colorize(Image.linear_gradient("L").resize((w, h)), c0, c1)
+
+
+def _ridge(rnd, w, base, rough, n=7):
+    """Линия хребта: случайные точки + дробление середин (горы выглядят «настоящими»)."""
+    pts = [(i * w / (n - 1), base + rnd.uniform(-rough, rough)) for i in range(n)]
+    for depth in range(4):
+        amp = rough / (2 ** (depth + 1))
+        nxt = []
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            nxt += [(x0, y0), ((x0 + x1) / 2, (y0 + y1) / 2 + rnd.uniform(-amp, amp))]
+        pts = nxt + [pts[-1]]
+    return pts
+
+
+def nature_background(w, h, topic="mountains", seed=0):
+    """Свой рисунок природы (без сети): горы, лес, океан или абстракция — по теме дня. От тех же w, h, topic и
+    seed — та же картинка. Поверх всё равно размывается, поэтому важны цвета и композиция, а не детали."""
+    w, h = max(8, int(num(w) or 8)), max(8, int(num(h) or 8))
+    topic = topic if topic in _NATURE else "abstract"
+    rnd = random.Random(zlib.crc32(f"{topic}:{seed}".encode()))
+    sky0, sky1, layers = _NATURE[topic]
+    horizon = int(h * (0.55 if topic == "ocean" else 0.62))
+    img = Image.new("RGB", (w, h), sky1)
+    img.paste(_vgrad(w, horizon, sky0, sky1), (0, 0))
     d = ImageDraw.Draw(img)
-    _text(d, (720, 470), "По дням", font(True, 28), PURPLE)
-    _text(d, (720, 524), "Дата", font(False, 17), WHITE)
-    _text(d, (1010, 524), "Подписчики", font(False, 17), WHITE, "ra")
-    _text(d, (1140, 524), "Прирост", font(False, 17), WHITE, "ra")
-    for i, (key, val, delta) in enumerate(list(reversed(n["days"]))[:6]):
-        y = 556 + i * 46
-        if i == 0:
-            _card(img, (708, y - 2, 1152, y + 40), 12, outline=HOTPINK)
+    if topic == "mountains":
+        for i, col in enumerate(layers):
+            base = h * (0.42 + 0.14 * i)
+            d.polygon(_ridge(rnd, w, base, h * (0.16 - 0.025 * i)) + [(w, h), (0, h)], fill=col)
+    elif topic == "forest":
+        for i, col in enumerate(layers):
+            base, tall = h * (0.5 + 0.13 * i), h * (0.10 + 0.05 * i)
+            d.rectangle((0, base, w, h), fill=col)
+            x = -rnd.uniform(0, 40)
+            while x < w + 40:
+                tw, th = rnd.uniform(0.35, 0.55) * tall, tall * rnd.uniform(0.75, 1.25)
+                d.polygon([(x, base + 2), (x + tw / 2, base - th), (x + tw, base + 2)], fill=col)
+                x += tw * rnd.uniform(0.45, 0.8)
+    elif topic == "ocean":
+        sun = (w * rnd.uniform(0.3, 0.7), horizon - h * 0.06)
+        r = h * 0.07
+        d.ellipse((sun[0] - r, sun[1] - r, sun[0] + r, sun[1] + r), fill=(255, 226, 190))
+        img.paste(_vgrad(w, h - horizon, layers[0], layers[-1]), (0, horizon))
+        d = ImageDraw.Draw(img)
+        for _ in range(40):                            # дорожка солнца на воде
+            y = rnd.uniform(horizon + 4, h)
+            half = (y - horizon) / (h - horizon) * w * 0.18 + 6
+            x = sun[0] + rnd.uniform(-half, half) * 0.4
+            d.line([(x - half * 0.3, y), (x + half * 0.3, y)], fill=(250, 204, 170), width=2)
+    else:
+        for _ in range(7):
+            r = rnd.uniform(0.18, 0.42) * w
+            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+            d.ellipse((x - r, y - r, x + r, y + r), fill=rnd.choice(layers))
+        img = img.filter(ImageFilter.GaussianBlur(max(2, w // 14)))
+    return img
+
+
+# ---------- общие части дашборда ----------
+def watermark_box(size):
+    """Угол водяного знака «Reloader» — внизу справа. На обычной аналитике в нём пусто."""
+    w, h = size
+    return (w - 300, h - 60, w, h)
+
+
+def _watermark(img, t, font):
+    """Маленький знак «Reloader»: квадратик с градиентом и «R» + надпись — только на «Рекламном охвате»."""
+    d = ImageDraw.Draw(img)
+    f = font(True, 21)
+    text = "Reloader"
+    x1, cy = img.width - MARGIN, img.height - 30
+    tw = d.textlength(text, font=f)
+    mx = int(x1 - tw - 10 - 28)
+    _grad_fill(img, (mx, cy - 14, mx + 28, cy + 14), 8)
+    d = ImageDraw.Draw(img)
+    d.text((mx + 14, cy), "R", font=font(True, 17), fill=WHITE, anchor="mm")
+    d.text((x1, cy), text, font=f, fill=t["text"], anchor="rm")
+
+
+def _canvas(t, bg, seed=0):
+    return backdrop(SIZE, t, bg, seed)
+
+
+def _header(img, t, font, kicker, title, now, photo=None, avatar=False):
+    """Шапка: «ярлык» на градиенте, крупное название, справа — дата и время среза (МСК)."""
+    d = ImageDraw.Draw(img)
+    kf = font(True, 14)
+    kick = str(kicker).upper()
+    kw = int(sum(d.textlength(ch, font=kf) for ch in kick) + 1.6 * max(0, len(kick) - 1)) + 32
+    _grad_fill(img, (MARGIN, 30, MARGIN + kw, 60), 15)
+    d = ImageDraw.Draw(img)
+    x = MARGIN + 16
+    for ch in kick:                                    # буквы ярлыка — с разрядкой
+        d.text((x, 45), ch, font=kf, fill=WHITE, anchor="lm")
+        x += d.textlength(ch, font=kf) + 1.6
+    # время среза — справа
+    sf = font(False, 16)
+    text = stamp(now)
+    sw = int(d.textlength(text, font=sf)) + 50
+    _fill(img, (W - MARGIN - sw, 28, W - MARGIN, 62), t["panel"], 17)
+    _fill(img, (W - MARGIN - sw + 16, 41, W - MARGIN - sw + 24, 49), HOTPINK + (255,), 4)
+    d = ImageDraw.Draw(img)
+    d.text((W - MARGIN - 16, 45), text, font=sf, fill=t["muted"], anchor="rm")
+    # название
+    tx = MARGIN
+    if avatar:
+        _avatar(img, (MARGIN + 28, 100), 28, title, photo, font)
+        tx = MARGIN + 72
+        d = ImageDraw.Draw(img)
+    name = str(title).strip() if title is not None and str(title).strip() else "Канал"
+    tf = _fit(d, name, font, True, 42, W - MARGIN - tx, 26)
+    d.text((tx, 116), _clip(d, name, tf, W - MARGIN - tx), font=tf, fill=t["text"], anchor="ls")
+
+
+def _footer(img, t, font, note=None, credit=None):
+    """Подпись внизу слева (что значат цифры, автор фото). Правый нижний угол не трогаем — он для знака."""
+    text = "  ·  ".join(x for x in (note, credit) if x)
+    if not text:
+        return
+    d = ImageDraw.Draw(img)
+    f = font(False, 15)
+    d.text((MARGIN, H - 30), _clip(d, text, f, watermark_box(SIZE)[0] - MARGIN - 24), font=f, fill=t["faint"],
+           anchor="lm")
+
+
+def _tile(img, box, t, font, label, value, foot=None, accent=PURPLE, foot_color=None, value_color=None):
+    """Плитка с одной цифрой: подпись, крупное число, пояснение снизу; цветная черта слева сверху."""
+    x0, y0, x1, y1 = _box(box)
+    _panel(img, box, t, 22)
+    oy = y0 + max(0, (y1 - y0 - 140) // 2)
+    _fill(img, (x0 + 22, oy + 20, x0 + 62, oy + 25), accent + (255,), 3)
+    d = ImageDraw.Draw(img)
+    d.text((x0 + 22, oy + 50), _clip(d, label, font(False, 17), x1 - x0 - 44), font=font(False, 17),
+           fill=t["muted"], anchor="ls")
+    value = str(value)
+    vf = _fit(d, value, font, True, 40, x1 - x0 - 44, 20)
+    d.text((x0 + 22, oy + 96), value, font=vf, fill=value_color or t["text"], anchor="ls")
+    if foot:
+        ff = font(False, 15)
+        d.text((x0 + 22, oy + 124), _clip(d, foot, ff, x1 - x0 - 44), font=ff, fill=foot_color or t["muted"],
+               anchor="ls")
+
+
+def _panel_title(img, t, font, x, y, title, sub=None):
+    d = ImageDraw.Draw(img)
+    d.text((x, y), title, font=font(True, 22), fill=t["text"], anchor="ls")
+    if sub:
+        d.text((x, y + 26), sub, font=font(False, 16), fill=t["muted"], anchor="ls")
+
+
+def _area(img, pts, y_base, color, a_top=110, a_bottom=0):
+    """Заливка под линией графика — сверху ярче, к низу тает."""
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    x0, x1, y0 = int(min(xs)), int(math.ceil(max(xs))), int(min(ys))
+    w, h = x1 - x0 + 1, int(y_base) - y0 + 1
+    if w < 2 or h < 2:
+        return
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).polygon([(x - x0, y - y0) for x, y in pts] + [(pts[-1][0] - x0, h), (pts[0][0] - x0, h)],
+                                 fill=255)
+    fade = Image.linear_gradient("L").resize((w, h)).point(lambda v: int(a_top + (a_bottom - a_top) * v / 255))
+    layer = Image.new("RGBA", (w, h), color + (0,))
+    layer.putalpha(ImageChops.multiply(mask, fade))
+    img.alpha_composite(layer, (x0, y0))
+
+
+def _chart(img, box, t, font, vals, labels=None, empty="", value_fmt=None):
+    """Линейный график: сетка, плавная фиолетовая линия с заливкой, последняя точка — розовая, с подписью."""
+    x0, y0, x1, y1 = _box(box)
+    d = ImageDraw.Draw(img)
+    value_fmt = value_fmt or fmt_int
+    vals = [num(v) for v in vals or ()]
+    step = (x1 - x0) / max(1, len(vals) - 1)
+    for i, lab in enumerate(labels or ()):
+        if lab:
+            d.text((x0 + i * step, y1 + 30), str(lab), font=font(False, 15), fill=t["muted"], anchor="mm")
+    good = [(i, v) for i, v in enumerate(vals) if v is not None]
+    if len(good) < 2:
+        for k in range(3):
+            _fill(img, (x0, y0 + (y1 - y0) * k // 2, x1, y0 + (y1 - y0) * k // 2 + 1), t["grid"])
+        d = ImageDraw.Draw(img)
+        if good:
+            sm = _Smooth(img, (x0 - 20, y0 - 20, x1 + 20, y1 + 20))
+            sm.circle((x0 + good[0][0] * step, (y0 + y1) / 2), 8, HOTPINK)
+            sm.done()
             d = ImageDraw.Draw(img)
-        _text(d, (720, y + 19), f"{key[8:10]}.{key[5:7]}.{key[:4]}", font(False, 20), WHITE, "lm")
-        _text(d, (1010, y + 19), fmt_int(val), font(True, 22), HOTPINK if val is not None else WHITE, "rm")
-        _text(d, (1140, y + 19), fmt_delta(delta), font(True, 21), HOTPINK if delta is not None else WHITE, "rm")
-    _text(d, (34, 872), f"{brand} · срез {time.strftime('%d.%m.%Y %H:%M', time.localtime(n['now']))}",
-          font(False, 15), WHITE)
-    _text(d, (W - 34, 872), "24 / 48 / 72 ч — средние просмотры на пост", font(False, 15), WHITE, "ra")
-    return img.convert("RGB")
+        lines = str(empty).split("\n")
+        for k, line in enumerate(lines):
+            d.text(((x0 + x1) / 2, (y0 + y1) / 2 + 40 + k * 24 - (len(lines) - 1) * 12), line,
+                   font=font(False, 17), fill=t["muted"], anchor="mm")
+        return
+    lo, hi = min(v for _, v in good), max(v for _, v in good)
+    pad = max((hi - lo) * 0.2, abs(hi) * 0.002, 1)
+    lo, hi = lo - pad, hi + pad
+    for k in range(4):                                  # сетка и подписи слева
+        yy = y0 + (y1 - y0) * k / 3
+        _fill(img, (x0, int(yy), x1, int(yy) + 1), t["grid"])
+        d = ImageDraw.Draw(img)
+        d.text((x0 - 14, yy), fmt_short(hi - (hi - lo) * k / 3), font=font(False, 14), fill=t["faint"], anchor="rm")
+    pts = [(x0 + i * step, y1 - (v - lo) / (hi - lo) * (y1 - y0)) for i, v in good]
+    curve = [(x, min(y1, max(y0, y))) for x, y in _smooth(pts)]
+    _area(img, curve, y1, PURPLE, 120 if t["name"] == "dark" else 80, 0)
+    sm = _Smooth(img, (x0 - 24, y0 - 24, x1 + 24, y1 + 24))
+    sm.line(curve, PURPLE, 4)
+    for p in pts[:-1]:
+        sm.circle(p, 6, t["dot"])
+        sm.circle(p, 4, PURPLE)
+    last = pts[-1]
+    sm.circle(last, 15, HOTPINK + (70,))
+    sm.circle(last, 8, HOTPINK)
+    sm.circle(last, 3.5, WHITE)
+    sm.done()
+    label = value_fmt(good[-1][1])
+    d = ImageDraw.Draw(img)
+    lf = font(True, 17)
+    lw = int(d.textlength(label, font=lf)) + 24
+    bx = int(min(x1 + 10 - lw, max(x0, last[0] - lw / 2)))
+    by = int(last[1] - 50 if last[1] - 50 > y0 - 30 else last[1] + 22)
+    _fill(img, (bx, by, bx + lw, by + 30), HOTPINK + (255,), 15)
+    ImageDraw.Draw(img).text((bx + lw / 2, by + 15), label, font=lf, fill=WHITE, anchor="mm")
 
 
-# ---------- сеть каналов ----------
-def render_network(net, font=None, bg=None, brand="Reloader", title="Статистика по всей сетке каналов"):
-    """Картинка 1280×760 по network_numbers(...). С фоном-картинкой — фон сверху «баннером», как у реклам сетей."""
+def _bar(img, box, frac, t, color=None):
+    """Полоса: дорожка и заливка на долю frac (цветом или градиентом)."""
+    x0, y0, x1, y1 = _box(box)
+    r = (y1 - y0) // 2
+    _fill(img, (x0, y0, x1, y1), t["track"], r)
+    frac = num(frac)
+    if frac is None or frac <= 0:
+        return
+    xe = x0 + max(y1 - y0, int((x1 - x0) * min(1.0, frac)))
+    if color is None:
+        _grad_fill(img, (x0, y0, xe, y1), r)
+    else:
+        _fill(img, (x0, y0, xe, y1), color + (255,), r)
+
+
+def _ring(img, center, r, width, frac, t):
+    """Кольцо-шкала: дорожка и дуга от фиолетового к розовому (доля frac), с круглыми концами."""
+    cx, cy = center
+    sm = _Smooth(img, (cx - r - width, cy - r - width, cx + r + width, cy + r + width))
+    sm.arc(center, r, 0, 360, t["track"], width)
+    frac = num(frac)
+    if frac is not None and frac > 0:
+        frac = min(1.0, frac)
+        n = max(2, int(90 * frac))
+        for i in range(n):
+            a0 = -90 + 360 * frac * i / n
+            sm.arc(center, r, a0, a0 + 360 * frac / n + 0.8, _mix(PURPLE, HOTPINK, i / (n - 1)), width)
+        for ang, col in ((-90, PURPLE), (-90 + 360 * frac, HOTPINK)):
+            sm.circle((cx + r * math.cos(math.radians(ang)), cy + r * math.sin(math.radians(ang))), width / 2, col)
+    sm.done()
+
+
+def _chip(img, xy, text, t, font, color=None, size=15):
+    """Пилюля с короткой подписью (розовая — хорошее, серая — нет данных). xy — левый край и середина."""
+    d = ImageDraw.Draw(img)
+    f = font(True, size)
+    color = color or HOTPINK
+    w = int(d.textlength(text, font=f)) + 24
+    x, cy = int(xy[0]), int(xy[1])
+    _fill(img, (x, cy - 15, x + w, cy + 15), color + (40 if t["name"] == "dark" else 30,), 15)
+    ImageDraw.Draw(img).text((x + 12, cy), text, font=f, fill=color, anchor="lm")
+    return w
+
+
+def _delta(n):
+    """Прирост для картинки: «+12» / «–7». Во встроенном шрифте бота нет знака «−» (рисовался пустым местом),
+    поэтому на картинках минус — короткое тире."""
+    return fmt_delta(n).replace("−", "–")
+
+
+def _delta_color(v, t):
+    v = num(v)
+    return t["muted"] if v is None else (HOTPINK if v >= 0 else PURPLE)
+
+
+# ---------- 📈 канал ----------
+def render_channel(n, font=None, bg=None, photo=None, theme=None, now=None, credit=None):
+    """Аналитика канала по channel_numbers(...): подписчики и прирост, ER24, график за 7 дней, просмотры на пост."""
     font = font or default_font
-    W, top = 1280, (300 if bg is not None else 128)
-    H = top + 136 + 330 + 110                         # высота — по содержимому (с фоном — выше на баннер)
-    img = Image.new("RGBA", (W, H), BG + (255,))
-    if bg is not None:
-        banner, _ = _page(W, 330, bg)
-        img.alpha_composite(banner, (0, 0))
+    n = n if isinstance(n, dict) else {}
+    now = _now(now, n)
+    t = _theme(theme, now)
+    img = _canvas(t, bg, seed_of(n.get("title")))
+    _header(img, t, font, "Аналитика канала", n.get("title"), now, photo, avatar=True)
+    top, gap = 144, 20
+    tw = (W - 2 * MARGIN - 3 * gap) // 4
+    today = num(n.get("today"))
+    tiles = (("Подписчики", fmt_big(n.get("subs")), f"сегодня {_delta(today)}" if today is not None
+              else "сегодня — нет данных", PURPLE, _delta_color(today, t)),
+             ("За 7 дней", _delta(n.get("d7")), "прирост подписчиков", HOTPINK, None),
+             ("За 30 дней", _delta(n.get("d30")), "прирост подписчиков" if num(n.get("d30")) is not None
+              else "история копится", PURPLE, None),
+             ("ER24", fmt_pct(n.get("er24")), "просмотры / подписчики", HOTPINK, None))
+    for i, (label, value, foot, accent, fc) in enumerate(tiles):
+        x = MARGIN + i * (tw + gap)
+        _tile(img, (x, top, x + tw, top + 140), t, font, label, value, foot, accent, fc)
+    y0, y1 = 304, 724
+    split = MARGIN + 2 * tw + gap
+    _panel(img, (MARGIN, y0, split + tw // 2, y1), t, 26)
+    _panel_title(img, t, font, MARGIN + 28, y0 + 42, "Динамика подписчиков", "последние 7 дней")
+    days = [x for x in (n.get("days") or ()) if isinstance(x, (tuple, list)) and len(x) == 3]
+    _chart(img, (MARGIN + 96, y0 + 100, split + tw // 2 - 40, y1 - 70), t, font, [v for _, v, _ in days],
+           [f"{k[8:10]}.{k[5:7]}" if isinstance(k, str) and len(k) >= 10 else "" for k, _, _ in days],
+           "История копится: бот раз в день запоминает число подписчиков")
+    px = split + tw // 2 + gap
+    _panel(img, (px, y0, W - MARGIN, y1), t, 26)
+    _panel_title(img, t, font, px + 28, y0 + 42, "Просмотры на пост", "в среднем за первые часы")
+    vals = [num(n.get(f"v{h}")) for h in (24, 48, 72)]
+    top_v = max([v for v in vals if v is not None] or [0]) or 1
+    d = ImageDraw.Draw(img)
+    for i, (h, v) in enumerate(zip((24, 48, 72), vals)):
+        yy = y0 + 150 + i * 96
+        d.text((px + 28, yy), f"{h} часа" if h < 48 else f"{h} часов", font=font(False, 18), fill=t["muted"],
+               anchor="ls")
+        val = fmt_big(v)
+        d.text((W - MARGIN - 28, yy + 2), val, font=_fit(d, val, font, True, 30, 200), fill=t["text"], anchor="rs")
+        _bar(img, (px + 28, yy + 18, W - MARGIN - 28, yy + 30), (v or 0) / top_v, t, None if i == 0 else PURPLE)
         d = ImageDraw.Draw(img)
-        _text(d, (48, 150), "Сеть каналов MAX", font(True, 64), WHITE, "ls")
-        _text(d, (50, 200), f"{net['n']} {_ru(net['n'], 'канал', 'канала', 'каналов')} · одна сеть",
-              font(False, 30), WHITE, "ls")
-    else:
-        d = ImageDraw.Draw(img)
-        _text(d, (W / 2, 70), title, _fit(d, title, font, True, 52, W - 80), PURPLE, "mm")
-    _card(img, (30, top, W - 30, top + 112), 22)
-    d = ImageDraw.Draw(img)
-    cells = ((fmt_short(net["subs"]), "подписчиков в сети"), (fmt_short(net["v24"]), "просмотров в сутки"),
-             (fmt_pct(net["er"]), "общий ER"),
-             (str(net["n"]), "каналов в сети"))
-    for i, (big, small) in enumerate(cells):
-        x = 30 + (W - 60) * (i + 0.5) / 4
-        _text(d, (x, top + 46), big, font(True, 46), HOTPINK, "mm")
-        _text(d, (x, top + 90), small, font(False, 17), WHITE, "mm")
-    y = top + 136
-    _card(img, (30, y, 448, y + 330), 22)
-    d = ImageDraw.Draw(img)
-    _text(d, (239, y + 40), "Просмотры", font(True, 32), PURPLE, "mm")
-    for i, h in enumerate((24, 48, 72)):
-        yy = y + 84 + i * 76
-        if i % 2 == 0:
-            _card(img, (54, yy, 424, yy + 64), 12, width=1)
-            d = ImageDraw.Draw(img)
-        _text(d, (74, yy + 32), f"{h}ч:", font(False, 30), WHITE, "lm")
-        _text(d, (404, yy + 32), fmt_short(net[f"v{h}"]), font(True, 34), HOTPINK, "rm")
-    _card(img, (472, y, W - 30, y + 330), 22)
-    d = ImageDraw.Draw(img)
-    _text(d, ((472 + W - 30) / 2, y + 40), "Топ-3 канала", font(True, 32), PURPLE, "mm")
-    _text(d, (500, y + 88), "Название", font(False, 20), WHITE, "lm")
-    _text(d, (1050, y + 88), "Подписчики", font(False, 20), WHITE, "rm")
-    _text(d, (W - 56, y + 88), "Просмотры", font(False, 20), WHITE, "rm")
-    for i, (name, subs, views) in enumerate(net["top"]):
-        yy = y + 112 + i * 70
-        if i % 2 == 0:
-            _card(img, (490, yy, W - 46, yy + 62), 12, width=1)
-            d = ImageDraw.Draw(img)
-        _avatar(img, (526, yy + 31), 20, name)
-        d = ImageDraw.Draw(img)
-        _text(d, (558, yy + 31), name, _fit(d, name, font, False, 24, 380), WHITE, "lm")
-        _text(d, (1050, yy + 31), fmt_short(subs), font(True, 26), HOTPINK, "rm")
-        _text(d, (W - 56, yy + 31), fmt_short(views), font(True, 26), HOTPINK, "rm")
-    lt = time.localtime(net["now"])
-    when = f"{lt.tm_hour:02d}:{lt.tm_min:02d}, {lt.tm_mday} {MONTHS[lt.tm_mon - 1]} {lt.tm_year} г."
-    _card(img, (30, H - 70, W - 30, H - 16), 18)
-    d = ImageDraw.Draw(img)
-    _text(d, (56, H - 43), f"Актуально на {when}", font(False, 20), WHITE, "lm")
-    _text(d, (W - 56, H - 43), f"{brand} — аналитика MAX-каналов", font(True, 20), PURPLE, "rm")
+    _footer(img, t, font, "Данные: MAX · 24 / 48 / 72 ч — средние просмотры поста", credit)
     return img.convert("RGB")
 
 
-# ---------- прогноз поста ----------
-def render_predict(p, font=None, bg=None, channel=None, brand="Reloader", now=None):
-    """Картинка 1200×675 по predict(...): оценка из 10 (кольцо), ожидаемые просмотры, лучшее время, советы."""
+# ---------- 🌐 сеть каналов ----------
+def render_network(net, font=None, bg=None, theme=None, now=None, credit=None,
+                   title="Статистика по всей сетке каналов"):
+    """Сводка по сети: подписчики, просмотры за сутки, общий ER, число каналов; просмотры на пост; топ-3 канала."""
+    font = font or default_font
+    net = net if isinstance(net, dict) else {}
+    now = _now(now, net)
+    t = _theme(theme, now)
+    img = _canvas(t, bg, seed_of(title))
+    _header(img, t, font, "Сеть каналов", title, now)
+    count = int(num(net.get("n")) or 0)
+    top, gap = 144, 20
+    tw = (W - 2 * MARGIN - 3 * gap) // 4
+    tiles = (("Подписчиков в сети", fmt_short(net.get("subs")), "все каналы вместе", PURPLE),
+             ("Просмотров за сутки", fmt_short(net.get("v24")), "посты последних 24 ч", HOTPINK),
+             ("Общий ER", fmt_pct(net.get("er")), "просмотры / подписчики", PURPLE),
+             ("Каналов", fmt_int(count), _ru(count, "канал в сети", "канала в сети", "каналов в сети"), HOTPINK))
+    for i, (label, value, foot, accent) in enumerate(tiles):
+        x = MARGIN + i * (tw + gap)
+        _tile(img, (x, top, x + tw, top + 140), t, font, label, value, foot, accent)
+    y0, y1 = 304, 724
+    lx1 = MARGIN + tw + gap + tw // 2
+    _panel(img, (MARGIN, y0, lx1, y1), t, 26)
+    _panel_title(img, t, font, MARGIN + 28, y0 + 42, "Просмотры на пост", "вся сеть, сумма")
+    vals = [num(net.get(f"v{h}")) for h in (24, 48, 72)]
+    top_v = max([v for v in vals if v is not None] or [0]) or 1
+    d = ImageDraw.Draw(img)
+    for i, (h, v) in enumerate(zip((24, 48, 72), vals)):
+        yy = y0 + 150 + i * 96
+        d.text((MARGIN + 28, yy), f"{h} часа" if h < 48 else f"{h} часов", font=font(False, 18), fill=t["muted"],
+               anchor="ls")
+        d.text((lx1 - 28, yy + 2), fmt_short(v), font=font(True, 30), fill=t["text"], anchor="rs")
+        _bar(img, (MARGIN + 28, yy + 18, lx1 - 28, yy + 30), (v or 0) / top_v, t, None if i == 0 else PURPLE)
+        d = ImageDraw.Draw(img)
+    rx = lx1 + gap
+    _panel(img, (rx, y0, W - MARGIN, y1), t, 26)
+    _panel_title(img, t, font, rx + 28, y0 + 42, "Топ-3 канала", "по числу подписчиков")
+    d = ImageDraw.Draw(img)
+    d.text((W - MARGIN - 190, y0 + 92), "Подписчики", font=font(False, 15), fill=t["faint"], anchor="rs")
+    d.text((W - MARGIN - 28, y0 + 92), "За сутки", font=font(False, 15), fill=t["faint"], anchor="rs")
+    rows = [r for r in (net.get("top") or ()) if isinstance(r, (tuple, list)) and len(r) == 3][:3]
+    best = max([num(s) or 0 for _, s, _ in rows] or [0]) or 1
+    for i, (name, subs, views) in enumerate(rows):
+        yy = y0 + 110 + i * 96
+        _fill(img, (rx + 20, yy, W - MARGIN - 20, yy + 80), t["grid"], 18)
+        _avatar(img, (rx + 60, yy + 34), 22, name, None, font)
+        d = ImageDraw.Draw(img)
+        nf = font(True, 20)
+        d.text((rx + 96, yy + 34), _clip(d, name, nf, W - MARGIN - 230 - rx - 96), font=nf, fill=t["text"],
+               anchor="lm")
+        d.text((W - MARGIN - 190, yy + 34), fmt_short(subs), font=font(True, 22), fill=t["text"], anchor="rm")
+        d.text((W - MARGIN - 40, yy + 34), fmt_short(views), font=font(True, 22), fill=HOTPINK, anchor="rm")
+        _bar(img, (rx + 96, yy + 58, W - MARGIN - 40, yy + 64), (num(subs) or 0) / best, t,
+             None if i == 0 else PURPLE)
+    if not rows:
+        d.text(((rx + W - MARGIN) / 2, (y0 + y1) / 2), "Каналов пока нет", font=font(False, 18), fill=t["muted"],
+               anchor="mm")
+    _footer(img, t, font, "Данные: MAX · ER — просмотры за сутки к подписчикам", credit)
+    return img.convert("RGB")
+
+
+# ---------- 🔮 прогноз поста ----------
+def render_predict(p, font=None, bg=None, channel=None, theme=None, now=None, credit=None):
+    """Прогноз поста по predict(...): оценка из 10 (кольцо), ожидаемые просмотры, лучшее время, советы."""
     font = font or default_font
     p = p if isinstance(p, dict) else {}
-    W, H = 1200, 675
-    img, art = _page(W, H, bg)
-    a = 235 if art else 255
-    _card(img, (32, 28, W - 32, 128), 30, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (60, 44), "ПРОГНОЗ ПОСТА", font(True, 17), PURPLE)
+    now = _now(now)
+    t = _theme(theme, now)
     name = str(channel).strip() if channel and str(channel).strip() else "Черновик поста"
-    _text(d, (58, 68), name, _fit(d, name, font, True, 36, W - 140), WHITE)
-    # оценка — кольцо: фиолетовое, заполнено розовым на оценку
+    img = _canvas(t, bg, seed_of(name))
+    _header(img, t, font, "Прогноз поста", name, now)
+    y0, y1, gap = 144, 504, 20
+    cw = (W - 2 * MARGIN - 2 * gap) // 3
+    # оценка — кольцо
+    _panel(img, (MARGIN, y0, MARGIN + cw, y1), t, 26)
+    _panel_title(img, t, font, MARGIN + 28, y0 + 42, "Оценка поста")
     score = num(p.get("score"))
     score = max(0, min(10, int(round(score)))) if score is not None else None
-    _card(img, (32, 152, 400, 470), 28, a)
+    cx, cy = MARGIN + cw // 2, y0 + 205
+    _ring(img, (cx, cy), 100, 18, (score or 0) / 10, t)
     d = ImageDraw.Draw(img)
-    _text(d, (216, 184), "Оценка", font(True, 26), PURPLE, "mm")
-    cx, cy, r = 216, 324, 104
-    d.arc((cx - r, cy - r, cx + r, cy + r), 0, 360, fill=PURPLE, width=14)
-    if score:
-        d.arc((cx - r, cy - r, cx + r, cy + r), -90, -90 + 36 * score, fill=HOTPINK, width=14)
-    _text(d, (cx, cy - 8), "—" if score is None else str(score), font(True, 84), HOTPINK, "mm")
-    _text(d, (cx, cy + 56), "из 10", font(False, 22), WHITE, "mm")
+    d.text((cx, cy - 6), "—" if score is None else str(score), font=font(True, 72), fill=t["text"], anchor="mm")
+    d.text((cx, cy + 44), "из 10", font=font(False, 18), fill=t["muted"], anchor="mm")
     # ожидаемые просмотры
-    _card(img, (424, 152, 800, 470), 28, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (452, 184), "Ожидаемо", font(True, 26), PURPLE, "lm")
+    x = MARGIN + cw + gap
+    _panel(img, (x, y0, x + cw, y1), t, 26)
+    _panel_title(img, t, font, x + 28, y0 + 42, "Ожидаемые просмотры")
     reach = p.get("reach")
+    d = ImageDraw.Draw(img)
     if isinstance(reach, (tuple, list)) and len(reach) == 2 and None not in (num(reach[0]), num(reach[1])):
         rv = f"{fmt_short(reach[0])}–{fmt_short(reach[1])}"
-        _text(d, (452, 262), rv, _fit(d, rv, font, True, 60, 320), HOTPINK, "lm")
-        _text(d, (452, 322), "просмотров", font(False, 22), WHITE, "lm")
+        _grad_text(img, (x + 28, y0 + 214), rv, _fit(d, rv, font, True, 64, cw - 56, 24))
+        d = ImageDraw.Draw(img)
+        d.text((x + 28, y0 + 254), "просмотров за первые сутки", font=font(False, 17), fill=t["muted"], anchor="ls")
         if num(p.get("median")) is not None:
-            _text(d, (452, 400), f"обычно у канала — {fmt_int(p['median'])}", font(False, 20), WHITE, "lm")
+            _chip(img, (x + 28, y1 - 56), f"обычно у канала — {fmt_int(p['median'])}", t, font, PURPLE)
     else:
-        _text(d, (452, 262), "—", font(True, 60), HOTPINK, "lm")
-        _text(d, (452, 322), "нет истории канала", font(False, 22), WHITE, "lm")
+        d.text((x + 28, y0 + 214), "—", font=font(True, 64), fill=t["text"], anchor="ls")
+        d.text((x + 28, y0 + 254), "нет истории канала", font=font(False, 17), fill=t["muted"], anchor="ls")
     # лучшее время
-    _card(img, (824, 152, W - 32, 470), 28, a)
-    d = ImageDraw.Draw(img)
-    _text(d, (852, 184), "Лучшее время", font(True, 26), PURPLE, "lm")
+    x = MARGIN + 2 * (cw + gap)
+    _panel(img, (x, y0, W - MARGIN, y1), t, 26)
+    _panel_title(img, t, font, x + 28, y0 + 42, "Лучшее время")
     best = p.get("best") if isinstance(p.get("best"), (tuple, list)) and len(p.get("best")) == 2 else (None, None)
-    day = best[0] if isinstance(best[0], int) and 0 <= best[0] < 7 else None
-    hour = best[1] if isinstance(best[1], int) and 0 <= best[1] < 24 else None
-    when = ", ".join(x for x in (WEEK[day] if day is not None else "", f"{hour:02d}:00" if hour is not None else "")
-                     if x) or "—"
-    _text(d, (852, 262), when, _fit(d, when, font, True, 56, 300), HOTPINK, "lm")
-    _text(d, (852, 322), "по прошлым постам", font(False, 20), WHITE, "lm")
-    # советы
-    _card(img, (32, 494, W - 32, 622), 24, a)
+    day = best[0] if isinstance(best[0], int) and not isinstance(best[0], bool) and 0 <= best[0] < 7 else None
+    hour = best[1] if isinstance(best[1], int) and not isinstance(best[1], bool) and 0 <= best[1] < 24 else None
+    when = ", ".join(x_ for x_ in (WEEK[day] if day is not None else "",
+                                   f"{hour:02d}:00" if hour is not None else "") if x_) or "—"
     d = ImageDraw.Draw(img)
-    tips = [str(t) for t in (p.get("tips") or ()) if t][:2]
-    why = [str(t) for t in (p.get("why") or ()) if t][:2]
-    _text(d, (60, 522), "Как сделать лучше" if tips else "Почему так", font(True, 24), PURPLE, "lm")
-    tip_font = font(False, 20)
+    d.text((x + 28, y0 + 214), when, font=_fit(d, when, font, True, 60, W - MARGIN - x - 56, 24), fill=t["text"],
+           anchor="ls")
+    d.text((x + 28, y0 + 254), "по прошлым постам канала", font=font(False, 17), fill=t["muted"], anchor="ls")
+    _chip(img, (x + 28, y1 - 56), tz_label(now), t, font, HOTPINK)
+    # советы
+    _panel(img, (MARGIN, y1 + gap, W - MARGIN, 724), t, 26)
+    tips = [str(s) for s in (p.get("tips") or ()) if s][:3]
+    why = [str(s) for s in (p.get("why") or ()) if s][:3]
+    _panel_title(img, t, font, MARGIN + 28, y1 + gap + 46, "Как сделать лучше" if tips else "Почему так")
+    d = ImageDraw.Draw(img)
+    tf = font(False, 19)
     for i, tip in enumerate(tips or why or ["Пост выглядит хорошо — можно выкладывать"]):
-        yy = 560 + i * 32
-        d.ellipse((62, yy - 5, 72, yy + 5), fill=HOTPINK)
-        _text(d, (86, yy), _clip(d, tip, tip_font, W - 150), tip_font, WHITE, "lm")
-    n_posts = int(num(p.get("n")) or 0)
-    stamp = time.strftime("%d.%m.%Y %H:%M", time.localtime(now or time.time()))
-    _text(d, (34, 650), f"{brand} · прогноз по {n_posts} {_ru(n_posts, 'посту', 'постам', 'постам')} канала · {stamp}"
-          if n_posts else f"{brand} · {stamp}", font(False, 15), WHITE, "lm")
+        yy = y1 + gap + 90 + i * 40
+        _fill(img, (MARGIN + 30, yy - 6, MARGIN + 42, yy + 6), (HOTPINK if i == 0 else PURPLE) + (255,), 6)
+        d = ImageDraw.Draw(img)
+        d.text((MARGIN + 60, yy), _clip(d, tip, tf, W - 2 * MARGIN - 90), font=tf, fill=t["text"], anchor="lm")
+    count = int(num(p.get("n")) or 0)
+    _footer(img, t, font, f"Прогноз по {count} {_ru(count, 'посту', 'постам', 'постам')} канала" if count
+            else "Прогноз по самому тексту — истории канала нет", credit)
+    return img.convert("RGB")
+
+
+# ---------- ⚡ оценка потенциала ----------
+_PARTS = (("growth", "Рост", "прирост подписчиков за неделю"), ("engagement", "Вовлечённость", "просмотры к подписчикам"),
+          ("activity", "Регулярность", "как часто выходят посты"), ("reach", "Охват", "размер аудитории"))
+
+
+def render_potential(d_, font=None, bg=None, theme=None, now=None, credit=None):
+    """Оценка потенциала канала (0–100): кольцо с оценкой, из чего она сложилась, приток и отток подписчиков."""
+    font = font or default_font
+    d_ = d_ if isinstance(d_, dict) else {}
+    now = _now(now, d_)
+    t = _theme(theme, now)
+    title = d_.get("title")
+    img = _canvas(t, bg, seed_of(title))
+    _header(img, t, font, "Оценка потенциала", title, now)
+    y0, y1, gap = 144, 724, 20
+    lw = 440
+    _panel(img, (MARGIN, y0, MARGIN + lw, y1), t, 26)
+    _panel_title(img, t, font, MARGIN + 28, y0 + 42, "Потенциал канала")
+    score = num(d_.get("score"))
+    score = max(0, min(100, int(round(score)))) if score is not None else None
+    cx, cy = MARGIN + lw // 2, y0 + 250
+    _ring(img, (cx, cy), 130, 22, (score or 0) / 100, t)
+    d = ImageDraw.Draw(img)
+    d.text((cx, cy - 10), "—" if score is None else str(score), font=font(True, 96), fill=t["text"], anchor="mm")
+    d.text((cx, cy + 58), "из 100", font=font(False, 20), fill=t["muted"], anchor="mm")
+    label = str(d_.get("label") or "").strip()
+    text = f"{label} потенциал" if label else "Мало данных для оценки"
+    lf = font(True, 24)
+    if label:
+        _grad_text(img, (cx, y1 - 92), text, lf, "mm")
+    else:
+        ImageDraw.Draw(img).text((cx, y1 - 92), text, font=lf, fill=t["muted"], anchor="mm")
+    notes = [str(s) for s in (d_.get("notes") or ()) if s][:1]
+    if notes:
+        d = ImageDraw.Draw(img)
+        nf = font(False, 15)
+        d.text((cx, y1 - 52), _clip(d, notes[0], nf, lw - 48), font=nf, fill=t["faint"], anchor="mm")
+    # из чего оценка
+    rx = MARGIN + lw + gap
+    _panel(img, (rx, y0, W - MARGIN, 500), t, 26)
+    _panel_title(img, t, font, rx + 28, y0 + 42, "Из чего оценка", "каждая часть — от 0 до 100")
+    parts = d_.get("parts") if isinstance(d_.get("parts"), dict) else {}
+    for i, (key, name, hint) in enumerate(_PARTS):
+        yy = y0 + 122 + i * 64
+        v = num(parts.get(key))
+        d = ImageDraw.Draw(img)
+        d.text((rx + 28, yy), name, font=font(True, 19), fill=t["text"], anchor="ls")
+        d.text((rx + 200, yy), hint, font=font(False, 15), fill=t["faint"], anchor="ls")
+        d.text((W - MARGIN - 28, yy), "нет данных" if v is None else str(int(round(v))),
+               font=font(True, 20) if v is not None else font(False, 16),
+               fill=t["text"] if v is not None else t["muted"], anchor="rs")
+        _bar(img, (rx + 28, yy + 14, W - MARGIN - 28, yy + 24), None if v is None else v / 100, t,
+             None if i % 2 == 0 else PURPLE)
+    # приток и отток
+    bw = (W - MARGIN - rx - 2 * gap) // 3
+    joins, leaves, total = num(d_.get("joins")), num(d_.get("leaves")), num(d_.get("total"))
+    cells = (("Подписчики", fmt_big(d_.get("subs")), "сейчас в канале", PURPLE),
+             ("Пришло / ушло", f"+{fmt_int(joins)} / –{fmt_int(leaves)}" if None not in (joins, leaves) else "—",
+              "пока бот следит", HOTPINK),
+             ("Итого", _delta(total), "чистый прирост", PURPLE))
+    for i, (label_, value, foot, accent) in enumerate(cells):
+        x = rx + i * (bw + gap)
+        _tile(img, (x, 520, x + bw, y1), t, font, label_, value, foot, accent,
+              value_color=_delta_color(total, t) if i == 2 and total is not None else None)
+    _footer(img, t, font, "Оценка — по открытым данным канала: рост, просмотры, частота постов, аудитория", credit)
+    return img.convert("RGB")
+
+
+# ---------- 📊 рекламный охват (со знаком Reloader) ----------
+def render_ad_reach(d_, font=None, bg=None, theme=None, now=None, credit=None):
+    """Рекламный охват канала: сколько просмотров наберёт рекламный пост (вилка по медиане последних постов),
+    подписчики, ER, динамика и приток/отток. Внизу справа — водяной знак «Reloader» (картинку видит рекламодатель)."""
+    font = font or default_font
+    d_ = d_ if isinstance(d_, dict) else {}
+    now = _now(now, d_)
+    t = _theme(theme, now)
+    title = d_.get("title")
+    img = _canvas(t, bg, seed_of(title))
+    _header(img, t, font, "Рекламный охват", title, now)
+    y0, gap = 144, 20
+    hx1 = 800
+    _panel(img, (MARGIN, y0, hx1, 444), t, 26)
+    _panel_title(img, t, font, MARGIN + 28, y0 + 42, "Охват рекламного поста", "сколько просмотров наберёт пост")
+    low, high, med = num(d_.get("low")), num(d_.get("high")), num(d_.get("median"))
+    d = ImageDraw.Draw(img)
+    if low is not None and high is not None:
+        rv = f"{fmt_short(low)} – {fmt_short(high)}"
+        _grad_text(img, (MARGIN + 28, y0 + 188), rv, _fit(d, rv, font, True, 92, hx1 - MARGIN - 56, 28))
+        posts = int(num(d_.get("posts")) or 0)
+        d = ImageDraw.Draw(img)
+        d.text((MARGIN + 28, y0 + 226), "просмотров за первые сутки", font=font(False, 18), fill=t["muted"],
+               anchor="ls")
+        cw_ = _chip(img, (MARGIN + 28, 444 - 38), f"медиана {fmt_int(med)}", t, font, PURPLE)
+        if posts:
+            _chip(img, (MARGIN + 40 + cw_, 444 - 38), f"по {posts} {_ru(posts, 'посту', 'постам', 'постам')}", t,
+                  font, HOTPINK)
+    else:
+        d.text((MARGIN + 28, y0 + 188), "—", font=font(True, 92), fill=t["text"], anchor="ls")
+        d.text((MARGIN + 28, y0 + 226), "просмотров постов не видно — охват не посчитать", font=font(False, 18),
+               fill=t["muted"], anchor="ls")
+    tx = hx1 + gap
+    th = (444 - y0 - gap) // 2
+    _tile(img, (tx, y0, W - MARGIN, y0 + th), t, font, "Подписчики", fmt_big(d_.get("subs")), "сейчас в канале",
+          PURPLE)
+    _tile(img, (tx, y0 + th + gap, W - MARGIN, 444), t, font, "ER", fmt_pct(d_.get("er")),
+          "медиана просмотров / подписчики", HOTPINK)
+    y1 = 724
+    _panel(img, (MARGIN, 464, hx1, y1), t, 26)
+    _panel_title(img, t, font, MARGIN + 28, 464 + 42, "Подписчики", "пока бот следит за каналом")
+    series = [num(v) for v in (d_.get("series") or ()) if num(v) is not None][-60:]
+    _chart(img, (MARGIN + 96, 464 + 104, hx1 - 40, y1 - 34), t, font, series, None,
+           "История копится — бот смотрит число подписчиков раз в час", fmt_big)
+    _panel(img, (tx, 464, W - MARGIN, y1), t, 26)
+    _panel_title(img, t, font, tx + 28, 464 + 42, "Приток и отток")
+    joins, leaves, total = num(d_.get("joins")), num(d_.get("leaves")), num(d_.get("total"))
+    most = max(joins or 0, leaves or 0) or 1
+    d = ImageDraw.Draw(img)
+    for i, (name, v, color, sign) in enumerate((("Подписалось", joins, HOTPINK, "+"), ("Отписалось", leaves, PURPLE, "–"))):
+        yy = 464 + 98 + i * 62
+        d.text((tx + 28, yy), name, font=font(False, 17), fill=t["muted"], anchor="ls")
+        d.text((W - MARGIN - 28, yy), "—" if v is None else f"{sign}{fmt_int(v)}", font=font(True, 22),
+               fill=t["text"], anchor="rs")
+        _bar(img, (tx + 28, yy + 14, W - MARGIN - 28, yy + 24), (v or 0) / most, t, color)
+        d = ImageDraw.Draw(img)
+    d.text((tx + 28, y1 - 34), "Итого", font=font(True, 20), fill=t["text"], anchor="ls")
+    d.text((W - MARGIN - 28, y1 - 34), _delta(total), font=font(True, 26), fill=_delta_color(total, t),
+           anchor="rs")
+    _footer(img, t, font, "Вилка — 0,8–1,1 медианы просмотров последних постов", credit)
+    _watermark(img, t, font)
     return img.convert("RGB")
 
 

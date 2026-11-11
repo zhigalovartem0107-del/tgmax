@@ -329,14 +329,17 @@ def trends_pause(on):
 
 
 def settle(timeout=60):
-    """Ждём, пока всё фоновое доделается: полосы меню, отправки «в фоне», карточки, прогнозы, тренды, ответы."""
+    """Ждём, пока всё фоновое доделается: полосы меню, отправки «в фоне», карточки, прогнозы, тренды, ответы.
+    И пока бот не заберёт из очереди MAX все нажатия: последнее нажатие нагрузки могло ещё лежать в очереди —
+    тогда «тихо» лишь на миг, а потом бот берёт его и начинает рисовать карточку."""
     trends_pause(True)
     end = time.time() + timeout
     try:
         while time.time() < end:
             busy = [t for t in threading.enumerate() if t.name.startswith(
                 ("bg-", "anl-cards", "predict", "trend-now", "search-call", "typing", "waiter"))]
-            if not busy and bot.lanes_wait(0.1) and not bot.ANL_CARD_BUSY and not bot.TREND_LOCK.locked():
+            if not busy and srv.polled >= len(srv.updates) and bot.lanes_wait(0.1) and not bot.ANL_CARD_BUSY \
+                    and not bot.TREND_LOCK.locked():
                 return True
             time.sleep(0.1)
         return False
@@ -419,7 +422,13 @@ print(f"   память кода бота по кругам: {[round(s / 1e6, 2)
 assert grow2 < max(1.5 * grow1, 1_500_000) and grow2 < 4_000_000, (grow1, grow2)
 assert threads1 <= threads0 + 3, ([t.name for t in threading.enumerate()], threads0)
 assert fds1 <= fds0 + 12, (fds0, fds1)
-assert not bot.BG_THREADS and not bot.ANL_CARD_BUSY and len(bot.PRED_HIST) <= bot.PRED_HIST_MAX
+# Бот не стоит на месте: цикл ещё публикует очередь и шлёт уведомления «в фоне» — живой поток в работе не утечка.
+# Утечка — поток, который висит (не доделывается за 15 с), или запись, оставшаяся после конца потока.
+assert settle() and bot.bg_wait(15), [t.name for t in threading.enumerate()]
+with bot.BG_LOCK:
+    stale = [t.name for t in bot.BG_THREADS if not t.is_alive()]
+assert not stale and not bot.ANL_CARD_BUSY and len(bot.PRED_HIST) <= bot.PRED_HIST_MAX, (
+    stale, dict(bot.ANL_CARD_BUSY), len(bot.PRED_HIST))
 assert len(bot.TREND_SEARCH.cache) <= bot.TREND_SEARCH.cache_max and len(bot.LANES) == bot.MENU_LANES
 assert len(bot.PERF["upd"]) < 40 and len(bot.PERF["http"]) < 60, (list(bot.PERF["upd"]), list(bot.PERF["http"]))
 assert not sessions_made and len(DDGS_INITS) == 1

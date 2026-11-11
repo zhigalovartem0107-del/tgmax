@@ -1,4 +1,5 @@
-"""📊 Премиум-аналитика: карточки канала и всей сети (Pillow), 🔮 прогноз поста, фоны (узор / ИИ),
+"""📊 Премиум-аналитика: карточки канала и всей сети (Pillow), 🔮 прогноз поста, фоны (фото дня / свой рисунок
+природы / ИИ),
 ⏱ скорость меню (учёт времени, «печатает…», нажатия разных людей не ждут друг друга)."""
 import base64
 import importlib.util
@@ -14,7 +15,7 @@ import zlib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageFilter  # noqa: E402
 
 from fake_max import FakeMax  # noqa: E402
 from reloader.services import analytics_image as A  # noqa: E402
@@ -54,7 +55,7 @@ assert net["subs"] == 7400 and net["v24"] == 4000 and net["v48"] == 6000 and net
 assert net["er"] == round(4000 / 7400 * 100, 1) and [t for t, _, _ in net["top"]] == ["B", "D", "C"], net
 print("a1 ok: 📊 подписчики и прирост (сегодня/7/30 дней), просмотры на пост 24/48/72 ч, ER; сеть — сумма и топ-3")
 
-# 2) картинки: размеры, кириллица встроенным шрифтом бота, фон-узор от названия канала (один и тот же)
+# 2) картинки: размеры, кириллица встроенным шрифтом бота, фон-рисунок от названия канала (один и тот же)
 tele = types.ModuleType("telethon"); tele.TelegramClient = object
 tele.errors = types.SimpleNamespace(SessionPasswordNeededError=Exception)
 sys.modules["telethon"] = tele; sys.modules["telethon.errors"] = tele.errors
@@ -77,21 +78,21 @@ assert F(True, 40) is F(True, 40)                                         # шр
 t0 = time.perf_counter()
 img = A.render_channel(A.channel_numbers("EroxBlox — новости Roblox", 5008, posts, hist30, NOW), F)
 took = time.perf_counter() - t0
-assert img.size == (1200, 900) and img.mode == "RGB" and took < 3, (img.size, took)
+assert img.size == A.SIZE == (1280, 800) and img.mode == "RGB" and took < 3, (img.size, took)
 long_title = "Очень длинное название канала, которое не помещается в одну строку карточки целиком"
 photo = Image.new("RGB", (64, 64), (200, 30, 30))
-bg = A.procedural_background(1200, 900, A.seed_of(long_title))
-assert A.render_channel(A.channel_numbers(long_title, None, [], {}, NOW), F, bg, photo).size == (1200, 900)
-assert A.render_network(net, F).size == (1280, 704)
-wide = A.render_network(net, F, A.procedural_background(1280, 330, 7, "waves"))
-assert wide.size == (1280, 876)                                            # с фоном — баннер сверху (как у сетей)
+bg = A.nature_background(1280, 800, "forest", A.seed_of(long_title))
+assert A.render_channel(A.channel_numbers(long_title, None, [], {}, NOW), F, bg, photo).size == (1280, 800)
+assert A.render_network(net, F).size == (1280, 800)
+wide = A.render_network(net, F, A.nature_background(1280, 800, "ocean", 7))
+assert wide.size == (1280, 800)                                            # с фоном — тот же размер
 accent = sum(c for c, px in wide.getcolors(1 << 20) if all(abs(px[i] - A.HOTPINK[i]) < 8 for i in range(3)))
-assert accent > 2000, accent                                               # цифры — розовым #FF1493
+assert accent > 600, accent                                                # акценты и цифры — розовым #FF1493
 a1, a2 = A.procedural_background(600, 300, 42), A.procedural_background(600, 300, 42)
 assert a1.tobytes() == a2.tobytes(), "у канала всегда один и тот же узор"
 assert a1.tobytes() != A.procedural_background(600, 300, 43).tobytes()
 assert A.procedural_background(600, 300, 42, "waves").size == (600, 300)
-print(f"a2 ok: 🖼 карточка канала 1200×900 за {took:.2f} с, сеть 1280×704 (с баннером 1280×876); кириллица; свой узор")
+print(f"a2 ok: 🖼 карточка канала 1280×800 за {took:.2f} с, сеть 1280×800 (и с фоном); кириллица; свой рисунок")
 
 # 3) 🔮 прогноз поста по истории канала
 def at(day, hour):
@@ -210,7 +211,7 @@ print("a5 ok: 🖼 карточка на каждый канал и 🌐 сво�
 text, rows = bot.screen("anl", 1)
 pl_ = [b.get("payload") for r in rows for b in r]
 assert {"a:anl", "a:anlcard", "a:anlnet", "a:predict", "a:anlbg"} <= set(pl_), pl_
-assert "Фон карточек: 🎨 узор" in str(rows) and "🔮 Прогноз поста" in text
+assert "Фон карточек: 🏞 фото дня" in str(rows) and "🔮 Прогноз поста" in text
 n_msg = len(srv.messages)
 t0 = time.perf_counter()
 assert bot.do_action("anlcard", 1) == "anl" and "Рисую" in bot.FLASH.pop(1) and time.perf_counter() - t0 < 1
@@ -234,11 +235,12 @@ assert got.getpixel((5, 5)) == (255, 0, 0) and calls == [("Тема канала
 px = bot.anl_background("ai", "Тема канала", 1200, 900, "aurora").getpixel((5, 5))
 assert px[0] > 240 and px[1] < 16 and px[2] < 16, px                  # из файла-кэша (JPEG) — тот же красный
 assert len(calls) == 1, "фон от ИИ — один раз в неделю на тему (дальше из файла)"
-bot.ai_image.generate = lambda *a, **k: None                               # ИИ не смог — рисуем узор сами
+bot.ai_image.generate = lambda *a, **k: None                               # ИИ не смог — фон дня (свой рисунок)
 assert bot.anl_background("ai", "Другая тема", 1200, 900, "aurora").size == (1200, 900)
 assert bot.anl_background("off", "x", 10, 10, "aurora") is None
 bot.ai_image.generate, bot.ai_keys = real_gen, real_keys
-print("a6 ok: кнопки «🖼 Карточка канала», «🌐 Сводка», «🔮 Прогноз», «Фон: узор/без фона/ИИ»; ИИ не смог — узор")
+print("a6 ok: кнопки «🖼 Карточка канала», «🌐 Сводка», «🔮 Прогноз», «Фон: фото дня/без фона/ИИ»; ИИ не смог — "
+      "фон дня")
 
 # 7) 🔮 прогноз из меню: черновик не уходит в очередь, «печатает…», ответ с оценкой и советом ИИ
 real_ready, real_ask = bot.ai_llm_ready, bot.ai_ask_text
@@ -388,19 +390,20 @@ junk_posts = [{"t": None, "views": 5}, {"views": 3}, "x", None, {"t": NOW - 30 *
 jn = A.channel_numbers(None, nan, junk_posts, junk_hist, NOW)
 assert jn["title"] == "Канал" and jn["subs"] is None and jn["v24"] == 800, jn
 assert [v for _, v, _ in jn["days"] if v is not None] == [4990], jn["days"]          # из истории — только честное
-assert A.render_channel(jn, F).size == (1200, 900)
+assert A.render_channel(jn, F).size == (1280, 800)
 huge = A.channel_numbers("Огромный канал", 10 ** 12, [{"t": NOW - 30 * 3600, "views": 10 ** 13}], {}, NOW)
-img = A.render_channel(huge, F)
-assert img.size == (1200, 900) and img.getpixel((5, 450)) == A.BG, "огромные числа не вылезли за карточку"
+img = A.render_channel(huge, F, theme="dark")
+gutter = img.convert("L").crop((329, 150, 342, 280)).filter(ImageFilter.FIND_EDGES).crop((1, 1, 12, 129))
+assert img.size == (1280, 800) and not sum(gutter.histogram()[61:]), "огромные числа не вылезли из плитки"
 for w, h in ((0, 5), (1, 1), (5, 0), (-3, 4), (None, "x")):
     bgx = A.procedural_background(w, h, 1)
     assert bgx.size[0] >= 1 and bgx.size[1] >= 1
 for mode in ("P", "LA", "1", "I;16", "CMYK", "F", "I", "RGBA"):
-    assert A.render_channel(jn, F, bg=Image.new(mode, (40, 30)), photo=Image.new(mode, (40, 30))).size == (1200, 900)
-assert A.render_network(A.network_numbers([], NOW), F, Image.new("RGB", (1, 1))).size == (1280, 876)
+    assert A.render_channel(jn, F, bg=Image.new(mode, (40, 30)), photo=Image.new(mode, (40, 30))).size == (1280, 800)
+assert A.render_network(A.network_numbers([], NOW), F, Image.new("RGB", (1, 1))).size == (1280, 800)
 net_junk = A.network_numbers([{"title": None, "subs": nan, "v24": nan}, "мусор", None, {"subs": 50, "v24": 10}], NOW)
 assert net_junk["subs"] == 50 and net_junk["v24"] == 10 and net_junk["n"] == 2 and net_junk["top"][0][0] == "Канал"
-assert A.render_network(net_junk, F).size == (1280, 704)
+assert A.render_network(net_junk, F).size == (1280, 800)
 pj = P.predict(12345, history=[{"views": 5}, {"t": None, "views": 1}, {"t": 1e20, "views": 3}, {"t": NOW, "views": "x"},
                                "junk", None, {"t": NOW - 3600, "views": nan}])
 assert pj["n"] == 0 and pj["reach"] is None and "нет истории" in P.explain(pj)
@@ -445,7 +448,7 @@ assert len(bot.PRED_HIST) <= bot.PRED_HIST_MAX and 9100 in bot.PRED_HIST, len(bo
 print("a13 ok: 💾 испорченный subs_history.json — честное берём, мусор отбрасываем; пустой канал — карточка с «—» и "
       "сводка; прогноз без истории и при лежащем MAX; память прогнозов не растёт")
 
-# 14) ИИ-фон: нет ключа, мусор вместо картинки, огромная картинка — всегда фон есть (узор), бот не падает
+# 14) ИИ-фон: нет ключа, мусор вместо картинки, огромная картинка — всегда фон есть (рисунок дня), бот не падает
 real_gen, real_keys = bot.ai_image.generate, bot.ai_keys
 gen_calls = []
 bot.ai_keys = lambda p: []
@@ -462,13 +465,13 @@ bigbuf = io.BytesIO()
 Image.new("RGB", (3000, 2000), (0, 120, 0)).save(bigbuf, "JPEG")
 bot.ai_image.generate = lambda *a, **k: bigbuf.getvalue()
 gbg = bot.anl_background("ai", "Огромная", 1280, 330, "waves")
-assert A.render_network(net, F, gbg).size == (1280, 876)
+assert A.render_network(net, F, gbg).size == (1280, 800)
 bot.ai_image.generate, bot.ai_keys = real_gen, real_keys
 assert bot.update_label({"update_type": "message_created", "message": {"recipient": {"chat_type": "dialog"},
                                                                        "body": {"text": "/абракадабра123 x"}}}) \
     == "сообщение /…" and bot.update_label({"update_type": "message_created", "message": {
         "recipient": {"chat_type": "dialog"}, "body": {"text": "/perf"}}}) == "сообщение /perf"
-print("a14 ok: 🎨 ИИ-фон: нет ключа — узор без запроса; мусор/пустота/битый PNG — узор; огромная картинка — "
+print("a14 ok: 🎨 ИИ-фон: нет ключа — рисунок дня без запроса; мусор/пустота/битый PNG — рисунок дня; огромная картинка — "
       "вписана; учёт скорости не заводит строку на каждую «/абракадабру»")
 
 print("ВСЕ ТЕСТЫ АНАЛИТИКИ ПРОШЛИ")

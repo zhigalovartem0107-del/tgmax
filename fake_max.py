@@ -25,6 +25,7 @@ class FakeMax:
         self.delay = 0.0         # задержка каждого ответа (сек): «медленный MAX» для нагрузочных проверок
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
+        self.polled = 0                    # докуда бот уже забрал и разобрал очередь (marker его последнего /updates)
         self.bots = {}                     # другие боты (продажа): токен -> {"name", "updates": [...]}
         self.messages = []                 # то, что бот отправил: {chat_id, body, mid}
         self.history = {}                  # chat_id -> [{"timestamp": мс, "body": {...}, "stat": {"views": N}}]
@@ -179,6 +180,8 @@ class FakeMax:
                                 return self._send(500, {"message": "boom"})
                             tok = self.headers.get("Authorization")
                             queue = outer.bots[tok]["updates"] if tok in outer.bots else outer.updates
+                            if tok not in outer.bots:      # пришёл с marker — всё до него уже разобрал
+                                outer.polled = max(outer.polled, marker)
                             batch = queue[marker:]
                             if batch or time.time() > deadline:
                                 return self._send(200, {"updates": batch, "marker": marker + len(batch)})

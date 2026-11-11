@@ -9,6 +9,7 @@ import html as _html
 import re
 import threading
 import time
+from datetime import datetime
 
 CLOSED_TEXT = "Это закрытый канал. Чтобы я мог его анализировать, добавь меня в администраторы этого канала."
 KEEP_RECENT = 10          # «Недавние проверки» у одного пользователя
@@ -93,6 +94,41 @@ def parse_tme(page):
             subs = int(re.sub(r"\D", "", n.group(1)))
             kind = "channel" if n.group(2).lower().startswith(("subscr", "подпис")) else "group"
     return {"title": title or None, "subs": subs, "kind": kind}
+
+
+def _views(text):
+    """«1.2K» → 1200, «2.5M» → 2500000, «980» → 980; не число — None."""
+    m = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*([KkMmКкМм]?)", (text or "").strip().replace("\xa0", "").replace(" ", ""))
+    if not m:
+        return None
+    mult = {"": 1, "k": 1000, "к": 1000, "m": 1000000, "м": 1000000}[m.group(2).lower()]
+    return int(round(float(m.group(1).replace(",", ".")) * mult))
+
+
+def _iso(text):
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_tme_posts(page):
+    """Страница t.me/s/<канал>: [(номер поста, просмотров, время)] — у постов, где Telegram показывает просмотры.
+    Так видно охват публичного канала Telegram без прав админа."""
+    page = page if isinstance(page, str) else ""
+    out, seen = [], set()
+    for block in re.split(r'(?=data-post=")', page)[1:]:
+        m = re.match(r'data-post="[^"/]+/(\d+)"', block)
+        v = re.search(r'class="tgme_widget_message_views">([^<]+)<', block)
+        if not m or not v or int(m.group(1)) in seen:
+            continue
+        views = _views(_html.unescape(v.group(1)))
+        if views is None:
+            continue
+        t = re.search(r'<time datetime="([^"]+)"', block)
+        seen.add(int(m.group(1)))
+        out.append((int(m.group(1)), views, _iso(t.group(1)) if t else None))
+    return out
 
 
 def deltas(points):
@@ -186,6 +222,15 @@ class Watch:
     def points(self, key):
         with self.lock:
             return len((self.channels.get(key) or {}).get("points") or [])
+
+    def history(self, key):
+        """Снимки канала [(время, подписчиков)] — для графика и оценки роста."""
+        with self.lock:
+            return list((self.channels.get(key) or {}).get("points") or [])
+
+    def title(self, key):
+        with self.lock:
+            return (self.channels.get(key) or {}).get("title")
 
     def recent(self, uid):
         """[{key, title, link, closed, subs, since, deltas}] — свежие сверху."""
