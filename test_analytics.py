@@ -474,4 +474,84 @@ assert bot.update_label({"update_type": "message_created", "message": {"recipien
 print("a14 ok: 🎨 ИИ-фон: нет ключа — рисунок дня без запроса; мусор/пустота/битый PNG — рисунок дня; огромная картинка — "
       "вписана; учёт скорости не заводит строку на каждую «/абракадабру»")
 
+
+# 15) 🏞 фон дня: фото Unsplash — главный источник; нет ключа, лимит Unsplash (403/429), нет сети — свой рисунок
+#     природы, без ошибок и без лишних запросов к API; фото, полученное сегодня, остаётся и после лимита
+class UResp:
+    def __init__(self, status=200, data=None, headers=None, content=b""):
+        self.status_code, self.data, self.headers, self.content = status, data, headers or {}, content
+        self.text = json.dumps(data) if data is not None else content.decode("latin-1")
+
+    def json(self):
+        if self.data is None:
+            raise ValueError("not json")
+        return self.data
+
+    def iter_content(self, n=65536):
+        for i in range(0, len(self.content), n):
+            yield self.content[i:i + n]
+
+
+class UHTTP:
+    """Поддельный Unsplash: mode — "ok", "limit" (403 Rate Limit Exceeded), "429" или "down" (нет сети)."""
+
+    def __init__(self):
+        self.calls, self.mode = [], "ok"
+
+    def get(self, url, params=None, headers=None, timeout=None, stream=False):
+        self.calls.append(url.split("?")[0])
+        if self.mode == "down":
+            raise bot.requests.exceptions.ConnectionError("нет сети")
+        if url.startswith(bot.bgsrc.API_URL):
+            if self.mode == "limit":
+                return UResp(403, None, {"X-Ratelimit-Remaining": "0"}, b"Rate Limit Exceeded")
+            if self.mode == "429":
+                return UResp(429, {"errors": ["Too many requests"]})
+            return UResp(200, {"id": "p1", "description": "Calm forest lake", "alt_description": "green forest",
+                               "urls": {"regular": "https://images.unsplash.com/photo-9?w=1080"},
+                               "links": {"download_location": "https://api.unsplash.com/photos/p1/download"},
+                               "user": {"name": "Anna K"}, "tags": [{"title": "forest"}]})
+        if url.startswith("https://images.unsplash.com/"):
+            buf = io.BytesIO()
+            Image.new("RGB", (1080, 720), (30, 90, 60)).save(buf, "JPEG")
+            return UResp(200, None, {"Content-Type": "image/jpeg"}, buf.getvalue())
+        return UResp(200, {})
+
+
+real_http, real_file, real_keys, real_log = bot.BG_HTTP, bot.BG_DAILY_FILE, bot.ai_keys, bot._log_line
+ulogs = []
+u = bot.BG_HTTP = UHTTP()
+bot.ai_keys = lambda p: []
+bot._log_line = ulogs.append
+os.environ.pop("UNSPLASH_ACCESS_KEY", None)
+try:
+    bot.BG_DAILY_FILE = os.path.join(tempfile.mkdtemp(), "bg_daily.json")
+    img, cr = bot.card_bg("pattern", "Тема канала")
+    assert img is not None and img.size == A.SIZE and cr is None and not u.calls, "нет ключа — свой рисунок, без сети"
+    os.environ["UNSPLASH_ACCESS_KEY"] = "KEY"
+    for mode in ("limit", "429", "down"):
+        bot.BG_DAILY_FILE = os.path.join(tempfile.mkdtemp(), "bg_daily.json")
+        u.mode, u.calls = mode, []
+        img, cr = bot.card_bg("pattern", "Тема канала")
+        assert img is not None and img.size == A.SIZE and cr is None, (mode, "лимит или сбой — свой рисунок природы")
+        n = len(u.calls)
+        assert bot.card_bg("pattern", "Другая тема")[0].size == A.SIZE and len(u.calls) == n, (mode, "API не долбим")
+        assert A.render_channel(A.channel_numbers("Канал", 100, [], {}, NOW), F, img).size == A.SIZE
+    assert any("Unsplash" in line and "лимит" in line for line in ulogs), ulogs        # причина — в лог хозяину
+    bot.BG_DAILY_FILE = os.path.join(tempfile.mkdtemp(), "bg_daily.json")
+    u.mode, u.calls = "ok", []
+    img, cr = bot.card_bg("pattern", "Тема канала")                                   # ключ есть — фото дня главное
+    assert img.size == (1080, 720) and cr == "Фото: Anna K / Unsplash", (img.size, cr)
+    assert bot.card_bg("ai", "Тема без ИИ")[1] == cr, "ИИ не нарисовал — тоже фото дня"
+    u.mode, n = "limit", len(u.calls)
+    img2, cr2 = bot.card_bg("pattern", "Тема канала")
+    assert img2.size == (1080, 720) and cr2 == cr and len(u.calls) == n, "фото на сегодня уже есть — лимит не мешает"
+    assert bot.card_bg("off", "x") == (None, None)
+finally:
+    bot.BG_HTTP, bot.BG_DAILY_FILE, bot.ai_keys, bot._log_line = real_http, real_file, real_keys, real_log
+    os.environ.pop("UNSPLASH_ACCESS_KEY", None)
+print("a15 ok: 🏞 фон дня: фото Unsplash — главный источник (с подписью автора); нет ключа, лимит 403/429, нет сети — "
+      "свой рисунок природы без ошибок, API не долбим (снова через час), причина — в лог хозяину; сегодняшнее фото "
+      "остаётся и после лимита")
+
 print("ВСЕ ТЕСТЫ АНАЛИТИКИ ПРОШЛИ")

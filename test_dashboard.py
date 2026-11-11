@@ -229,6 +229,18 @@ def d4():
     assert len(h.calls) == 1, "API не ответил — следующая попытка не раньше чем через час"
     BGS.daily_photo(h, "KEY", c, DAY_TS + 3700)
     assert len(h.calls) == 2
+    # лимит запросов Unsplash (403 «Rate Limit Exceeded» или 429) и неверный ключ (401): фото нет, повтор — не
+    # раньше чем через час (лимит Unsplash обновляется раз в час), в лог хозяину — понятная причина
+    for resp, word in ((Resp(403, None, {"X-Ratelimit-Remaining": "0"}, b"Rate Limit Exceeded"), "лимит"),
+                       (Resp(429, {"errors": ["Too many requests"]}), "лимит"),
+                       (Resp(401, {"errors": ["OAuth error: The access token is invalid"]}), "ключ")):
+        c = os.path.join(tempfile.mkdtemp(), "bg.json")
+        h = HTTP({BGS.API_URL: resp})
+        got, why_ = BGS.daily_photo(h, "KEY", c, DAY_TS)
+        assert got is None and word in why_, (resp.status_code, why_)
+        assert BGS.daily_photo(h, "KEY", c, DAY_TS + 1800)[0] is None and len(h.calls) == 1, resp.status_code
+        BGS.daily_photo(h, "KEY", c, DAY_TS + 3700)
+        assert len(h.calls) == 2, (resp.status_code, "через час — пробуем снова")
 
 
 AD = {"title": "EroxBlox", "subs": 5008, "median": 1150, "low": 920, "high": 1265, "er": 23.0, "posts": 25,

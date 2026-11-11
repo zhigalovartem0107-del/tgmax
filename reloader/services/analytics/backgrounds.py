@@ -168,6 +168,18 @@ def _cached(cache, now):
     return img
 
 
+def _api_error(r):
+    """Понятная причина для лога хозяину: исчерпан лимит запросов, ключ не принят или просто сбой Unsplash."""
+    code = r.status_code
+    text = str(getattr(r, "text", "") or "")[:300].lower()
+    left = str((getattr(r, "headers", None) or {}).get("X-Ratelimit-Remaining", "")).strip()
+    if code == 429 or (code == 403 and (left == "0" or "rate limit" in text)):
+        return f"лимит запросов Unsplash исчерпан ({code}) — час рисую фон сам, потом попробую снова"
+    if code in (401, 403):
+        return f"ключ Unsplash не принят ({code}) — проверь UNSPLASH_ACCESS_KEY"
+    return f"Unsplash ответил {code}"
+
+
 def _fetch(http, key, day, log):
     """Новое фото дня. (картинка, сведения) или (None, почему нет)."""
     auth = {"Authorization": f"Client-ID {key}", "Accept-Version": "v1"}
@@ -177,7 +189,7 @@ def _fetch(http, key, day, log):
         r = http.get(API_URL, params={"query": topic, "orientation": "landscape", "content_filter": "high"},
                      headers=auth, timeout=15)
         if r.status_code != 200:
-            return None, f"Unsplash ответил {r.status_code}"
+            return None, _api_error(r)
         try:
             meta = r.json()
         except ValueError:
