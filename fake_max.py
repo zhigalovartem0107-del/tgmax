@@ -1,5 +1,6 @@
 """Поддельный сервер MAX для проверки бота «по-настоящему»: бот ходит в него настоящими HTTP-запросами."""
 import json
+import os
 import re
 import threading
 import time
@@ -26,6 +27,7 @@ class FakeMax:
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
         self.polled = 0                    # докуда бот уже забрал и разобрал очередь (marker его последнего /updates)
+        os.environ["BG_PHOTO_URL"] = ""    # в проверках фото для карточек из интернета не качаем — свой градиент
         self.bots = {}                     # другие боты (продажа): токен -> {"name", "updates": [...]}
         self.messages = []                 # то, что бот отправил: {chat_id, body, mid}
         self.history = {}                  # chat_id -> [{"timestamp": мс, "body": {...}, "stat": {"views": N}}]

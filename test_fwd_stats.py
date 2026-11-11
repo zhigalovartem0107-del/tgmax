@@ -1,14 +1,18 @@
 """📊 Пост из любого канала (или ссылка на канал) — без привязки и без прав админа: «Вижу пост из канала: …» и ровно
-три кнопки — «📊 Рекламный охват» (картинка со знаком Reloader), «📈 Массовая проверка» (только каналы из своей
-сетки, иначе «Этого канала нет в вашей сетке…»), «⚡ Оценка потенциала». Бот сам копит число подписчиков (раз в час):
-«Подписалось: +X, Отписалось: -Y, Итого: +Z». Закрытый канал — ровно «Это закрытый канал. …». Канал попадает в
-«🕘 Недавние проверки»."""
+три кнопки — «📊 Рекламный охват», «📈 Массовая проверка» (только каналы из своей сетки, иначе «Этого канала нет в
+вашей сетке…»), «⚡ Оценка потенциала». После каждой картинки (на всех — знак Reloader) — сообщение ровно в формате
+«📈 «Канал» / 👥 … подписчиков · сегодня …, за 7 дней … / 👁 Просмотры на пост: 24 ч — …». Бот сам копит число
+подписчиков (раз в час): «Подписалось: +X, Отписалось: -Y, Итого: +Z». «Это закрытый канал. …» — только когда канал
+правда закрытый (приглашение, в котором аккаунт бота не состоит); открытый канал так не называем никогда: MAX не
+показал число подписчиков или не показывает канал боту, t.me не открылся — это не «закрытый»; аккаунт Telegram бота
+(если он подписан) читает канал сам. Канал попадает в «🕘 Недавние проверки»."""
 import importlib.util
 import json
 import os
 import re
 import sys
 import tempfile
+import threading
 import traceback
 import types
 
@@ -51,8 +55,9 @@ def w1():
     cases = {"https://t.me/robloxtg/123": {"kind": "tg", "username": "robloxtg", "post": 123},
              "t.me/RobloxTG": {"kind": "tg", "username": "robloxtg", "post": None},
              "https://telegram.me/s/robloxtg/55": {"kind": "tg", "username": "robloxtg", "post": 55},
-             "https://t.me/+AbCdEf123": {"kind": "closed"}, "https://t.me/joinchat/AbCd": {"kind": "closed"},
-             "https://t.me/c/1234567/89": {"kind": "closed"}, "https://max.ru/join/AbCdEf": {"kind": "closed"},
+             "https://t.me/+AbCdEf123": {"kind": "tginvite", "hash": "AbCdEf123"},
+             "https://t.me/joinchat/AbCd": {"kind": "tginvite", "hash": "AbCd"},
+             "https://t.me/c/1234567/89": {"kind": "tgc", "id": 1234567}, "https://max.ru/join/AbCdEf": {"kind": "closed"},
              "https://max.ru/robloxnews": {"kind": "maxlink", "slug": "robloxnews"},
              "max.ru/robloxnews/AZx1": {"kind": "maxlink", "slug": "robloxnews"},
              "https://web.max.ru/-7100": {"kind": "max", "chat_id": -7100}}
@@ -75,6 +80,10 @@ def w2():
     grp = '<meta property="og:title" content="Чат"><div class="tgme_page_extra">8 900 members, 120 online</div>'
     assert W.parse_tme(grp) == {"title": "Чат", "subs": 8900, "kind": "group"}
     assert W.parse_tme('<div class="tgme_page_extra">@someone</div>')["subs"] is None
+    for extra, want in (("1.2M subscribers", 1200000), ("56.7K subscribers", 56700), ("3,4 млн подписчиков", 3400000),
+                        ("812 тыс. подписчиков", 812000)):            # большой канал: t.me пишет число коротко
+        got = W.parse_tme(f'<meta property="og:title" content="Политика"><div class="tgme_page_extra">{extra}</div>')
+        assert got["subs"] == want and got["kind"] == "channel", (extra, got)
     assert W.parse_tme("") == {"title": None, "subs": None, "kind": None} and W.parse_tme(None)["subs"] is None
 
 
@@ -196,6 +205,11 @@ assert not srv.chat_admins.get(PUB_ID), "бот не админ публично
 
 
 MENU = ["📊 Рекламный охват", "📈 Массовая проверка", "⚡ Оценка потенциала"]
+FMT = re.compile(r"📈 «(?P<title>[^»\n]+)»\n"                                 # ровно три строки — как просили
+                 r"👥 (?P<subs>\d[\d ]*|—) подписчиков · сегодня (?P<today>[+−]\d[\d ]*|—), "
+                 r"за 7 дней (?P<d7>[+−]\d[\d ]*|—)\n"
+                 r"👁 Просмотры на пост: 24 ч — (?P<v24>\d[\d ]*|—), 48 ч — (?P<v48>\d[\d ]*|—), "
+                 r"72 ч — (?P<v72>\d[\d ]*|—) · ER24 (?P<er>\d+,\d%|—)")
 NOT_BOUND = ("Этого канала нет в вашей сетке. Чтобы я мог его проверить, привяжите его в разделе "
              "«🎭 Мои каналы».")
 BOUND_ID = -7300
@@ -262,44 +276,50 @@ def f1():
     menu_ok(sent[0], f"max:{PUB_ID}", "robloxnews")
 
 
+def card_then_text(sent, title):
+    """Картинка, а за ней — сообщение ровно в формате 📈/👥/👁 про этот канал."""
+    assert len(sent) == 2 and has_image(sent[0]) and not has_image(sent[1]), [m["body"] for m in sent]
+    m = FMT.fullmatch(sent[1]["body"].get("text") or "")
+    assert m and m["title"] == title, sent[1]["body"].get("text")
+    return sent[0]["body"].get("text") or "", m
+
+
 @check
 def f2():
-    """«📊 Рекламный охват» — картинка с водяным знаком «Reloader» внизу справа; в подписи — подписчики и
-    «Подписалось: +0, Отписалось: -0, Итого: +0»; меню с тремя кнопками остаётся"""
+    """«📊 Рекламный охват» — картинка (знак Reloader внизу справа, подпись: охват, подписчики и «Подписалось: +0,
+    Отписалось: -0, Итого: +0»), за ней — сообщение в формате 📈/👥/👁; меню с тремя кнопками остаётся"""
     n0, a0, c0 = len(srv.messages), len(srv.answers), len(CARDS)
     press(BUYER, BC, f"fw:ad:max:{PUB_ID}")
-    sent = said(BC, n0)
-    assert len(sent) == 1 and has_image(sent[0]), [m["body"] for m in sent]
-    cap = sent[0]["body"]["text"]
+    cap, m = card_then_text(said(BC, n0), "robloxnews")
     assert "Рекламный охват" in cap and "robloxnews" in cap and "1 000" in cap, cap
     assert "Подписалось: +0, Отписалось: -0, Итого: +0" in cap, cap
-    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "на рекламной картинке — знак Reloader"
+    assert m["subs"] == "1 000", m.groupdict()
+    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "на картинке — знак Reloader"
     menu_left = srv.answers[a0]["body"]["message"]
     assert [b["text"] for row in menu_left["attachments"][0]["payload"]["buttons"] for b in row] == MENU
 
 
 @check
 def f3():
-    """бот сам следит за каналом (раз в час): 1000 → 1010 → 1004; «⚡ Оценка потенциала» — картинка БЕЗ водяного
-    знака, в подписи — оценка из 100 и «Подписалось: +10, Отписалось: -6, Итого: +4»"""
+    """бот сам следит за каналом (раз в час): 1000 → 1010 → 1004; «⚡ Оценка потенциала» — картинка со знаком
+    Reloader, в подписи — оценка из 100 и «Подписалось: +10, Отписалось: -6, Итого: +4»; потом — 📈/👥/👁"""
     srv.subs[PUB_ID] = 1010
     bot.fwd_snapshot_all()
     srv.subs[PUB_ID] = 1004
     bot.fwd_snapshot_all()
     n0, c0 = len(srv.messages), len(CARDS)
     press(BUYER, BC, f"fw:pot:max:{PUB_ID}")
-    sent = said(BC, n0)
-    assert len(sent) == 1 and has_image(sent[0]), [m["body"] for m in sent]
-    cap = sent[0]["body"]["text"]
+    cap, m = card_then_text(said(BC, n0), "robloxnews")
     assert "Оценка потенциала" in cap and "/100" in cap, cap
     assert "Подписалось: +10, Отписалось: -6, Итого: +4" in cap, cap
-    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) < 10, "на обычной аналитике знака нет"
+    assert m["subs"] == "1 004", m.groupdict()
+    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "знак Reloader — на каждой картинке"
 
 
 @check
 def f4():
     """«📈 Массовая проверка»: канала нет в сетке — ровно фраза «Этого канала нет в вашей сетке…»; канал привязан к
-    кабинету — аналитика канала картинкой, без водяного знака"""
+    кабинету — аналитика канала картинкой (со знаком Reloader), за ней — 📈/👥/👁 с подписчиками"""
     n0 = len(srv.messages)
     press(BUYER, BC, f"fw:mass:max:{PUB_ID}")
     sent = said(BC, n0)
@@ -310,23 +330,25 @@ def f4():
     menu_ok(said(BC, n1)[0], f"max:{BOUND_ID}", "mychan")
     n2, c0 = len(srv.messages), len(CARDS)
     press(BUYER, BC, f"fw:mass:max:{BOUND_ID}")
-    sent = said(BC, n2)
-    assert len(sent) == 1 and has_image(sent[0]) and "2 500" in sent[0]["body"]["text"], [m["body"] for m in sent]
-    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) < 10
+    _, m = card_then_text(said(BC, n2), "mychan")
+    assert m["subs"] == "2 500", m.groupdict()
+    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150
 
 
 @check
 def f5():
-    """ЗАКРЫТЫЙ канал: меню из трёх кнопок; «Рекламный охват» и «Оценка потенциала» — ровно фраза «Это закрытый
-    канал…», без ошибок; «Массовая проверка» — «нет в вашей сетке»"""
+    """канал, который MAX НЕ показывает боту (бот в нём не состоит, 404), — это ещё не «закрытый»: меню из трёх
+    кнопок без слова «закрытый»; «Рекламный охват» и «Оценка потенциала» — честно «MAX не показывает этот канал
+    боту…», без ошибок; «Массовая проверка» — «нет в вашей сетке»"""
     n0 = len(srv.messages)
     forward(BUYER, BC, CLOSED_ID)
     sent = said(BC, n0)
     assert len(sent) == 1 and len(buttons(sent[0])) == 3, [m["body"] for m in sent]
+    assert "закрыт" not in sent[0]["body"]["text"].lower(), sent[0]["body"]["text"]
     for act in ("ad", "pot"):
         n1 = len(srv.messages)
         press(BUYER, BC, f"fw:{act}:max:{CLOSED_ID}")
-        assert texts(BC, n1) == [CLOSED], (act, texts(BC, n1))
+        assert texts(BC, n1) == [bot.FWD_HIDDEN] and "закрыт" not in bot.FWD_HIDDEN.lower(), (act, texts(BC, n1))
     n2 = len(srv.messages)
     press(BUYER, BC, f"fw:mass:max:{CLOSED_ID}")
     assert texts(BC, n2) == [NOT_BOUND], texts(BC, n2)
@@ -335,8 +357,8 @@ def f5():
 @check
 def f6():
     """ссылка на публичный канал Telegram — тоже меню; «Рекламный охват» — подписчики со страницы t.me и охват
-    рекламного поста по просмотрам последних постов (≈ 880–1 210); закрытая ссылка t.me/+… — ровно «Это закрытый
-    канал…»"""
+    рекламного поста по просмотрам последних постов (≈ 880–1 210), потом 📈/👥/👁; приглашение t.me/+… в канал, где
+    аккаунта бота нет, — ровно «Это закрытый канал…»"""
     n0 = len(srv.messages)
     msg(BUYER, BC, "https://t.me/robloxtg/123")
     sent = said(BC, n0)
@@ -344,10 +366,9 @@ def f6():
     menu_ok(sent[0], "tg:robloxtg", "Roblox TG News")
     n1 = len(srv.messages)
     press(BUYER, BC, "fw:ad:tg:robloxtg")
-    sent = said(BC, n1)
-    assert len(sent) == 1 and has_image(sent[0]), [m["body"] for m in sent]
-    cap = sent[0]["body"]["text"]
+    cap, m = card_then_text(said(BC, n1), "Roblox TG News")
     assert "12 345" in cap and "880" in cap and "1 210" in cap, cap
+    assert m["subs"] == "12 345", m.groupdict()
     n2 = len(srv.messages)
     msg(BUYER, BC, "https://t.me/+AbCdEf123")
     assert texts(BC, n2) == [CLOSED], texts(BC, n2)
@@ -358,12 +379,12 @@ def f6():
 
 @check
 def f7():
-    """«🕘 Недавние проверки» (/recent): каналы — свежие сверху, закрытый с замком; кнопка — снова меню из трёх
-    кнопок этого канала; чужой канал в кнопке — не открываем"""
+    """«🕘 Недавние проверки» (/recent): каналы — свежие сверху; канал, который MAX не показывает боту, — с пометкой
+    🙈 (а не «закрытый»); кнопка — снова меню из трёх кнопок этого канала; чужой канал в кнопке — не открываем"""
     n0 = len(srv.messages)
     msg(BUYER, BC, "/recent")
     screen = texts(BC, n0)[-1]
-    assert screen.startswith("🕘 Недавние проверки") and "🔒" in screen, screen
+    assert screen.startswith("🕘 Недавние проверки") and "🙈" in screen and "закрыт" not in screen.lower(), screen
     order = [screen.find(x) for x in ("Roblox TG News", "robloxnews")]
     assert -1 not in order and order == sorted(order), screen
     rows = json.dumps(said(BC, n0)[-1]["body"].get("attachments"), ensure_ascii=False)
@@ -405,6 +426,100 @@ def f8():
     n3 = len(srv.messages)
     forward(BUYER, BC, PUB_ID)
     menu_ok(said(BC, n3)[0], f"max:{PUB_ID}", "robloxnews")
+
+
+@check
+def f9():
+    """ОТКРЫТЫЙ канал MAX, у которого MAX не дал число подписчиков (200 без participants_count), — не «закрытый»:
+    меню без пометок, «Рекламный охват» — картинка и 📈/👥/👁 с «—» вместо неизвестного"""
+    srv.chats["politika"] = -7400                         # открытый политический канал: MAX показал, но без числа
+    n0 = len(srv.messages)
+    forward(BUYER, BC, -7400)
+    sent = said(BC, n0)
+    assert len(sent) == 1, texts(BC, n0)
+    menu_ok(sent[0], "max:-7400", "politika")
+    assert "🔒" not in sent[0]["body"]["text"] and "не показывает" not in sent[0]["body"]["text"], sent[0]["body"]["text"]
+    for act in ("ad", "pot"):
+        n1 = len(srv.messages)
+        press(BUYER, BC, f"fw:{act}:max:-7400")
+        sent = said(BC, n1)
+        assert not any(t in (CLOSED, bot.FWD_HIDDEN) for t in texts(BC, n1)), (act, texts(BC, n1))
+        _, m = card_then_text(sent, "politika")
+        assert m["subs"] == "—", m.groupdict()
+
+
+class Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class FakeTG:
+    """Аккаунт Telegram бота (Telethon): видит публичные каналы и закрытые, где состоит."""
+
+    def __init__(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).timestamp()
+        self.chats = {"polit": Obj(id=555, title="Политика 24", username="polit", broadcast=True),
+                      "https://t.me/+Secret1": Obj(id=777, title="Закрытый клуб", username=None, broadcast=True),
+                      -100777: Obj(id=777, title="Закрытый клуб", username=None, broadcast=True)}
+        self.subs = {555: 250000, 777: 3100}
+        self.posts = {cid: [Obj(id=i, views=views + i * 50, date=datetime.fromtimestamp(now - (i + 30) * 3600, timezone.utc))
+                            for i in range(12)] for cid, views in ((555, 40000), (777, 900))}
+        self.calls = []
+
+    async def get_entity(self, ref):
+        self.calls.append(ref)
+        if ref not in self.chats:
+            raise ValueError("Cannot get entity from a channel (or group) that you are not part of")
+        return self.chats[ref]
+
+    async def get_participants(self, ent, limit=None):
+        return Obj(total=self.subs[ent.id])
+
+    async def get_messages(self, ent, limit=None):
+        return self.posts[ent.id][:limit]
+
+
+@check
+def f10():
+    """Telegram: t.me не открылся (403) или не показал число — это не «закрытый». Без аккаунта Telegram — «ещё раз»;
+    с аккаунтом бота — читаем канал через него (публичный и закрытый, где он подписан): меню, охват, 📈/👥/👁;
+    приглашение в канал, где аккаунта нет, — «Это закрытый канал…»"""
+    import asyncio
+    real_client, real_loop = bot.TG_CLIENT, bot.MAIN_LOOP
+    bot.TG_CLIENT = None
+    n0 = len(srv.messages)
+    msg(BUYER, BC, "https://t.me/polit")                  # fake_web: t.me ответил 403
+    got = texts(BC, n0)
+    assert len(got) == 1 and got[0] != CLOSED and "закрыт" not in got[0].lower() and "ещё раз" in got[0], got
+    loop = asyncio.new_event_loop()
+    th = threading.Thread(target=loop.run_forever, daemon=True)
+    th.start()
+    bot.TG_CLIENT, bot.MAIN_LOOP = FakeTG(), loop
+    try:
+        n1 = len(srv.messages)
+        msg(BUYER, BC, "https://t.me/polit")
+        menu_ok(said(BC, n1)[0], "tg:polit", "Политика 24")
+        n2, c0 = len(srv.messages), len(CARDS)
+        press(BUYER, BC, "fw:ad:tg:polit")
+        assert len(CARDS) == c0 + 1
+        cap, m = card_then_text(said(BC, n2), "Политика 24")
+        assert "250 000" in cap and "Охват рекламного поста ≈" in cap, cap
+        assert m["subs"] == "250 000" and m["v24"] != "—", m.groupdict()      # просмотры (посты 30–41 ч) — через аккаунт
+        assert watermark(CARDS[-1]) > 150
+        n3 = len(srv.messages)
+        msg(BUYER, BC, "https://t.me/+Secret1")           # закрытый, но аккаунт бота в нём состоит — читаем
+        menu_ok(said(BC, n3)[0], "tgc:777", "Закрытый клуб")
+        n4 = len(srv.messages)
+        press(BUYER, BC, "fw:pot:tgc:777")
+        cap, m = card_then_text(said(BC, n4), "Закрытый клуб")
+        assert "Оценка потенциала" in cap and m["subs"] == "3 100", (cap, m.groupdict())
+        n5 = len(srv.messages)
+        msg(BUYER, BC, "https://t.me/+NotMember")         # приглашение, где аккаунта нет, — правда закрытый
+        assert texts(BC, n5) == [CLOSED], texts(BC, n5)
+    finally:
+        bot.TG_CLIENT, bot.MAIN_LOOP = real_client, real_loop
+        loop.call_soon_threadsafe(loop.stop)
 
 
 if FAILS:

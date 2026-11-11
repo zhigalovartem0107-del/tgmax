@@ -2,9 +2,9 @@
 
 Тема — по московскому времени: с 06:00 до 17:00 светлая (светло-серый фон, тёмный текст), с 17:00 до 06:00 тёмная
 (#0A0A0A, белый текст); акценты в обеих — фиолетовый #9B30FF и розовый #FF1493. Фон — фото дня (природа) или свой
-рисунок природы: сильно размыт и под вуалью цвета темы, поверх — «стеклянные» панели.
+градиент (фиолетовый, розовый, чёрный): фото сильно размыто и под вуалью цвета темы, поверх — «стеклянные» панели.
 Картинки: канал, сеть каналов, прогноз поста, оценка потенциала и рекламный охват. Водяной знак «Reloader» (внизу
-справа) — только у рекламного охвата: её показывают рекламодателю; на обычной аналитике знака нет.
+справа) — на каждой картинке.
 Только подсчёт и рисование — без сети и без состояния бота (данные приходят готовыми), поэтому легко проверяется
 тестами."""
 import math
@@ -12,7 +12,7 @@ import random
 import time
 import zlib
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 SIZE = (1280, 800)                      # все картинки — 16:10
 W, H = SIZE
@@ -27,11 +27,11 @@ LIGHT_HOURS = (6, 17)                   # с 06:00 до 17:00 по Москве 
 THEMES = {
     "dark": {"name": "dark", "bg": BG, "text": WHITE, "muted": (160, 160, 174), "faint": (104, 104, 118),
              "accent": PURPLE, "accent2": HOTPINK, "panel": (24, 24, 30, 210), "edge": (255, 255, 255, 30),
-             "track": (255, 255, 255, 34), "grid": (255, 255, 255, 22), "veil": BG, "veil_k": 0.80,
+             "track": (255, 255, 255, 34), "grid": (255, 255, 255, 22), "veil": BG, "veil_k": 0.60,
              "glow": 0.22, "shadow": 0, "dot": (24, 24, 30)},
     "light": {"name": "light", "bg": PAPER, "text": INK, "muted": (96, 96, 110), "faint": (150, 150, 162),
               "accent": PURPLE, "accent2": HOTPINK, "panel": (255, 255, 255, 214), "edge": (20, 20, 24, 22),
-              "track": (20, 20, 24, 24), "grid": (20, 20, 24, 18), "veil": PAPER, "veil_k": 0.82,
+              "track": (20, 20, 24, 24), "grid": (20, 20, 24, 18), "veil": PAPER, "veil_k": 0.60,
               "glow": 0.12, "shadow": 34, "dot": WHITE},
 }
 WEEK = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
@@ -176,40 +176,6 @@ def network_numbers(channels, now=None):
 
 def seed_of(text):
     return zlib.crc32(str(text or "").encode("utf-8"))
-
-
-def procedural_background(w, h, seed, style="aurora"):
-    """Свой фон у каждого канала (seed — от названия): «aurora» — мягкие пятна, «waves» — волны. На карточке он
-    перекрашивается в палитру (_page) — здесь узор, цвета не важны."""
-    w, h = max(1, int(num(w) or 1)), max(1, int(num(h) or 1))    # кривые размеры — не падаем
-    rnd = random.Random(seed)
-    palettes = [((24, 20, 64), (88, 86, 214), (236, 72, 153)), ((10, 30, 60), (34, 139, 230), (45, 212, 191)),
-                ((40, 16, 60), (168, 85, 247), (251, 146, 60)), ((12, 38, 32), (16, 185, 129), (250, 204, 21))]
-    base, c1, c2 = palettes[rnd.randrange(len(palettes))]
-    img = Image.new("RGB", (w, h), base)
-    d = ImageDraw.Draw(img)
-    for y in range(h):                                   # вертикальный градиент
-        k = y / max(1, h - 1)
-        d.line([(0, y), (w, y)], fill=tuple(int(base[i] * (1 - k) + c1[i] * k * 0.35) for i in range(3)))
-    layer = Image.new("RGB", (w, h), (0, 0, 0))
-    ld = ImageDraw.Draw(layer)
-    if style == "waves":
-        for n in range(6):
-            amp, ph, yb = rnd.uniform(18, 60), rnd.uniform(0, 6.28), h * (0.35 + 0.1 * n)
-            col = c1 if n % 2 else c2
-            fr = rnd.uniform(0.8, 1.6)
-            pts = [(x, yb + amp * math.sin(x / w * 6.28 * fr + ph)) for x in range(0, w + 8, 8)]
-            ld.polygon(pts + [(w, h), (0, h)], fill=tuple(int(v * 0.5) for v in col))
-        layer = layer.filter(ImageFilter.GaussianBlur(10))
-    else:
-        for _ in range(9):
-            r = rnd.uniform(0.15, 0.4) * w
-            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
-            ld.ellipse((x - r, y - r, x + r, y + r), fill=rnd.choice((c1, c2)))
-        layer = layer.filter(ImageFilter.GaussianBlur(w // 12))
-    img = Image.blend(img, layer, 0.55)
-    noise = Image.frombytes("L", (w, h), rnd.getrandbits(8 * w * h).to_bytes(w * h, "little")).convert("RGB")   # лёгкое зерно — «живой» фон
-    return Image.blend(img, noise, 0.03)                       # (от того же seed — тот же фон)
 
 
 # ---------- тема: по московскому времени ----------
@@ -485,19 +451,58 @@ def _glow(size, color, center, radius, alpha):
     return layer
 
 
+_MESH = {   # фон без фото: основа и пятна цвета (по порядку: главное, второе, …)
+    "dark": ((9, 8, 12), ((155, 48, 255), (255, 20, 147), (92, 26, 200), (170, 16, 120))),
+    "light": ((248, 246, 252), ((206, 178, 255), (255, 184, 222), (226, 206, 255), (255, 214, 236))),
+}
+_ANCHORS = ((0.10, 0.12), (0.90, 0.88), (0.80, 0.18), (0.22, 0.86), (0.52, 0.48))
+
+
+def mesh_gradient(w, h, seed=0, theme="dark"):
+    """Свой премиальный фон без интернета: несколько ярких «луж» света — фиолетовая, розовая, лиловая,
+    малиновая — на почти чёрном (ночью) или пастельные на светлом (днём), между ними — глубокий фон, как у
+    «сетчатого» градиента. Считаем в маленьком размере и плавно растягиваем на весь холст.
+    От тех же w, h, seed и темы — та же картинка."""
+    w, h = max(1, int(num(w) or 1)), max(1, int(num(h) or 1))
+    base, colors = _MESH.get(theme if theme in _MESH else "dark")
+    rnd = random.Random(zlib.crc32(f"mesh:{theme}:{seed}".encode()))
+    sw = 96 if w >= h else max(2, round(96 * w / h))
+    sh = max(2, round(96 * h / w)) if w >= h else 96
+    spots = rnd.sample(_ANCHORS, len(colors))
+    blobs = []
+    for col, (ax, ay) in zip(colors, spots):
+        cx, cy = (ax + rnd.uniform(-0.1, 0.1)) * sw, (ay + rnd.uniform(-0.1, 0.1)) * sh
+        r = rnd.uniform(0.22, 0.34) * max(sw, sh)
+        blobs.append((cx, cy, 1.0 / (r * r), col, rnd.uniform(0.82, 1.0)))
+    px = []
+    for y in range(sh):
+        for x in range(sw):
+            c = base
+            for cx, cy, inv, col, k in blobs:
+                a = k * math.exp(-((x - cx) ** 2 + (y - cy) ** 2) * inv)
+                c = (c[0] + (col[0] - c[0]) * a, c[1] + (col[1] - c[1]) * a, c[2] + (col[2] - c[2]) * a)
+            px.append((int(c[0]), int(c[1]), int(c[2])))
+    small = Image.new("RGB", (sw, sh))
+    small.putdata(px)
+    return small.filter(ImageFilter.GaussianBlur(1.2)).resize((w, h), Image.BICUBIC)
+
+
 def backdrop(size, theme, photo=None, seed=0):
-    """Фон картинки: фото (или ничего) — по кадру, сильно размыто (резких мест не остаётся) и под вуалью цвета темы
-    (ночью — почти чёрной, днём — светлой); сверху — мягкие пятна фиолетового и розового. RGBA."""
+    """Фон картинки на весь холст. Фото — по кадру, сильно размыто (резких мест не остаётся) и под вуалью цвета
+    темы (ночью — тёмной, днём — светлой): текст читается, а фото видно. Фото нет или оно битое — свой градиент
+    (фиолетовый, розовый, чёрный). Сверху — мягкие пятна фиолетового и розового. RGBA."""
     t = theme if isinstance(theme, dict) else THEMES.get(theme) or THEMES["dark"]
     w, h = max(8, int(size[0])), max(8, int(size[1]))
     sw, sh = max(4, w // 8), max(4, h // 8)               # всё мягкое считаем в 1/8 размера — быстро
-    base = Image.new("RGB", (sw, sh), t["bg"])
+    base = None
     if photo is not None:
         try:
             pic = _cover(photo.convert("RGB"), sw, sh).filter(ImageFilter.GaussianBlur(max(2, sw / 40)))
             base = Image.blend(pic, Image.new("RGB", (sw, sh), t["veil"]), t["veil_k"])
         except Exception:
-            pass                                       # битая картинка — просто цвет темы
+            base = None                                # битая картинка — свой градиент
+    if base is None:
+        base = mesh_gradient(sw, sh, seed, t["name"])
     small = base.convert("RGBA")
     rnd = random.Random(seed)
     small.alpha_composite(_glow((sw, sh), PURPLE, (0.08 + rnd.uniform(0, 0.08), 0.02), 0.42, t["glow"]))
@@ -505,83 +510,15 @@ def backdrop(size, theme, photo=None, seed=0):
     return small.resize((w, h), Image.BICUBIC)
 
 
-_NATURE = {   # небо сверху, небо у горизонта, слои (дальний → ближний)
-    "mountains": ((34, 46, 96), (236, 168, 150), ((150, 140, 190), (104, 98, 156), (66, 64, 118), (34, 36, 74))),
-    "forest": ((40, 92, 104), (206, 226, 204), ((122, 160, 146), (74, 118, 104), (40, 82, 70), (16, 46, 40))),
-    "ocean": ((24, 54, 116), (250, 198, 168), ((44, 96, 150), (24, 64, 118), (12, 38, 84))),
-    "abstract": ((26, 16, 56), (90, 40, 120), ((155, 48, 255), (255, 20, 147), (60, 90, 220), (40, 200, 190))),
-}
-
-
-def _vgrad(w, h, c0, c1):
-    return ImageOps.colorize(Image.linear_gradient("L").resize((w, h)), c0, c1)
-
-
-def _ridge(rnd, w, base, rough, n=7):
-    """Линия хребта: случайные точки + дробление середин (горы выглядят «настоящими»)."""
-    pts = [(i * w / (n - 1), base + rnd.uniform(-rough, rough)) for i in range(n)]
-    for depth in range(4):
-        amp = rough / (2 ** (depth + 1))
-        nxt = []
-        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-            nxt += [(x0, y0), ((x0 + x1) / 2, (y0 + y1) / 2 + rnd.uniform(-amp, amp))]
-        pts = nxt + [pts[-1]]
-    return pts
-
-
-def nature_background(w, h, topic="mountains", seed=0):
-    """Свой рисунок природы (без сети): горы, лес, океан или абстракция — по теме дня. От тех же w, h, topic и
-    seed — та же картинка. Поверх всё равно размывается, поэтому важны цвета и композиция, а не детали."""
-    w, h = max(8, int(num(w) or 8)), max(8, int(num(h) or 8))
-    topic = topic if topic in _NATURE else "abstract"
-    rnd = random.Random(zlib.crc32(f"{topic}:{seed}".encode()))
-    sky0, sky1, layers = _NATURE[topic]
-    horizon = int(h * (0.55 if topic == "ocean" else 0.62))
-    img = Image.new("RGB", (w, h), sky1)
-    img.paste(_vgrad(w, horizon, sky0, sky1), (0, 0))
-    d = ImageDraw.Draw(img)
-    if topic == "mountains":
-        for i, col in enumerate(layers):
-            base = h * (0.42 + 0.14 * i)
-            d.polygon(_ridge(rnd, w, base, h * (0.16 - 0.025 * i)) + [(w, h), (0, h)], fill=col)
-    elif topic == "forest":
-        for i, col in enumerate(layers):
-            base, tall = h * (0.5 + 0.13 * i), h * (0.10 + 0.05 * i)
-            d.rectangle((0, base, w, h), fill=col)
-            x = -rnd.uniform(0, 40)
-            while x < w + 40:
-                tw, th = rnd.uniform(0.35, 0.55) * tall, tall * rnd.uniform(0.75, 1.25)
-                d.polygon([(x, base + 2), (x + tw / 2, base - th), (x + tw, base + 2)], fill=col)
-                x += tw * rnd.uniform(0.45, 0.8)
-    elif topic == "ocean":
-        sun = (w * rnd.uniform(0.3, 0.7), horizon - h * 0.06)
-        r = h * 0.07
-        d.ellipse((sun[0] - r, sun[1] - r, sun[0] + r, sun[1] + r), fill=(255, 226, 190))
-        img.paste(_vgrad(w, h - horizon, layers[0], layers[-1]), (0, horizon))
-        d = ImageDraw.Draw(img)
-        for _ in range(40):                            # дорожка солнца на воде
-            y = rnd.uniform(horizon + 4, h)
-            half = (y - horizon) / (h - horizon) * w * 0.18 + 6
-            x = sun[0] + rnd.uniform(-half, half) * 0.4
-            d.line([(x - half * 0.3, y), (x + half * 0.3, y)], fill=(250, 204, 170), width=2)
-    else:
-        for _ in range(7):
-            r = rnd.uniform(0.18, 0.42) * w
-            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
-            d.ellipse((x - r, y - r, x + r, y + r), fill=rnd.choice(layers))
-        img = img.filter(ImageFilter.GaussianBlur(max(2, w // 14)))
-    return img
-
-
 # ---------- общие части дашборда ----------
 def watermark_box(size):
-    """Угол водяного знака «Reloader» — внизу справа. На обычной аналитике в нём пусто."""
+    """Угол водяного знака «Reloader» — внизу справа (знак — на каждой картинке)."""
     w, h = size
     return (w - 300, h - 60, w, h)
 
 
 def _watermark(img, t, font):
-    """Маленький знак «Reloader»: квадратик с градиентом и «R» + надпись — только на «Рекламном охвате»."""
+    """Маленький знак «Reloader»: квадратик с градиентом и «R» + надпись — внизу справа на каждой картинке."""
     d = ImageDraw.Draw(img)
     f = font(True, 21)
     text = "Reloader"
@@ -636,7 +573,7 @@ def _footer(img, t, font, note=None, credit=None):
         return
     d = ImageDraw.Draw(img)
     f = font(False, 15)
-    d.text((MARGIN, H - 30), _clip(d, text, f, watermark_box(SIZE)[0] - MARGIN - 24), font=f, fill=t["faint"],
+    d.text((MARGIN, H - 30), _clip(d, text, f, watermark_box(SIZE)[0] - MARGIN - 24), font=f, fill=t["muted"],
            anchor="lm")
 
 
@@ -836,6 +773,7 @@ def render_channel(n, font=None, bg=None, photo=None, theme=None, now=None, cred
         _bar(img, (px + 28, yy + 18, W - MARGIN - 28, yy + 30), (v or 0) / top_v, t, None if i == 0 else PURPLE)
         d = ImageDraw.Draw(img)
     _footer(img, t, font, "Данные: MAX · 24 / 48 / 72 ч — средние просмотры поста", credit)
+    _watermark(img, t, font)
     return img.convert("RGB")
 
 
@@ -897,6 +835,7 @@ def render_network(net, font=None, bg=None, theme=None, now=None, credit=None,
         d.text(((rx + W - MARGIN) / 2, (y0 + y1) / 2), "Каналов пока нет", font=font(False, 18), fill=t["muted"],
                anchor="mm")
     _footer(img, t, font, "Данные: MAX · ER — просмотры за сутки к подписчикам", credit)
+    _watermark(img, t, font)
     return img.convert("RGB")
 
 
@@ -967,6 +906,7 @@ def render_predict(p, font=None, bg=None, channel=None, theme=None, now=None, cr
     count = int(num(p.get("n")) or 0)
     _footer(img, t, font, f"Прогноз по {count} {_ru(count, 'посту', 'постам', 'постам')} канала" if count
             else "Прогноз по самому тексту — истории канала нет", credit)
+    _watermark(img, t, font)
     return img.convert("RGB")
 
 
@@ -1035,13 +975,14 @@ def render_potential(d_, font=None, bg=None, theme=None, now=None, credit=None):
         _tile(img, (x, 520, x + bw, y1), t, font, label_, value, foot, accent,
               value_color=_delta_color(total, t) if i == 2 and total is not None else None)
     _footer(img, t, font, "Оценка — по открытым данным канала: рост, просмотры, частота постов, аудитория", credit)
+    _watermark(img, t, font)
     return img.convert("RGB")
 
 
 # ---------- 📊 рекламный охват (со знаком Reloader) ----------
 def render_ad_reach(d_, font=None, bg=None, theme=None, now=None, credit=None):
     """Рекламный охват канала: сколько просмотров наберёт рекламный пост (вилка по медиане последних постов),
-    подписчики, ER, динамика и приток/отток. Внизу справа — водяной знак «Reloader» (картинку видит рекламодатель)."""
+    подписчики, ER, динамика и приток/отток. Внизу справа, как на всех картинках, — водяной знак «Reloader»."""
     font = font or default_font
     d_ = d_ if isinstance(d_, dict) else {}
     now = _now(now, d_)

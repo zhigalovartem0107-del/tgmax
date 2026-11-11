@@ -39,8 +39,10 @@ def _parts(tail):
 def source_of(msg, text):
     """Откуда пост. {"kind": "max", "chat_id"} — пересланный пост канала MAX (или web.max.ru/-123);
     {"kind": "maxlink", "slug"} — max.ru/имя; {"kind": "tg", "username", "post"} — t.me/имя[/номер];
-    {"kind": "closed"} — закрытая ссылка-приглашение; None — не пост канала и не ссылка на канал
-    (переслали сообщение человека — тоже None: у него в пересылке есть автор)."""
+    {"kind": "tginvite", "hash"} — приглашение в закрытый канал Telegram (t.me/+…, t.me/joinchat/…);
+    {"kind": "tgc", "id"} — пост закрытого канала Telegram (t.me/c/<id>/…): прочитать их может только аккаунт
+    Telegram бота, если он там состоит; {"kind": "closed"} — приглашение в закрытый канал MAX (max.ru/join/…);
+    None — не пост канала и не ссылка на канал (переслали сообщение человека — тоже None: у него есть автор)."""
     link = msg.get("link") if isinstance(msg, dict) else None
     if isinstance(link, dict) and link.get("type") == "forward":
         sender = link.get("sender") if isinstance(link.get("sender"), dict) else {}
@@ -54,8 +56,13 @@ def source_of(msg, text):
         parts = _parts(m.group(1))
         if not parts:
             return None
-        if parts[0].startswith("+") or parts[0].lower() in ("joinchat", "c"):
-            return {"kind": "closed"}
+        if parts[0].startswith("+") and re.fullmatch(r"\+[\w-]{4,64}", parts[0]):
+            return {"kind": "tginvite", "hash": parts[0][1:]}
+        if parts[0].lower() == "joinchat":
+            return {"kind": "tginvite", "hash": parts[1]} if len(parts) > 1 and re.fullmatch(r"[\w-]{4,64}", parts[1]) \
+                else None
+        if parts[0].lower() == "c":
+            return {"kind": "tgc", "id": int(parts[1])} if len(parts) > 1 and parts[1].isdigit() else None
         if parts[0].lower() == "s" and len(parts) > 1:
             parts = parts[1:]
         if not _TG_NAME.match(parts[0]) or parts[0].lower() in _TG_SERVICE:
@@ -78,7 +85,8 @@ def source_of(msg, text):
 
 def parse_tme(page):
     """Публичная страница t.me/<канал>: {"title", "subs", "kind": "channel" | "group" | None}.
-    Число — из строки «12 345 subscribers» / «12 345 подписчиков» (у группы — members / участников)."""
+    Число — из строки «12 345 subscribers» / «12 345 подписчиков» (у группы — members / участников); у больших
+    каналов t.me пишет коротко: «1.2M subscribers», «56.7K», «3,4 млн», «812 тыс.»."""
     page = page if isinstance(page, str) else ""
     m = re.search(r'<meta property="og:title" content="([^"]*)"', page)
     title = _html.unescape(m.group(1)).strip() if m else ""
@@ -89,10 +97,14 @@ def parse_tme(page):
     m = re.search(r'class="tgme_page_extra"[^>]*>([^<]*)<', page)
     if m:
         extra = _html.unescape(m.group(1)).replace("\xa0", " ")
-        n = re.match(r"\s*(\d[\d ,.]*)\s*(subscriber|подписчик|member|участник)", extra, re.I)
+        n = re.match(r"\s*(\d[\d ,.]*?)\s*(k|m|тыс\.?|млн\.?)?\s*(subscriber|подписчик|member|участник)", extra, re.I)
         if n:
-            subs = int(re.sub(r"\D", "", n.group(1)))
-            kind = "channel" if n.group(2).lower().startswith(("subscr", "подпис")) else "group"
+            mult = {"k": 1000, "m": 1000000, "тыс": 1000, "млн": 1000000}.get((n.group(2) or "").lower().rstrip("."))
+            if mult:                                       # «1.2M», «3,4 млн» — дробная часть через точку или запятую
+                subs = int(round(float(n.group(1).replace(" ", "").replace(",", ".")) * mult))
+            else:
+                subs = int(re.sub(r"\D", "", n.group(1)))
+            kind = "channel" if n.group(3).lower().startswith(("subscr", "подпис")) else "group"
     return {"title": title or None, "subs": subs, "kind": kind}
 
 
@@ -182,6 +194,10 @@ class Watch:
                                                 "checked": 0.0})
             ch.update(title=str(info.get("title") or ch["title"])[:120], link=str(info.get("link") or ch["link"])[:300],
                       closed=bool(info.get("closed")), checked=self.clock())
+            if info.get("state") in ("ok", "closed", "hidden"):
+                ch["state"] = info["state"]
+            else:
+                ch.pop("state", None)
             box = self._recent.setdefault(str(uid), [])
             if key in box:
                 box.remove(key)
@@ -242,6 +258,7 @@ class Watch:
                     continue
                 pts = ch["points"]
                 out.append({"key": key, "title": ch["title"], "link": ch["link"], "closed": ch["closed"],
+                            "state": ch.get("state") or "ok",   # старое «закрытый» без состояния — не верим
                             "subs": pts[-1][1] if pts else None, "since": pts[0][0] if pts else None,
                             "deltas": deltas(pts)})
             return out

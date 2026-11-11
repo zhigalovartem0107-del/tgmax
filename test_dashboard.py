@@ -1,7 +1,7 @@
-"""🖼 Новый дашборд Reloader (свой дизайн): тема по московскому времени — 06:00–17:00 светлая, 17:00–06:00 тёмная
-(#0A0A0A, белый текст, #9B30FF и #FF1493); фон дня — безопасное фото природы (Unsplash, самый строгий фильтр,
-только свои слова, проверка адреса, типа, размера и описания) или свой рисунок природы; сильное размытие и вуаль;
-водяной знак «Reloader» — ТОЛЬКО на картинке «Рекламный охват», на обычной аналитике его нет."""
+"""🖼 Дашборд Reloader (свой дизайн): тема по московскому времени — 06:00–17:00 светлая, 17:00–06:00 тёмная
+(#0A0A0A, белый текст, #9B30FF и #FF1493); фон — случайное фото с picsum.photos (без ключей; адрес, тип, размер
+проверяем; одно на сутки), сильно размытое под вуалью, но видное; picsum недоступен — свой премиальный градиент
+(фиолетовый, розовый, чёрный) на весь холст; водяной знак «Reloader» — на КАЖДОЙ картинке."""
 import calendar
 import io
 import json
@@ -115,23 +115,39 @@ def d2():
 
 @check
 def d3():
-    """фон: пёстрая фотография — сильно размыта (резких мест нет) и под вуалью (ночью — тёмной, днём — светлой)"""
+    """фон-фото: сильно размыто (резких мест нет), под вуалью (ночью — тёмной, днём — светлой), но ВИДНО — цвета фото
+    проступают; без фото — свой премиальный градиент (фиолетовый, розовый, чёрный) на весь холст, а не пустой цвет"""
     photo = busy_photo()
-    for theme, ok in (("dark", lambda v: v < 60), ("light", lambda v: v > 190)):
+    for theme, ok in (("dark", lambda v: v < 75), ("light", lambda v: v > 175)):
         back = A.backdrop(A.SIZE, theme, photo).convert("RGB")
         assert back.size == A.SIZE and ok(lum(back)), (theme, lum(back))
         assert edges(back, (0, 0) + A.SIZE) < 50, (theme, edges(back, (0, 0) + A.SIZE))
-    for topic in ("mountains", "forest", "ocean", "abstract"):                  # свой рисунок природы — без сети
-        nat = A.nature_background(800, 500, topic, 7)
-        assert nat.size == (800, 500) and nat.tobytes() == A.nature_background(800, 500, topic, 7).tobytes()
+        green = A.backdrop(A.SIZE, theme, Image.new("RGB", (1280, 800), (0, 200, 40))).convert("RGB").resize((32, 20))
+        r_, g_, _ = [sum(px[i] for px in green.getdata()) / 640 for i in range(3)]
+        assert g_ - r_ > 25, (theme, "фото видно сквозь вуаль", round(r_), round(g_))
+        grad = A.backdrop(A.SIZE, theme).convert("RGB")                       # фото нет — градиент на весь холст
+        small = grad.convert("L").resize((64, 40))
+        spread = max(small.getdata()) - min(small.getdata())
+        assert spread > 25 and edges(grad, (0, 0) + A.SIZE) < 50, (theme, "не пустой цвет, а мягкий градиент", spread)
+        assert near(grad, PURPLE, 60) + near(grad, PINK, 60) > 2000 or theme == "light", theme
+        for corner in ((5, 5), (1274, 5), (5, 794), (1274, 794)):           # закрыт весь холст, до самых краёв
+            assert grad.getpixel(corner) != (0, 0, 0), (theme, corner)
+    for theme in ("dark", "light"):
+        g1, g2 = A.mesh_gradient(800, 500, 7, theme), A.mesh_gradient(800, 500, 7, theme)
+        assert g1.size == (800, 500) and g1.tobytes() == g2.tobytes(), "тот же seed — тот же градиент"
+        assert g1.tobytes() != A.mesh_gradient(800, 500, 8, theme).tobytes(), "другой seed — другой"
+    assert lum(A.mesh_gradient(640, 400, 1, "dark")) < 70 and lum(A.mesh_gradient(640, 400, 1, "light")) > 180
+    for w, h in ((0, 5), (1, 1), (-3, 4), (None, "x")):                             # кривые размеры — не падаем
+        g = A.mesh_gradient(w, h, 1, "dark")
+        assert g.size[0] >= 1 and g.size[1] >= 1
 
 
 class Resp:
     def __init__(self, status=200, data=None, headers=None, content=b"", url=None):
         self.status_code, self.data, self.headers, self.content = status, data, headers or {}, content
+        self.text = json.dumps(data) if data is not None else ""
         if url:                                          # куда на самом деле привёл запрос (после переадресаций)
             self.url = url
-        self.text = json.dumps(data) if data is not None else ""
 
     def json(self):
         if self.data is None:
@@ -150,97 +166,68 @@ class HTTP:
     def get(self, url, params=None, headers=None, timeout=None, stream=False):
         self.calls.append((url, dict(params or {}), dict(headers or {})))
         r = self.routes.get(url.split("?")[0])
+        if isinstance(r, Exception):
+            raise r
         return r(url, params) if callable(r) else (r or Resp(404))
 
 
-def jpeg(w=1080, h=720, color=(40, 90, 60)):
+def jpeg(w=1280, h=800, color=(40, 90, 60)):
     buf = io.BytesIO()
     Image.new("RGB", (w, h), color).save(buf, "JPEG")
     return buf.getvalue()
 
 
-PHOTO_URL = "https://images.unsplash.com/photo-1?ixid=abc&w=1080"
-
-
-def photo_json(**over):
-    data = {"id": "p1", "description": "Misty mountain ridge at dawn", "alt_description": "green mountains under sky",
-            "urls": {"regular": PHOTO_URL}, "links": {"download_location": "https://api.unsplash.com/photos/p1/download"},
-            "user": {"name": "Anna K"}, "tags": [{"title": "mountain"}]}
-    data.update(over)
-    return data
+FINAL = "https://fastly.picsum.photos/id/1015/1280/800.jpg?hmac=abc"                 # куда переадресует picsum
 
 
 @check
 def d4():
-    """фото дня — безопасно: только слова mountains/forest/ocean/abstract, самый строгий фильтр Unsplash, адрес
-    только images.unsplash.com по https (и после переадресаций), тип — картинка, размер — до 8 МБ, описание без «взрослых» слов; кэш на сутки
-    по МСК; без ключа — в сеть не ходим; сбой — без падения, повтор не раньше чем через час"""
+    """фон-фото без ключей: случайное фото с https://picsum.photos/1280/800 (переадресация — только на picsum.photos
+    по https), тип — картинка, до 8 МБ, открывается; одно фото на сутки по МСК (кэш); сбой — без падения, повтор не
+    раньше чем через 30 минут; Unsplash и его ключа больше нет"""
     assert BGS is not None, "нет модуля reloader.services.analytics.backgrounds"
-    assert tuple(BGS.SAFE_TOPICS) == ("mountains", "forest", "ocean", "abstract")
+    assert BGS.PICSUM_URL == "https://picsum.photos/1280/800"
+    for path in ("reloader/services/analytics/backgrounds.py", "tg_to_max.py", "README.txt"):
+        src = open(os.path.join(ROOT, path), encoding="utf-8").read()
+        assert "UNSPLASH_ACCESS_KEY" not in src and "api.unsplash.com" not in src, (path, "Unsplash убран полностью")
     d = tempfile.mkdtemp()
     cache = os.path.join(d, "bg_daily.json")
-    good = {BGS.API_URL: Resp(200, photo_json()),
-            "https://images.unsplash.com/photo-1": Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg()),
-            "https://api.unsplash.com/photos/p1/download": Resp(200, {"url": PHOTO_URL})}
-    http = HTTP({})
-    img, why = BGS.daily_photo(http, "", cache, DAY_TS)
-    assert img is None and not http.calls, "без ключа — ни одного запроса"
+    good = {BGS.PICSUM_URL: Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(), url=FINAL)}
     http = HTTP(good)
-    img, info = BGS.daily_photo(http, "KEY", cache, DAY_TS)
-    assert img is not None and img.size == (1080, 720), info
+    img, info = BGS.daily_photo(http, cache, DAY_TS)
+    assert img is not None and img.size == (1280, 800), info
     url, params, headers = http.calls[0]
-    assert url == BGS.API_URL and params["content_filter"] == "high" and params["query"] in BGS.SAFE_TOPICS, params
-    assert params.get("orientation") == "landscape" and headers.get("Authorization") == "Client-ID KEY", headers
+    assert url == BGS.PICSUM_URL and not params and "Authorization" not in headers, http.calls[0]
     saved = json.load(open(cache))
-    assert saved["url"] == PHOTO_URL and saved["day"] == BGS.msk_day(DAY_TS) and saved["topic"] in BGS.SAFE_TOPICS
+    assert saved["url"] == FINAL and saved["day"] == BGS.msk_day(DAY_TS), saved
     n_calls = len(http.calls)
-    img2, _ = BGS.daily_photo(http, "KEY", cache, DAY_TS + 3600)                 # тот же день — из кэша
+    img2, _ = BGS.daily_photo(http, cache, DAY_TS + 3600)                       # тот же день — из кэша
     assert img2 is not None and len(http.calls) == n_calls, http.calls[n_calls:]
-    BGS.daily_photo(http, "KEY", cache, DAY_TS + 86400)                          # новый день — новое фото
-    assert len(http.calls) > n_calls and http.calls[n_calls][1]["query"] in BGS.SAFE_TOPICS
-    assert "Anna K" in (BGS.credit(cache, DAY_TS + 86400) or "") and "Unsplash" in BGS.credit(cache, DAY_TS + 86400)
+    BGS.daily_photo(http, cache, DAY_TS + 86400)                                # новый день — новое фото
+    assert len(http.calls) == n_calls + 1 and http.calls[n_calls][0] == BGS.PICSUM_URL
 
-    def refused(routes, label):
+    def refused(resp, label):
         c = os.path.join(tempfile.mkdtemp(), "bg.json")
-        h = HTTP(routes)
-        got, why_ = BGS.daily_photo(h, "KEY", c, DAY_TS)
-        assert got is None and isinstance(why_, str), (label, why_)
-        return h
+        h = HTTP({BGS.PICSUM_URL: resp})
+        got, why_ = BGS.daily_photo(h, c, DAY_TS)
+        assert got is None and isinstance(why_, str) and why_, (label, why_)
+        return h, c
 
-    h = refused({BGS.API_URL: Resp(200, photo_json(description="nude model on the beach"))}, "взрослое описание")
-    assert all("images.unsplash.com" not in u for u, _, _ in h.calls), "картинку даже не скачиваем"
-    refused({BGS.API_URL: Resp(200, photo_json(alt_description=None, tags=[{"title": "lingerie"}]))}, "взрослый тег")
-    h = refused({BGS.API_URL: Resp(200, photo_json(urls={"regular": "https://evil.example.com/a.jpg"}))}, "чужой сайт")
-    assert all("evil" not in u for u, _, _ in h.calls)
-    refused({BGS.API_URL: Resp(200, photo_json(urls={"regular": "http://images.unsplash.com/x.jpg"}))}, "не https")
-    refused({BGS.API_URL: Resp(200, photo_json()),                                 # переадресация на чужой сайт
-             "https://images.unsplash.com/photo-1": Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(),
-                                                         url="https://evil.example.com/photo.jpg")}, "переадресация")
-    for resp, label in ((Resp(200, None, {"Content-Type": "text/html"}, b"<html>"), "не картинка"),
-                        (Resp(200, None, {"Content-Type": "image/jpeg", "Content-Length": str(20 << 20)}, jpeg()),
+    for resp, label in ((Resp(500), "picsum ответил 500"),
+                        (Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(), url="https://evil.example.com/x.jpg"),
+                         "переадресация на чужой сайт"),
+                        (Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(), url="http://fastly.picsum.photos/x.jpg"),
+                         "не https"),
+                        (Resp(200, None, {"Content-Type": "text/html"}, b"<html>", url=FINAL), "не картинка"),
+                        (Resp(200, None, {"Content-Type": "image/jpeg", "Content-Length": str(20 << 20)}, jpeg(), url=FINAL),
                          "больше 8 МБ"),
-                        (Resp(200, None, {"Content-Type": "image/jpeg"}, b"\xff\xd8\xffbroken"), "битая картинка"),
-                        (Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(64, 40)), "слишком маленькая")):
-        refused({BGS.API_URL: Resp(200, photo_json()), "https://images.unsplash.com/photo-1": resp}, label)
-    c = os.path.join(tempfile.mkdtemp(), "bg.json")
-    h = HTTP({BGS.API_URL: Resp(500, {"errors": ["boom"]})})
-    assert BGS.daily_photo(h, "KEY", c, DAY_TS)[0] is None
-    BGS.daily_photo(h, "KEY", c, DAY_TS + 600)
-    assert len(h.calls) == 1, "API не ответил — следующая попытка не раньше чем через час"
-    BGS.daily_photo(h, "KEY", c, DAY_TS + 3700)
-    assert len(h.calls) == 2
-    # лимит запросов Unsplash (403 «Rate Limit Exceeded» или 429) и неверный ключ (401): фото нет, повтор — не
-    # раньше чем через час (лимит Unsplash обновляется раз в час), в лог хозяину — понятная причина
-    for resp, word in ((Resp(403, None, {"X-Ratelimit-Remaining": "0"}, b"Rate Limit Exceeded"), "лимит"),
-                       (Resp(429, {"errors": ["Too many requests"]}), "лимит"),
-                       (Resp(401, {"errors": ["OAuth error: The access token is invalid"]}), "ключ")):
-        c = os.path.join(tempfile.mkdtemp(), "bg.json")
-        h = HTTP({BGS.API_URL: resp})
-        got, why_ = BGS.daily_photo(h, "KEY", c, DAY_TS)
-        assert got is None and word in why_, (resp.status_code, why_)
-        assert BGS.daily_photo(h, "KEY", c, DAY_TS + 1800)[0] is None and len(h.calls) == 1, resp.status_code
-        BGS.daily_photo(h, "KEY", c, DAY_TS + 3700)
-        assert len(h.calls) == 2, (resp.status_code, "через час — пробуем снова")
+                        (Resp(200, None, {"Content-Type": "image/jpeg"}, b"\xff\xd8\xffbroken", url=FINAL), "битая"),
+                        (Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(64, 40), url=FINAL), "слишком маленькая"),
+                        (ConnectionError("picsum недоступен"), "нет сети")):
+        h, c = refused(resp, label)
+        assert BGS.daily_photo(h, c, DAY_TS + 600)[0] is None and len(h.calls) == 1, (label, "не долбим picsum")
+        BGS.daily_photo(h, c, DAY_TS + 1900)
+        assert len(h.calls) == 2, (label, "через 30 минут — снова пробуем")
 
 
 AD = {"title": "EroxBlox", "subs": 5008, "median": 1150, "low": 920, "high": 1265, "er": 23.0, "posts": 25,
@@ -252,19 +239,19 @@ POTD = {"title": "EroxBlox", "subs": 5008, "score": 74, "label": "Высокий
 
 @check
 def d5():
-    """водяной знак «Reloader» — внизу справа ТОЛЬКО у «Рекламного охвата» (днём и ночью); у аналитики канала,
-    сети, прогноза и оценки потенциала в этом углу пусто"""
+    """водяной знак «Reloader» внизу справа — на КАЖДОЙ картинке: канал, сеть, прогноз, потенциал, рекламный охват;
+    днём и ночью, с фото и без"""
     photo = busy_photo()
     for theme in ("dark", "light"):
-        ad = A.render_ad_reach(AD, bg=photo, theme=theme, now=NOW)
-        box = A.watermark_box(ad.size)
-        assert box[2] == ad.size[0] and box[3] == ad.size[1] and box[0] > ad.size[0] // 2, box
-        assert edges(ad, box) > 150, (theme, "у рекламной картинки есть знак", edges(ad, box))
-        for name, img in (("канал", A.render_channel(NUM, bg=photo, theme=theme, now=NOW)),
-                          ("сеть", A.render_network(NET, bg=photo, theme=theme, now=NOW)),
-                          ("прогноз", A.render_predict(PRED, bg=photo, channel="X", theme=theme, now=NOW)),
-                          ("потенциал", A.render_potential(POTD, bg=photo, theme=theme, now=NOW))):
-            assert edges(img, A.watermark_box(img.size)) < 10, (theme, name, edges(img, A.watermark_box(img.size)))
+        for bg in (photo, None):
+            for name, img in (("охват", A.render_ad_reach(AD, bg=bg, theme=theme, now=NOW)),
+                              ("канал", A.render_channel(NUM, bg=bg, theme=theme, now=NOW)),
+                              ("сеть", A.render_network(NET, bg=bg, theme=theme, now=NOW)),
+                              ("прогноз", A.render_predict(PRED, bg=bg, channel="X", theme=theme, now=NOW)),
+                              ("потенциал", A.render_potential(POTD, bg=bg, theme=theme, now=NOW))):
+                box = A.watermark_box(img.size)
+                assert box[2] == img.size[0] and box[3] == img.size[1] and box[0] > img.size[0] // 2, box
+                assert edges(img, box) > 150, (theme, name, bg is not None, edges(img, box))
 
 
 @check

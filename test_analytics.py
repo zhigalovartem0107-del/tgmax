@@ -1,5 +1,5 @@
-"""📊 Премиум-аналитика: карточки канала и всей сети (Pillow), 🔮 прогноз поста, фоны (фото дня / свой рисунок
-природы / ИИ),
+"""📊 Премиум-аналитика: карточки канала и всей сети (Pillow), 🔮 прогноз поста, фоны (фото picsum / свой градиент /
+ИИ), после каждой картинки — сообщение ровно в формате 📈/👥/👁,
 ⏱ скорость меню (учёт времени, «печатает…», нажатия разных людей не ждут друг друга)."""
 import base64
 import importlib.util
@@ -81,17 +81,17 @@ took = time.perf_counter() - t0
 assert img.size == A.SIZE == (1280, 800) and img.mode == "RGB" and took < 3, (img.size, took)
 long_title = "Очень длинное название канала, которое не помещается в одну строку карточки целиком"
 photo = Image.new("RGB", (64, 64), (200, 30, 30))
-bg = A.nature_background(1280, 800, "forest", A.seed_of(long_title))
+bg = A.mesh_gradient(1280, 800, A.seed_of(long_title), "dark")
 assert A.render_channel(A.channel_numbers(long_title, None, [], {}, NOW), F, bg, photo).size == (1280, 800)
 assert A.render_network(net, F).size == (1280, 800)
-wide = A.render_network(net, F, A.nature_background(1280, 800, "ocean", 7))
+wide = A.render_network(net, F, A.mesh_gradient(1280, 800, 7, "light"))
 assert wide.size == (1280, 800)                                            # с фоном — тот же размер
 accent = sum(c for c, px in wide.getcolors(1 << 20) if all(abs(px[i] - A.HOTPINK[i]) < 8 for i in range(3)))
 assert accent > 600, accent                                                # акценты и цифры — розовым #FF1493
-a1, a2 = A.procedural_background(600, 300, 42), A.procedural_background(600, 300, 42)
-assert a1.tobytes() == a2.tobytes(), "у канала всегда один и тот же узор"
-assert a1.tobytes() != A.procedural_background(600, 300, 43).tobytes()
-assert A.procedural_background(600, 300, 42, "waves").size == (600, 300)
+a1, a2 = A.mesh_gradient(600, 300, 42), A.mesh_gradient(600, 300, 42)
+assert a1.tobytes() == a2.tobytes(), "у канала всегда один и тот же градиент"
+assert a1.tobytes() != A.mesh_gradient(600, 300, 43).tobytes()
+assert not hasattr(A, "procedural_background") and not hasattr(A, "nature_background"), "старые фоны убраны"
 print(f"a2 ok: 🖼 карточка канала 1280×800 за {took:.2f} с, сеть 1280×800 (и с фоном); кириллица; свой рисунок")
 
 # 3) 🔮 прогноз поста по истории канала
@@ -186,11 +186,12 @@ for cid, base in ((5000, 1000), (6000, 300)):
 n_img, n_msg = srv.uploads["image"], len(srv.messages)
 bot.anl_cards_send(111, bot.my_channels(), "chan", "pattern")
 cards = srv.messages[n_msg:]
-assert srv.uploads["image"] == n_img + 2 and len(cards) == 2, (srv.uploads, [c["body"].get("text") for c in cards])
-caps = [c["body"]["text"] for c in cards]
-assert all(c["chat_id"] == 111 and c["body"]["attachments"][0]["type"] == "image" for c in cards)
-assert "5 008 подписчиков" in caps[0] and "1 200 подписчиков" in caps[1] and "ER24" in caps[0], caps
-assert "График роста заполнится сам" in caps[0]                           # истории ещё нет — объясняем
+assert srv.uploads["image"] == n_img + 2 and len(cards) == 4, (srv.uploads, [c["body"].get("text") for c in cards])
+assert all(c["chat_id"] == 111 for c in cards)
+assert [bool(c["body"].get("attachments")) for c in cards] == [True, False, True, False], "картинка, потом текст"
+caps = [c["body"]["text"] for c in cards[1::2]]
+assert caps[0] == bot.card_caption(bot.anl_channel(th1.name, 5000)) and "5 008 подписчиков · сегодня" in caps[0], caps
+assert caps[1].startswith("📈 «") and "\n👥 1 200 подписчиков · сегодня" in caps[1] and caps[1].count("\n") == 2, caps
 today = A.day_key(time.time())
 assert bot.SUBS_HIST["5000"][today] == 5008 and json.load(open("subs_history.json"))["6000"][today] == 1200
 srv.subs[5000] = 5020
@@ -201,11 +202,26 @@ bot.subs_snapshot(5000, 1, time.time() - 100 * DAY)                       # ст
 assert len(bot.SUBS_HIST["5000"]) == 2, bot.SUBS_HIST["5000"]
 n_msg = len(srv.messages)
 bot.anl_cards_send(111, bot.my_channels(), "net", "off")
-cap = srv.messages[-1]["body"]["text"]
-assert len(srv.messages) == n_msg + 1 and "Сеть из 2 каналов: 6 220 подписчиков" in cap, cap
-assert srv.messages[-1]["body"]["attachments"][0]["type"] == "image"
+cap = srv.messages[-2]["body"]["text"]
+assert len(srv.messages) == n_msg + 2 and "Сеть из 2 каналов: 6 220 подписчиков" in cap, cap
+assert srv.messages[-2]["body"]["attachments"][0]["type"] == "image" and not srv.messages[-1]["body"].get("attachments")
+blocks = srv.messages[-1]["body"]["text"].split("\n\n")                 # после сводки — 📈/👥/👁 по каждому каналу
+assert len(blocks) == 2 and all(b.startswith("📈 «") and b.count("\n") == 2 for b in blocks), blocks
 assert any(a == (111, "sending_photo") for a in srv.actions), srv.actions   # «отправляет фото…» пока рисуем
 print("a5 ok: 🖼 карточка на каждый канал и 🌐 сводка сети — картинкой в чат; подписчики по дням в subs_history.json")
+
+# 5b) после картинки — сообщение РОВНО в формате: 📈 «Канал» / 👥 … подписчиков · сегодня …, за 7 дней … /
+#     👁 Просмотры на пост: 24 ч — …, 48 ч — …, 72 ч — … · ER24 …%
+full = {"title": "EroxBlox — новости Roblox", "subs": 5008, "today": 11, "d7": -83, "v24": 1145, "v48": 1313,
+        "v72": 1481, "er24": 22.9, "diag": {"error": "MAX ответил 403"}, "chat_id": 5000}
+assert bot.card_caption(full) == ("📈 «EroxBlox — новости Roblox»\n"
+                                  "👥 5 008 подписчиков · сегодня +11, за 7 дней −83\n"
+                                  "👁 Просмотры на пост: 24 ч — 1 145, 48 ч — 1 313, 72 ч — 1 481 · ER24 22,9%"), \
+    bot.card_caption(full)
+blank = dict(full, subs=None, today=None, d7=None, v24=None, v48=None, v72=None, er24=None)
+assert bot.card_caption(blank) == ("📈 «EroxBlox — новости Roblox»\n👥 — подписчиков · сегодня —, за 7 дней —\n"
+                                   "👁 Просмотры на пост: 24 ч — —, 48 ч — —, 72 ч — — · ER24 —"), bot.card_caption(blank)
+print("a5b ok: 📈/👥/👁 — ровно три строки в заданном формате; нет данных — «—»")
 
 # 6) кнопки экрана «📊 Аналитика»: рисуем в фоне (меню не ждёт), повторное нажатие не запускает заново; фон
 text, rows = bot.screen("anl", 1)
@@ -217,30 +233,30 @@ t0 = time.perf_counter()
 assert bot.do_action("anlcard", 1) == "anl" and "Рисую" in bot.FLASH.pop(1) and time.perf_counter() - t0 < 1
 assert bot.do_action("anlcard", 1) == "anl" and "Уже рисую" in bot.FLASH.pop(1)
 end = time.time() + 30
-while len(srv.messages) < n_msg + 2 and time.time() < end:
+while len(srv.messages) < n_msg + 4 and time.time() < end:
     time.sleep(0.05)
-assert len(srv.messages) == n_msg + 2, [m["body"].get("text") for m in srv.messages[n_msg:]]
-assert all(m["body"]["attachments"][0]["type"] == "image" for m in srv.messages[n_msg:])
-for want in ("off", "ai", "pattern"):
+assert len(srv.messages) == n_msg + 4, [m["body"].get("text") for m in srv.messages[n_msg:]]
+assert all(m["body"]["attachments"][0]["type"] == "image" for m in srv.messages[n_msg::2])
+for want, label in (("off", "🎨 градиент"), ("ai", "🤖 рисует ИИ"), ("pattern", "🏞 фото дня")):
     bot.do_action("anlbg", 1)
     assert bot.anl_bg_mode(1) == want and bot.GCFG["anl_bg"]["1"] == want
-    bot.FLASH.pop(1, None)
+    assert label in bot.FLASH.pop(1, ""), label
 assert json.load(open("settings.json"))["anl_bg"]["1"] == "pattern"       # выбор фона переживает перезапуск
 calls = []
 real_gen, real_keys = bot.ai_image.generate, bot.ai_keys
 bot.ai_image.generate = lambda topic, key, http, url, model: (calls.append((topic, key, model)), png)[1]
 bot.ai_keys = lambda p: ["or-key"] if p == "openrouter" else []
-got = bot.anl_background("ai", "Тема канала", 1200, 900, "aurora")
+got = bot.card_bg("ai", "Тема канала")
 assert got.getpixel((5, 5)) == (255, 0, 0) and calls == [("Тема канала", "or-key", AIIMG.MODEL)], calls
-px = bot.anl_background("ai", "Тема канала", 1200, 900, "aurora").getpixel((5, 5))
+px = bot.card_bg("ai", "Тема канала").getpixel((5, 5))
 assert px[0] > 240 and px[1] < 16 and px[2] < 16, px                  # из файла-кэша (JPEG) — тот же красный
 assert len(calls) == 1, "фон от ИИ — один раз в неделю на тему (дальше из файла)"
-bot.ai_image.generate = lambda *a, **k: None                               # ИИ не смог — фон дня (свой рисунок)
-assert bot.anl_background("ai", "Другая тема", 1200, 900, "aurora").size == (1200, 900)
-assert bot.anl_background("off", "x", 10, 10, "aurora") is None
+bot.ai_image.generate = lambda *a, **k: None                               # ИИ не смог, picsum в проверках нет —
+assert bot.card_bg("ai", "Другая тема") is None                            # None: карточка рисует свой градиент
+assert bot.card_bg("off", "x") is None and not hasattr(bot, "anl_background")
 bot.ai_image.generate, bot.ai_keys = real_gen, real_keys
-print("a6 ok: кнопки «🖼 Карточка канала», «🌐 Сводка», «🔮 Прогноз», «Фон: фото дня/без фона/ИИ»; ИИ не смог — "
-      "фон дня")
+print("a6 ok: кнопки «🖼 Карточка канала», «🌐 Сводка», «🔮 Прогноз», «Фон: фото дня/градиент/ИИ»; ИИ не смог — "
+      "фото или свой градиент")
 
 # 7) 🔮 прогноз из меню: черновик не уходит в очередь, «печатает…», ответ с оценкой и советом ИИ
 real_ready, real_ask = bot.ai_llm_ready, bot.ai_ask_text
@@ -396,7 +412,7 @@ img = A.render_channel(huge, F, theme="dark")
 gutter = img.convert("L").crop((329, 150, 342, 280)).filter(ImageFilter.FIND_EDGES).crop((1, 1, 12, 129))
 assert img.size == (1280, 800) and not sum(gutter.histogram()[61:]), "огромные числа не вылезли из плитки"
 for w, h in ((0, 5), (1, 1), (5, 0), (-3, 4), (None, "x")):
-    bgx = A.procedural_background(w, h, 1)
+    bgx = A.mesh_gradient(w, h, 1)
     assert bgx.size[0] >= 1 and bgx.size[1] >= 1
 for mode in ("P", "LA", "1", "I;16", "CMYK", "F", "I", "RGBA"):
     assert A.render_channel(jn, F, bg=Image.new(mode, (40, 30)), photo=Image.new(mode, (40, 30))).size == (1280, 800)
@@ -425,9 +441,9 @@ srv.history[9100] = []
 n_msg = len(srv.messages)
 bot.anl_cards_send(111, [("Пустой канал", 9100, [])], "chan", "off")
 cap = srv.messages[-1]["body"]["text"]
-assert len(srv.messages) == n_msg + 1 and "на пост: 24 ч — —" in cap and srv.messages[-1]["body"]["attachments"], cap
+assert len(srv.messages) == n_msg + 2 and "на пост: 24 ч — —" in cap and srv.messages[-2]["body"]["attachments"], cap
 bot.anl_cards_send(111, [("Пустой канал", 9100, []), ("Тоже пустой", 9100, [])], "net", "off")
-assert "Сеть из 2 каналов" in srv.messages[-1]["body"]["text"]
+assert "Сеть из 2 каналов" in srv.messages[-2]["body"]["text"]
 ans = bot.predict_text("Пост без истории канала", cid=9100, name="Пустой канал")
 assert "нет истории" in ans and "⭐ Оценка" in ans
 srv.history.pop(9100)
@@ -448,44 +464,40 @@ assert len(bot.PRED_HIST) <= bot.PRED_HIST_MAX and 9100 in bot.PRED_HIST, len(bo
 print("a13 ok: 💾 испорченный subs_history.json — честное берём, мусор отбрасываем; пустой канал — карточка с «—» и "
       "сводка; прогноз без истории и при лежащем MAX; память прогнозов не растёт")
 
-# 14) ИИ-фон: нет ключа, мусор вместо картинки, огромная картинка — всегда фон есть (рисунок дня), бот не падает
+# 14) ИИ-фон: нет ключа, мусор вместо картинки, огромная картинка — фон всегда есть (фото или градиент), не падаем
 real_gen, real_keys = bot.ai_image.generate, bot.ai_keys
 gen_calls = []
 bot.ai_keys = lambda p: []
 bot.ai_image.generate = lambda *a, **k: gen_calls.append(a) or png
-assert bot.anl_background("ai", "Без ключа", 600, 300, "aurora").size == (600, 300) and not gen_calls
+assert bot.card_bg("ai", "Без ключа") is None and not gen_calls
 bot.ai_keys = lambda p: ["k"] if p == "openrouter" else []
 for bad in (b"not an image", b"", b"\x89PNG\r\n\x1a\n" + b"\x00" * 20):
     bot.ai_image.generate = lambda *a, bad=bad, **k: bad
-    assert bot.anl_background("ai", f"Мусор {len(bad)}", 600, 300, "waves").size == (600, 300)
+    assert bot.card_bg("ai", f"Мусор {len(bad)}") is None
 assert AIIMG.extract_image({"choices": [{"message": {"images": [{"image_url": {"url": "data:image/png;base64,!!!"}}]}}]}) is None
 assert AIIMG.extract_image({"choices": [{"message": {"images": [None, {"image_url": None}]}}]}) is None
 assert AIIMG.extract_image({"choices": []}) is None and AIIMG.extract_image({}) is None
 bigbuf = io.BytesIO()
 Image.new("RGB", (3000, 2000), (0, 120, 0)).save(bigbuf, "JPEG")
 bot.ai_image.generate = lambda *a, **k: bigbuf.getvalue()
-gbg = bot.anl_background("ai", "Огромная", 1280, 330, "waves")
+gbg = bot.card_bg("ai", "Огромная")
 assert A.render_network(net, F, gbg).size == (1280, 800)
 bot.ai_image.generate, bot.ai_keys = real_gen, real_keys
 assert bot.update_label({"update_type": "message_created", "message": {"recipient": {"chat_type": "dialog"},
                                                                        "body": {"text": "/абракадабра123 x"}}}) \
     == "сообщение /…" and bot.update_label({"update_type": "message_created", "message": {
         "recipient": {"chat_type": "dialog"}, "body": {"text": "/perf"}}}) == "сообщение /perf"
-print("a14 ok: 🎨 ИИ-фон: нет ключа — рисунок дня без запроса; мусор/пустота/битый PNG — рисунок дня; огромная картинка — "
+print("a14 ok: 🎨 ИИ-фон: нет ключа — без запроса; мусор/пустота/битый PNG — фото или свой градиент; огромная картинка — "
       "вписана; учёт скорости не заводит строку на каждую «/абракадабру»")
 
 
-# 15) 🏞 фон дня: фото Unsplash — главный источник; нет ключа, лимит Unsplash (403/429), нет сети — свой рисунок
-#     природы, без ошибок и без лишних запросов к API; фото, полученное сегодня, остаётся и после лимита
+# 15) 🏞 фон: случайное фото с picsum.photos — главный источник, без ключей (одно на сутки); picsum недоступен,
+#     ответил ошибкой или прислал не картинку — свой градиент (карточка не пустая), без ошибок и без долбёжки
 class UResp:
-    def __init__(self, status=200, data=None, headers=None, content=b""):
-        self.status_code, self.data, self.headers, self.content = status, data, headers or {}, content
-        self.text = json.dumps(data) if data is not None else content.decode("latin-1")
-
-    def json(self):
-        if self.data is None:
-            raise ValueError("not json")
-        return self.data
+    def __init__(self, status=200, headers=None, content=b"", url=None):
+        self.status_code, self.headers, self.content, self.text = status, headers or {}, content, ""
+        if url:
+            self.url = url
 
     def iter_content(self, n=65536):
         for i in range(0, len(self.content), n):
@@ -493,65 +505,56 @@ class UResp:
 
 
 class UHTTP:
-    """Поддельный Unsplash: mode — "ok", "limit" (403 Rate Limit Exceeded), "429" или "down" (нет сети)."""
+    """Поддельный picsum: mode — "ok", "500", "html" или "down" (нет сети)."""
 
     def __init__(self):
         self.calls, self.mode = [], "ok"
 
     def get(self, url, params=None, headers=None, timeout=None, stream=False):
-        self.calls.append(url.split("?")[0])
+        self.calls.append(url)
         if self.mode == "down":
-            raise bot.requests.exceptions.ConnectionError("нет сети")
-        if url.startswith(bot.bgsrc.API_URL):
-            if self.mode == "limit":
-                return UResp(403, None, {"X-Ratelimit-Remaining": "0"}, b"Rate Limit Exceeded")
-            if self.mode == "429":
-                return UResp(429, {"errors": ["Too many requests"]})
-            return UResp(200, {"id": "p1", "description": "Calm forest lake", "alt_description": "green forest",
-                               "urls": {"regular": "https://images.unsplash.com/photo-9?w=1080"},
-                               "links": {"download_location": "https://api.unsplash.com/photos/p1/download"},
-                               "user": {"name": "Anna K"}, "tags": [{"title": "forest"}]})
-        if url.startswith("https://images.unsplash.com/"):
-            buf = io.BytesIO()
-            Image.new("RGB", (1080, 720), (30, 90, 60)).save(buf, "JPEG")
-            return UResp(200, None, {"Content-Type": "image/jpeg"}, buf.getvalue())
-        return UResp(200, {})
+            raise bot.requests.exceptions.ConnectionError("picsum недоступен")
+        if self.mode == "500":
+            return UResp(500)
+        if self.mode == "html":
+            return UResp(200, {"Content-Type": "text/html"}, b"<html>", "https://fastly.picsum.photos/x")
+        buf = io.BytesIO()
+        Image.new("RGB", (1280, 800), (30, 90, 160)).save(buf, "JPEG")
+        return UResp(200, {"Content-Type": "image/jpeg"}, buf.getvalue(),
+                     "https://fastly.picsum.photos/id/1015/1280/800.jpg?hmac=x")
 
 
+assert os.environ.get("BG_PHOTO_URL") == "", "в проверках фото из интернета не качаем (поддельный MAX так велит)"
 real_http, real_file, real_keys, real_log = bot.BG_HTTP, bot.BG_DAILY_FILE, bot.ai_keys, bot._log_line
 ulogs = []
 u = bot.BG_HTTP = UHTTP()
 bot.ai_keys = lambda p: []
 bot._log_line = ulogs.append
-os.environ.pop("UNSPLASH_ACCESS_KEY", None)
 try:
     bot.BG_DAILY_FILE = os.path.join(tempfile.mkdtemp(), "bg_daily.json")
-    img, cr = bot.card_bg("pattern", "Тема канала")
-    assert img is not None and img.size == A.SIZE and cr is None and not u.calls, "нет ключа — свой рисунок, без сети"
-    os.environ["UNSPLASH_ACCESS_KEY"] = "KEY"
-    for mode in ("limit", "429", "down"):
+    assert bot.card_bg("pattern", "Тема") is None and not u.calls, "фото выключено — сразу свой градиент"
+    os.environ["BG_PHOTO_URL"] = bot.bgsrc.PICSUM_URL
+    for mode in ("500", "html", "down"):
         bot.BG_DAILY_FILE = os.path.join(tempfile.mkdtemp(), "bg_daily.json")
         u.mode, u.calls = mode, []
-        img, cr = bot.card_bg("pattern", "Тема канала")
-        assert img is not None and img.size == A.SIZE and cr is None, (mode, "лимит или сбой — свой рисунок природы")
-        n = len(u.calls)
-        assert bot.card_bg("pattern", "Другая тема")[0].size == A.SIZE and len(u.calls) == n, (mode, "API не долбим")
-        assert A.render_channel(A.channel_numbers("Канал", 100, [], {}, NOW), F, img).size == A.SIZE
-    assert any("Unsplash" in line and "лимит" in line for line in ulogs), ulogs        # причина — в лог хозяину
+        assert bot.card_bg("pattern", "Тема канала") is None, (mode, "picsum не дал фото — свой градиент")
+        assert bot.card_bg("pattern", "Другая тема") is None and len(u.calls) == 1, (mode, "picsum не долбим")
+        card = A.render_channel(A.channel_numbers("Канал", 100, [], {}, NOW), F, None, theme="dark")
+        spread = card.convert("L").crop((0, 0, 1280, 140)).getextrema()
+        assert card.size == A.SIZE and spread[1] - spread[0] > 40, (mode, "фон не пустой")
+    assert any("picsum" in line.lower() for line in ulogs), ulogs                       # причина — в лог хозяину
     bot.BG_DAILY_FILE = os.path.join(tempfile.mkdtemp(), "bg_daily.json")
     u.mode, u.calls = "ok", []
-    img, cr = bot.card_bg("pattern", "Тема канала")                                   # ключ есть — фото дня главное
-    assert img.size == (1080, 720) and cr == "Фото: Anna K / Unsplash", (img.size, cr)
-    assert bot.card_bg("ai", "Тема без ИИ")[1] == cr, "ИИ не нарисовал — тоже фото дня"
-    u.mode, n = "limit", len(u.calls)
-    img2, cr2 = bot.card_bg("pattern", "Тема канала")
-    assert img2.size == (1080, 720) and cr2 == cr and len(u.calls) == n, "фото на сегодня уже есть — лимит не мешает"
-    assert bot.card_bg("off", "x") == (None, None)
+    img = bot.card_bg("pattern", "Тема канала")                                         # picsum отвечает — фото
+    assert img is not None and img.size == (1280, 800) and u.calls == [bot.bgsrc.PICSUM_URL], (img, u.calls)
+    assert bot.card_bg("ai", "Тема без ИИ").size == (1280, 800), "ИИ не нарисовал — фото"
+    u.mode = "down"
+    assert bot.card_bg("pattern", "Тема канала").size == (1280, 800) and len(u.calls) == 1, "на сегодня фото уже есть"
+    assert bot.card_bg("off", "x") is None
 finally:
     bot.BG_HTTP, bot.BG_DAILY_FILE, bot.ai_keys, bot._log_line = real_http, real_file, real_keys, real_log
-    os.environ.pop("UNSPLASH_ACCESS_KEY", None)
-print("a15 ok: 🏞 фон дня: фото Unsplash — главный источник (с подписью автора); нет ключа, лимит 403/429, нет сети — "
-      "свой рисунок природы без ошибок, API не долбим (снова через час), причина — в лог хозяину; сегодняшнее фото "
-      "остаётся и после лимита")
+    os.environ["BG_PHOTO_URL"] = ""
+print("a15 ok: 🏞 фон: фото с picsum.photos — главный (без ключей, одно на сутки); picsum лежит, ошибка, не картинка, "
+      "нет сети — свой градиент без ошибок, picsum не долбим, причина — в лог хозяину; Unsplash убран")
 
 print("ВСЕ ТЕСТЫ АНАЛИТИКИ ПРОШЛИ")
