@@ -127,8 +127,10 @@ def d3():
 
 
 class Resp:
-    def __init__(self, status=200, data=None, headers=None, content=b""):
+    def __init__(self, status=200, data=None, headers=None, content=b"", url=None):
         self.status_code, self.data, self.headers, self.content = status, data, headers or {}, content
+        if url:                                          # куда на самом деле привёл запрос (после переадресаций)
+            self.url = url
         self.text = json.dumps(data) if data is not None else ""
 
     def json(self):
@@ -171,7 +173,7 @@ def photo_json(**over):
 @check
 def d4():
     """фото дня — безопасно: только слова mountains/forest/ocean/abstract, самый строгий фильтр Unsplash, адрес
-    только images.unsplash.com по https, тип — картинка, размер — до 8 МБ, описание без «взрослых» слов; кэш на сутки
+    только images.unsplash.com по https (и после переадресаций), тип — картинка, размер — до 8 МБ, описание без «взрослых» слов; кэш на сутки
     по МСК; без ключа — в сеть не ходим; сбой — без падения, повтор не раньше чем через час"""
     assert BGS is not None, "нет модуля reloader.services.analytics.backgrounds"
     assert tuple(BGS.SAFE_TOPICS) == ("mountains", "forest", "ocean", "abstract")
@@ -211,6 +213,9 @@ def d4():
     h = refused({BGS.API_URL: Resp(200, photo_json(urls={"regular": "https://evil.example.com/a.jpg"}))}, "чужой сайт")
     assert all("evil" not in u for u, _, _ in h.calls)
     refused({BGS.API_URL: Resp(200, photo_json(urls={"regular": "http://images.unsplash.com/x.jpg"}))}, "не https")
+    refused({BGS.API_URL: Resp(200, photo_json()),                                 # переадресация на чужой сайт
+             "https://images.unsplash.com/photo-1": Resp(200, None, {"Content-Type": "image/jpeg"}, jpeg(),
+                                                         url="https://evil.example.com/photo.jpg")}, "переадресация")
     for resp, label in ((Resp(200, None, {"Content-Type": "text/html"}, b"<html>"), "не картинка"),
                         (Resp(200, None, {"Content-Type": "image/jpeg", "Content-Length": str(20 << 20)}, jpeg()),
                          "больше 8 МБ"),

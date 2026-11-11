@@ -109,6 +109,9 @@ def _download(http, url):
         return None, "адрес фото — не images.unsplash.com по https"
     r = http.get(url, timeout=20, stream=True)
     try:
+        final = getattr(r, "url", None) or url        # requests идёт по переадресациям — проверяем, куда пришли
+        if not isinstance(final, str) or not _host_ok(final, IMG_HOSTS):
+            return None, "фото увело на чужой адрес"
         return _read_image(r)
     finally:
         close = getattr(r, "close", None)
