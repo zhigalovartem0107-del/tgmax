@@ -312,6 +312,26 @@ def d8():
         time.tzset()
 
 
+@check
+def d9():
+    """водяной знак — фирменный логотип Reloader (робот со стрелками и надпись «Reloader»): в углу — его голубой
+    цвет; логотип — прозрачный PNG (без чёрного квадрата); на светлой картинке он стоит на своей чёрной плашке,
+    как в оригинале"""
+    from reloader.services.analytics import logo as LOGO
+    lk = LOGO.lockup()
+    assert lk.mode == "RGBA" and lk.size == (440, 88) and lk.getpixel((0, 0))[3] == 0, (lk.mode, lk.size)
+    for theme in ("dark", "light"):
+        for bg in (None, busy_photo()):
+            for name, img in (("канал", A.render_channel(NUM, bg=bg, theme=theme, now=NOW)),
+                              ("охват", A.render_ad_reach(AD, bg=bg, theme=theme, now=NOW))):
+                cols = img.crop(A.watermark_box(img.size)).getcolors(1 << 20)
+                cyan = sum(n for n, (r, g, b) in cols if b > 200 and g > 140 and r < 110)
+                assert cyan > 80, (theme, name, bg is not None, "голубой цвет логотипа", cyan)
+                if theme == "light":
+                    dark = sum(n for n, (r, g, b) in cols if r + g + b < 90)
+                    assert dark > 1500, (name, bg is not None, "логотип на своей чёрной плашке", dark)
+
+
 if FAILS:
     print("НЕ ПРОШЛИ:", ", ".join(FAILS))
     sys.exit(1)

@@ -7,12 +7,15 @@
 справа) — на каждой картинке.
 Только подсчёт и рисование — без сети и без состояния бота (данные приходят готовыми), поэтому легко проверяется
 тестами."""
+import functools
 import math
 import random
 import time
 import zlib
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+
+from reloader.services.analytics import logo as brand
 
 SIZE = (1280, 800)                      # все картинки — 16:10
 W, H = SIZE
@@ -517,18 +520,21 @@ def watermark_box(size):
     return (w - 300, h - 60, w, h)
 
 
-def _watermark(img, t, font):
-    """Маленький знак «Reloader»: квадратик с градиентом и «R» + надпись — внизу справа на каждой картинке."""
-    d = ImageDraw.Draw(img)
-    f = font(True, 21)
-    text = "Reloader"
+@functools.lru_cache(maxsize=4)
+def _logo(height):
+    """Фирменный логотип нужной высоты (уменьшаем один раз; рисовать на нём нельзя — только накладывать)."""
+    lk = brand.lockup()
+    return lk.resize((round(lk.width * height / lk.height), height), Image.LANCZOS)
+
+
+def _watermark(img, t, font=None):
+    """Водяной знак — фирменный логотип Reloader (робот со стрелками и надпись) внизу справа, на каждой картинке.
+    Логотип нарисован для чёрного фона — и стоит на своей чёрной плашке: читается на любом фоне (фото, градиент)."""
+    lk = _logo(44)
     x1, cy = img.width - MARGIN, img.height - 30
-    tw = d.textlength(text, font=f)
-    mx = int(x1 - tw - 10 - 28)
-    _grad_fill(img, (mx, cy - 14, mx + 28, cy + 14), 8)
-    d = ImageDraw.Draw(img)
-    d.text((mx + 14, cy), "R", font=font(True, 17), fill=WHITE, anchor="mm")
-    d.text((x1, cy), text, font=f, fill=t["text"], anchor="rm")
+    x0, y0 = x1 - lk.width, cy - lk.height // 2
+    _fill(img, (x0 - 12, y0 - 6, x1 + 12, y0 + lk.height + 6), (10, 10, 12, 240 if t["name"] == "light" else 215), 14)
+    img.alpha_composite(lk, (x0, y0))
 
 
 def _canvas(t, bg, seed=0):
