@@ -113,29 +113,79 @@ def d2():
         assert lum(render(now=NIGHT_TS, theme="light")) > 170, (name, "тема, заданная явно, главнее часов")
 
 
+def landscape(w=1280, h=800, grain=False):
+    """«Фото природы» с чёткими формами: небо, солнце, горы, лес — должно быть ВИДНО на карточке. grain — зерно, как
+    у настоящего фото (ровных пятен в фото не бывает)."""
+    img = Image.new("RGB", (w, h))
+    d = ImageDraw.Draw(img)
+    for y in range(h):
+        k = y / (h - 1)
+        d.line([(0, y), (w, y)], fill=(int(60 + 150 * k), int(120 + 60 * k), int(220 - 80 * k)))
+    d.ellipse((860, 140, 1040, 320), fill=(255, 220, 120))
+    d.polygon([(0, 560), (260, 300), (520, 520), (760, 260), (1040, 540), (1280, 380), (1280, 800), (0, 800)],
+              fill=(60, 70, 110))
+    for x in range(0, w, 70):                                  # лес — частые тёмные ели
+        d.polygon([(x, 800), (x + 35, 600 + (x * 37) % 90), (x + 70, 800)], fill=(20, 70, 40))
+    return Image.blend(img, Image.effect_noise((w, h), 30).convert("RGB"), 0.08) if grain else img
+
+
+def corr(a, b):
+    xa = list(a.convert("L").resize((48, 30)).getdata())
+    xb = list(b.convert("L").resize((48, 30)).getdata())
+    ma, mb = sum(xa) / len(xa), sum(xb) / len(xb)
+    num_ = sum((p - ma) * (q - mb) for p, q in zip(xa, xb))
+    den = (sum((p - ma) ** 2 for p in xa) * sum((q - mb) ** 2 for q in xb)) ** 0.5
+    return num_ / den if den else 0.0
+
+
+def sharp(img, box=(0, 300, 1280, 720), thr=25):
+    """Сколько чётких контуров (порог ниже обычного: лёгкая вуаль снижает контраст на треть)."""
+    e = img.convert("L").crop(box).filter(ImageFilter.FIND_EDGES)
+    return sum(e.crop((1, 1, e.width - 1, e.height - 1)).histogram()[thr + 1:])
+
+
+def colors(img):
+    """Сколько разных цветов: у гранёной сетки — по цвету на грань (сотни), у фото — тысячи."""
+    return len(img.getcolors(1 << 24))
+
+
 @check
 def d3():
-    """фон-фото: сильно размыто (резких мест нет), под вуалью (ночью — тёмной, днём — светлой), но ВИДНО — цвета фото
-    проступают; без фото — свой премиальный градиент (фиолетовый, розовый, чёрный) на весь холст, а не пустой цвет"""
-    photo = busy_photo()
-    for theme, ok in (("dark", lambda v: v < 75), ("light", lambda v: v > 175)):
-        back = A.backdrop(A.SIZE, theme, photo).convert("RGB")
-        assert back.size == A.SIZE and ok(lum(back)), (theme, lum(back))
-        assert edges(back, (0, 0) + A.SIZE) < 50, (theme, edges(back, (0, 0) + A.SIZE))
-        green = A.backdrop(A.SIZE, theme, Image.new("RGB", (1280, 800), (0, 200, 40))).convert("RGB").resize((32, 20))
-        r_, g_, _ = [sum(px[i] for px in green.getdata()) / 640 for i in range(3)]
-        assert g_ - r_ > 25, (theme, "фото видно сквозь вуаль", round(r_), round(g_))
-        grad = A.backdrop(A.SIZE, theme).convert("RGB")                       # фото нет — градиент на весь холст
-        small = grad.convert("L").resize((64, 40))
-        spread = max(small.getdata()) - min(small.getdata())
-        assert spread > 25 and edges(grad, (0, 0) + A.SIZE) < 50, (theme, "не пустой цвет, а мягкий градиент", spread)
+    """фото picsum — ЧЁТКО видно (горы, лес, солнце): лёгкое размытие и лёгкая вуаль; текст читается за счёт
+    затемнения сверху и снизу и «матового стекла» под панелями; запасной фон — гранёная сетка с чёткими гранями
+    (не размытое пятно), его сразу видно; оба фона — на весь холст"""
+    land = landscape()
+    for theme in ("dark", "light"):
+        back = A.backdrop(A.SIZE, theme, land).convert("RGB")
+        mid = (0, 170, 1280, 690)                                             # между затемнением шапки и низа
+        assert back.size == A.SIZE and corr(back.crop(mid), land.crop(mid)) > 0.9, (theme, "фото узнаётся",
+                                                                                   corr(back.crop(mid), land.crop(mid)))
+        kept = sharp(back) / sharp(land)                                      # прежний фон (сильное размытие) — 0
+        assert kept > 0.35, (theme, "чёткие контуры гор, леса и солнца сохранились", round(kept, 2))
+        green = A.backdrop(A.SIZE, theme, Image.new("RGB", (1280, 800), (0, 200, 40))).convert("RGB")
+        g_mid = green.crop((200, 250, 1080, 550)).resize((22, 15))
+        r_, g_, _ = [sum(px[i] for px in g_mid.getdata()) / 330 for i in range(3)]
+        assert g_ - r_ > 80, (theme, "вуаль лёгкая — цвет фото виден", round(r_), round(g_))
+    white = A.backdrop(A.SIZE, "dark", Image.new("RGB", (1280, 800), (255, 255, 255))).convert("RGB")
+    assert lum(white.crop((0, 0, 1280, 130))) < 125, ("ночью шапка темнее — белый текст читается",
+                                                      lum(white.crop((0, 0, 1280, 130))))
+    black = A.backdrop(A.SIZE, "light", Image.new("RGB", (1280, 800), (0, 0, 0))).convert("RGB")
+    assert lum(black.crop((0, 0, 1280, 130))) > 135, ("днём шапка светлее — тёмный текст читается",
+                                                      lum(black.crop((0, 0, 1280, 130))))
+    for theme in ("dark", "light"):
+        grad = A.backdrop(A.SIZE, theme).convert("RGB")                       # фото нет — гранёная сетка
+        assert colors(grad) < 1000, (theme, "плоские грани, а не размытое пятно", colors(grad))
+        photo_cols = colors(A.backdrop(A.SIZE, theme, landscape(grain=True)).convert("RGB"))
+        assert photo_cols > 3000, (theme, "фото — не сетка", photo_cols)
+        e = grad.convert("L").filter(ImageFilter.FIND_EDGES).crop((1, 1, 1279, 799))
+        assert sum(e.histogram()[6:]) > 4000, (theme, "грани чёткие", sum(e.histogram()[6:]))
         assert near(grad, PURPLE, 60) + near(grad, PINK, 60) > 2000 or theme == "light", theme
         for corner in ((5, 5), (1274, 5), (5, 794), (1274, 794)):           # закрыт весь холст, до самых краёв
             assert grad.getpixel(corner) != (0, 0, 0), (theme, corner)
     for theme in ("dark", "light"):
         g1, g2 = A.mesh_gradient(800, 500, 7, theme), A.mesh_gradient(800, 500, 7, theme)
-        assert g1.size == (800, 500) and g1.tobytes() == g2.tobytes(), "тот же seed — тот же градиент"
-        assert g1.tobytes() != A.mesh_gradient(800, 500, 8, theme).tobytes(), "другой seed — другой"
+        assert g1.size == (800, 500) and g1.tobytes() == g2.tobytes(), "тот же seed — та же сетка"
+        assert g1.tobytes() != A.mesh_gradient(800, 500, 8, theme).tobytes(), "другой seed — другая"
     assert lum(A.mesh_gradient(640, 400, 1, "dark")) < 70 and lum(A.mesh_gradient(640, 400, 1, "light")) > 180
     for w, h in ((0, 5), (1, 1), (-3, 4), (None, "x")):                             # кривые размеры — не падаем
         g = A.mesh_gradient(w, h, 1, "dark")

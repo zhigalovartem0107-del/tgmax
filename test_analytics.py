@@ -189,6 +189,9 @@ cards = srv.messages[n_msg:]
 assert srv.uploads["image"] == n_img + 2 and len(cards) == 4, (srv.uploads, [c["body"].get("text") for c in cards])
 assert all(c["chat_id"] == 111 for c in cards)
 assert [bool(c["body"].get("attachments")) for c in cards] == [True, False, True, False], "картинка, потом текст"
+assert not any((c["body"].get("text") or "").strip() for c in cards[::2]), "у картинки — никакой подписи"
+temp = {str(x["mid"]) for x in bot.AUTODEL["temp"]}
+assert not any(str(c["mid"]) in temp for c in cards), "картинки и цифры остаются в чате (не удаляем через час)"
 caps = [c["body"]["text"] for c in cards[1::2]]
 assert caps[0] == bot.card_caption(bot.anl_channel(th1.name, 5000)) and "5 008 подписчиков · сегодня" in caps[0], caps
 assert caps[1].startswith("📈 «") and "\n👥 1 200 подписчиков · сегодня" in caps[1] and caps[1].count("\n") == 2, caps
@@ -202,8 +205,7 @@ bot.subs_snapshot(5000, 1, time.time() - 100 * DAY)                       # ст
 assert len(bot.SUBS_HIST["5000"]) == 2, bot.SUBS_HIST["5000"]
 n_msg = len(srv.messages)
 bot.anl_cards_send(111, bot.my_channels(), "net", "off")
-cap = srv.messages[-2]["body"]["text"]
-assert len(srv.messages) == n_msg + 2 and "Сеть из 2 каналов: 6 220 подписчиков" in cap, cap
+assert len(srv.messages) == n_msg + 2 and not (srv.messages[-2]["body"].get("text") or "").strip(), "без подписи"
 assert srv.messages[-2]["body"]["attachments"][0]["type"] == "image" and not srv.messages[-1]["body"].get("attachments")
 blocks = srv.messages[-1]["body"]["text"].split("\n\n")                 # после сводки — 📈/👥/👁 по каждому каналу
 assert len(blocks) == 2 and all(b.startswith("📈 «") and b.count("\n") == 2 for b in blocks), blocks
@@ -222,6 +224,34 @@ blank = dict(full, subs=None, today=None, d7=None, v24=None, v48=None, v72=None,
 assert bot.card_caption(blank) == ("📈 «EroxBlox — новости Roblox»\n👥 — подписчиков · сегодня —, за 7 дней —\n"
                                    "👁 Просмотры на пост: 24 ч — —, 48 ч — —, 72 ч — — · ER24 —"), bot.card_caption(blank)
 print("a5b ok: 📈/👥/👁 — ровно три строки в заданном формате; нет данных — «—»")
+
+# 5c) 🤖 вывод ИИ — 4-я строка: свои цифры канала → ИИ (ротация ключей) с заданием «Based on these stats…»;
+#     ответ — одной строкой, без разметки, не длиннее 300 знаков; нет ключей или ИИ упал — три строки
+from reloader.services.analytics import insight as INS  # noqa: E402
+assert "Based on these stats, write a 1-2 sentence conclusion in Russian about the channel's health." in INS.PROMPT
+assert "Is it growing? Is engagement high?" in INS.PROMPT
+assert INS.clean("**Вывод:** Канал растёт.\nВовлечённость высокая!\n\n- третье\n- четвёртое") == \
+    "Канал растёт. Вовлечённость высокая!", INS.clean("**Вывод:** Канал растёт.\nВовлечённость высокая!")
+assert INS.clean("Первое. Второе. Третье предложение лишнее.") == "Первое. Второе."
+assert len(INS.clean("слово " * 200)) <= 300 and INS.clean("") is None and INS.clean("   **  ") is None
+asked = []
+real_ready, real_ask = bot.ai_llm_ready, bot.ai_ask_text
+bot.ai_llm_ready = lambda: True
+bot.ai_ask_text = lambda text, rot, http, settings, log=print, prompt="", timeout=25: (
+    asked.append((text, prompt, rot, timeout)), "Канал растёт (+83 за неделю), вовлечённость высокая: ER24 22,9%.")[1]
+bot.INSIGHT_CACHE.clear()
+got = bot.stats_text(full)
+assert got == bot.card_caption(full) + "\n🤖 Канал растёт (+83 за неделю), вовлечённость высокая: ER24 22,9%.", got
+assert asked[0][0].startswith(bot.card_caption(full)) and asked[0][1] == INS.PROMPT and asked[0][2] is bot.AI_ROTATORS
+assert asked[0][3] <= 30, "ИИ ждём недолго — цифры важнее"
+assert bot.stats_text(full) == got and len(asked) == 1, "те же цифры — из памяти, ИИ второй раз не спрашиваем"
+bot.ai_ask_text = lambda *a, **k: (_ for _ in ()).throw(bot.AiUnavailable("нет ключей"))
+assert bot.stats_text(dict(full, subs=6000)) == bot.card_caption(dict(full, subs=6000)), "ИИ упал — три строки"
+bot.ai_llm_ready = lambda: False
+assert bot.stats_text(dict(full, subs=7000)) == bot.card_caption(dict(full, subs=7000)), "ключей нет — три строки"
+bot.ai_llm_ready, bot.ai_ask_text = real_ready, real_ask
+print("a5c ok: 🤖 4-я строка — вывод ИИ по цифрам (ротация ключей), одной строкой, из памяти на те же цифры; "
+      "нет ИИ — три строки")
 
 # 6) кнопки экрана «📊 Аналитика»: рисуем в фоне (меню не ждёт), повторное нажатие не запускает заново; фон
 text, rows = bot.screen("anl", 1)
@@ -284,6 +314,11 @@ def wait_msg(n0, word, sec=20):
 
 ans = wait_msg(n_msg, "🔮 Прогноз поста")
 assert "«mychannel»" in ans and "⭐ Оценка:" in ans and "👁 Ожидаемо:" in ans and "Добавь в начало главную цифру" in ans, ans
+pm = [m for m in srv.messages[n_msg:] if m["chat_id"] == 111]
+img_at = next(i for i, m in enumerate(pm) if m["body"].get("attachments") and
+              m["body"]["attachments"][0]["type"] == "image")
+assert not (pm[img_at]["body"].get("text") or "").strip(), "картинка прогноза — без подписи"
+assert "🔮 Прогноз поста" in pm[img_at + 1]["body"]["text"], "сразу за картинкой — ответ"
 assert len(bot.QUEUE) == queue_before, "черновик — не в очередь"
 assert (111, "typing_on") in srv.actions, srv.actions
 n_msg = len(srv.messages)
@@ -443,7 +478,7 @@ bot.anl_cards_send(111, [("Пустой канал", 9100, [])], "chan", "off")
 cap = srv.messages[-1]["body"]["text"]
 assert len(srv.messages) == n_msg + 2 and "на пост: 24 ч — —" in cap and srv.messages[-2]["body"]["attachments"], cap
 bot.anl_cards_send(111, [("Пустой канал", 9100, []), ("Тоже пустой", 9100, [])], "net", "off")
-assert "Сеть из 2 каналов" in srv.messages[-2]["body"]["text"]
+assert srv.messages[-2]["body"]["attachments"] and srv.messages[-1]["body"]["text"].count("📈 «") == 2
 ans = bot.predict_text("Пост без истории канала", cid=9100, name="Пустой канал")
 assert "нет истории" in ans and "⭐ Оценка" in ans
 srv.history.pop(9100)

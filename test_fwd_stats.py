@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import threading
 import traceback
 import types
@@ -183,6 +184,8 @@ def press(uid, chat, payload):
     bot.handle_update({"update_type": "message_callback", "callback": {
         "callback_id": "c", "payload": payload, "user": {"user_id": uid, "first_name": f"U{uid}"}},
         "message": {"recipient": {"chat_id": chat}}})
+    for th in [t for t in threading.enumerate() if t.name.startswith("fwd-")]:   # проверка канала идёт в фоне
+        th.join(60)
 
 
 def said(chat, n0):
@@ -209,7 +212,8 @@ FMT = re.compile(r"📈 «(?P<title>[^»\n]+)»\n"                              
                  r"👥 (?P<subs>\d[\d ]*|—) подписчиков · сегодня (?P<today>[+−]\d[\d ]*|—), "
                  r"за 7 дней (?P<d7>[+−]\d[\d ]*|—)\n"
                  r"👁 Просмотры на пост: 24 ч — (?P<v24>\d[\d ]*|—), 48 ч — (?P<v48>\d[\d ]*|—), "
-                 r"72 ч — (?P<v72>\d[\d ]*|—) · ER24 (?P<er>\d+,\d%|—)")
+                 r"72 ч — (?P<v72>\d[\d ]*|—) · ER24 (?P<er>\d+,\d%|—)"
+                 r"(?:\n🤖 (?P<ai>[^\n]{2,320}))?")                      # 4-я строка — вывод ИИ (если есть ключи)
 NOT_BOUND = ("Этого канала нет в вашей сетке. Чтобы я мог его проверить, привяжите его в разделе "
              "«🎭 Мои каналы».")
 BOUND_ID = -7300
@@ -224,6 +228,10 @@ TME["https://t.me/s/robloxtg"] = "".join(
 CARDS = []
 _real_upload = bot.upload_card
 bot.upload_card = lambda img, photo_like=False: (CARDS.append(img), _real_upload(img, photo_like))[1]
+RENDERED = []                                            # что нарисовали на картинках (цифры — на самой картинке)
+for _name in ("render_ad_reach", "render_potential", "render_channel"):
+    setattr(bot.anlimg, _name, (lambda real, nm: lambda d, *a, **k: (RENDERED.append((nm, d)), real(d, *a, **k))[1])(
+        getattr(bot.anlimg, _name), _name))
 
 
 def buttons(m):
@@ -276,62 +284,87 @@ def f1():
     menu_ok(sent[0], f"max:{PUB_ID}", "robloxnews")
 
 
-def card_then_text(sent, title):
-    """Картинка, а за ней — сообщение ровно в формате 📈/👥/👁 про этот канал."""
-    assert len(sent) == 2 and has_image(sent[0]) and not has_image(sent[1]), [m["body"] for m in sent]
-    m = FMT.fullmatch(sent[1]["body"].get("text") or "")
-    assert m and m["title"] == title, sent[1]["body"].get("text")
-    return sent[0]["body"].get("text") or "", m
+def gone():
+    return {str(x) for x in srv.deleted}
+
+
+def live(chat, n0):
+    """Что осталось в чате из отправленного после n0 (что бот удалил — не считаем)."""
+    return [m for m in said(chat, n0) if str(m.get("mid")) not in gone()]
+
+
+def analytics(chat, n0, title, key):
+    """После кнопки в чате: картинка БЕЗ подписи, сразу за ней — 📈/👥/👁 (и 🤖, если есть ИИ), под ними — снова меню
+    канала; «⏳ Анализирую…» уже убрано; картинку и цифры бот не удаляет (их нет в очереди «удалить через час»)."""
+    got = live(chat, n0)
+    assert len(got) == 3 and has_image(got[0]) and not (got[0]["body"].get("text") or "").strip(), \
+        [m["body"] for m in got]
+    assert not has_image(got[1]) and not buttons(got[1]), got[1]["body"]
+    m = FMT.fullmatch(got[1]["body"].get("text") or "")
+    assert m and m["title"] == title, got[1]["body"].get("text")
+    assert [b["payload"] for b in buttons(got[2])] == [f"fw:{a}:{key}" for a in ("ad", "mass", "pot")], got[2]["body"]
+    progress = [x for x in said(chat, n0) if (x["body"].get("text") or "").startswith("⏳")]
+    assert progress and all(str(x["mid"]) in gone() for x in progress), "«Анализирую…» убрано"
+    temp = {str(x["mid"]) for x in bot.AUTODEL["temp"]}
+    assert str(got[0]["mid"]) not in temp and str(got[1]["mid"]) not in temp, "картинку и цифры не удаляем"
+    return m
+
+
+def live_texts(chat, n0):
+    return [m["body"].get("text") for m in live(chat, n0)]
 
 
 @check
 def f2():
-    """«📊 Рекламный охват» — картинка (знак Reloader внизу справа, подпись: охват, подписчики и «Подписалось: +0,
-    Отписалось: -0, Итого: +0»), за ней — сообщение в формате 📈/👥/👁; меню с тремя кнопками остаётся"""
+    """«📊 Рекламный охват»: картинка БЕЗ подписи (охват, подписчики, приток и отток — на самой картинке, знак
+    Reloader), сразу за ней — 📈/👥/👁; «Анализирую…» и прежнее меню убраны, под цифрами — меню канала"""
+    menus = [m for m in said(BC, 0) if (m["body"].get("text") or "").startswith("Вижу пост из канала: robloxnews")]
     n0, a0, c0 = len(srv.messages), len(srv.answers), len(CARDS)
     press(BUYER, BC, f"fw:ad:max:{PUB_ID}")
-    cap, m = card_then_text(said(BC, n0), "robloxnews")
-    assert "Рекламный охват" in cap and "robloxnews" in cap and "1 000" in cap, cap
-    assert "Подписалось: +0, Отписалось: -0, Итого: +0" in cap, cap
-    assert m["subs"] == "1 000", m.groupdict()
+    m = analytics(BC, n0, "robloxnews", f"max:{PUB_ID}")
+    assert m["subs"] == "1 000" and m["ai"] is None, m.groupdict()                # ИИ нет — ровно три строки
+    kind, d = RENDERED[-1]
+    assert kind == "render_ad_reach" and d["subs"] == 1000 and (d["joins"], d["leaves"], d["total"]) == (0, 0, 0), d
     assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "на картинке — знак Reloader"
+    assert menus and str(menus[-1]["mid"]) in gone(), "прежнее меню канала убрано"
     menu_left = srv.answers[a0]["body"]["message"]
     assert [b["text"] for row in menu_left["attachments"][0]["payload"]["buttons"] for b in row] == MENU
 
 
 @check
 def f3():
-    """бот сам следит за каналом (раз в час): 1000 → 1010 → 1004; «⚡ Оценка потенциала» — картинка со знаком
-    Reloader, в подписи — оценка из 100 и «Подписалось: +10, Отписалось: -6, Итого: +4»; потом — 📈/👥/👁"""
+    """бот сам следит за каналом (раз в час): 1000 → 1010 → 1004; «⚡ Оценка потенциала» — картинка без подписи
+    (оценка из 100 и приток +10 / отток −6 / итого +4 — на картинке, со знаком Reloader), за ней — 📈/👥/👁"""
     srv.subs[PUB_ID] = 1010
     bot.fwd_snapshot_all()
     srv.subs[PUB_ID] = 1004
     bot.fwd_snapshot_all()
     n0, c0 = len(srv.messages), len(CARDS)
     press(BUYER, BC, f"fw:pot:max:{PUB_ID}")
-    cap, m = card_then_text(said(BC, n0), "robloxnews")
-    assert "Оценка потенциала" in cap and "/100" in cap, cap
-    assert "Подписалось: +10, Отписалось: -6, Итого: +4" in cap, cap
+    m = analytics(BC, n0, "robloxnews", f"max:{PUB_ID}")
     assert m["subs"] == "1 004", m.groupdict()
+    kind, d = RENDERED[-1]
+    assert kind == "render_potential" and (d["joins"], d["leaves"], d["total"]) == (10, 6, 4) and d["score"], d
     assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "знак Reloader — на каждой картинке"
 
 
 @check
 def f4():
-    """«📈 Массовая проверка»: канала нет в сетке — ровно фраза «Этого канала нет в вашей сетке…»; канал привязан к
-    кабинету — аналитика канала картинкой (со знаком Reloader), за ней — 📈/👥/👁 с подписчиками"""
+    """«📈 Массовая проверка»: канала нет в сетке — ровно фраза «Этого канала нет в вашей сетке…» (а «Анализирую…»
+    убрано); следующий пост — фраза убрана; канал привязан к кабинету — аналитика картинкой и 📈/👥/👁"""
     n0 = len(srv.messages)
     press(BUYER, BC, f"fw:mass:max:{PUB_ID}")
-    sent = said(BC, n0)
-    assert [m["body"].get("text") for m in sent] == [NOT_BOUND] and not sent[0]["body"].get("attachments"), \
-        [m["body"] for m in sent]
+    got = live(BC, n0)
+    assert [m["body"].get("text") for m in got] == [NOT_BOUND] and not got[0]["body"].get("attachments"), \
+        [m["body"] for m in got]
     n1 = len(srv.messages)
     forward(BUYER, BC, BOUND_ID)
+    assert str(got[0]["mid"]) in gone(), "новый пост — промежуточное убрано"
     menu_ok(said(BC, n1)[0], f"max:{BOUND_ID}", "mychan")
     n2, c0 = len(srv.messages), len(CARDS)
     press(BUYER, BC, f"fw:mass:max:{BOUND_ID}")
-    _, m = card_then_text(said(BC, n2), "mychan")
-    assert m["subs"] == "2 500", m.groupdict()
+    m = analytics(BC, n2, "mychan", f"max:{BOUND_ID}")
+    assert m["subs"] == "2 500" and RENDERED[-1][0] == "render_channel", m.groupdict()
     assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150
 
 
@@ -339,26 +372,29 @@ def f4():
 def f5():
     """канал, который MAX НЕ показывает боту (бот в нём не состоит, 404), — это ещё не «закрытый»: меню из трёх
     кнопок без слова «закрытый»; «Рекламный охват» и «Оценка потенциала» — честно «MAX не показывает этот канал
-    боту…», без ошибок; «Массовая проверка» — «нет в вашей сетке»"""
+    боту…» (прежняя такая фраза убирается после следующего нажатия); «Массовая проверка» — «нет в вашей сетке»"""
     n0 = len(srv.messages)
     forward(BUYER, BC, CLOSED_ID)
     sent = said(BC, n0)
     assert len(sent) == 1 and len(buttons(sent[0])) == 3, [m["body"] for m in sent]
     assert "закрыт" not in sent[0]["body"]["text"].lower(), sent[0]["body"]["text"]
+    before = []
     for act in ("ad", "pot"):
         n1 = len(srv.messages)
         press(BUYER, BC, f"fw:{act}:max:{CLOSED_ID}")
-        assert texts(BC, n1) == [bot.FWD_HIDDEN] and "закрыт" not in bot.FWD_HIDDEN.lower(), (act, texts(BC, n1))
+        assert live_texts(BC, n1) == [bot.FWD_HIDDEN] and "закрыт" not in bot.FWD_HIDDEN.lower(), (act, live_texts(BC, n1))
+        assert all(str(x) in gone() for x in before), "после нажатия прежняя фраза убрана"
+        before = [m["mid"] for m in live(BC, n1)]
     n2 = len(srv.messages)
     press(BUYER, BC, f"fw:mass:max:{CLOSED_ID}")
-    assert texts(BC, n2) == [NOT_BOUND], texts(BC, n2)
+    assert live_texts(BC, n2) == [NOT_BOUND] and all(str(x) in gone() for x in before), live_texts(BC, n2)
 
 
 @check
 def f6():
-    """ссылка на публичный канал Telegram — тоже меню; «Рекламный охват» — подписчики со страницы t.me и охват
-    рекламного поста по просмотрам последних постов (≈ 880–1 210), потом 📈/👥/👁; приглашение t.me/+… в канал, где
-    аккаунта бота нет, — ровно «Это закрытый канал…»"""
+    """ссылка на публичный канал Telegram — тоже меню; «Рекламный охват» — картинка (подписчики со страницы t.me,
+    охват рекламного поста по просмотрам последних постов ≈ 880–1 210), потом 📈/👥/👁; приглашение t.me/+… в
+    канал, где аккаунта бота нет, — ровно «Это закрытый канал…»"""
     n0 = len(srv.messages)
     msg(BUYER, BC, "https://t.me/robloxtg/123")
     sent = said(BC, n0)
@@ -366,15 +402,16 @@ def f6():
     menu_ok(sent[0], "tg:robloxtg", "Roblox TG News")
     n1 = len(srv.messages)
     press(BUYER, BC, "fw:ad:tg:robloxtg")
-    cap, m = card_then_text(said(BC, n1), "Roblox TG News")
-    assert "12 345" in cap and "880" in cap and "1 210" in cap, cap
+    m = analytics(BC, n1, "Roblox TG News", "tg:robloxtg")
+    kind, d = RENDERED[-1]
+    assert kind == "render_ad_reach" and (d["subs"], d["low"], d["high"]) == (12345, 880, 1210), d
     assert m["subs"] == "12 345", m.groupdict()
     n2 = len(srv.messages)
     msg(BUYER, BC, "https://t.me/+AbCdEf123")
-    assert texts(BC, n2) == [CLOSED], texts(BC, n2)
+    assert live_texts(BC, n2) == [CLOSED], live_texts(BC, n2)
     n3 = len(srv.messages)
     press(BUYER, BC, "fw:mass:tg:robloxtg")
-    assert texts(BC, n3) == [NOT_BOUND], texts(BC, n3)
+    assert live_texts(BC, n3) == [NOT_BOUND], live_texts(BC, n3)
 
 
 @check
@@ -442,9 +479,8 @@ def f9():
     for act in ("ad", "pot"):
         n1 = len(srv.messages)
         press(BUYER, BC, f"fw:{act}:max:-7400")
-        sent = said(BC, n1)
         assert not any(t in (CLOSED, bot.FWD_HIDDEN) for t in texts(BC, n1)), (act, texts(BC, n1))
-        _, m = card_then_text(sent, "politika")
+        m = analytics(BC, n1, "politika", "max:-7400")
         assert m["subs"] == "—", m.groupdict()
 
 
@@ -503,8 +539,9 @@ def f10():
         n2, c0 = len(srv.messages), len(CARDS)
         press(BUYER, BC, "fw:ad:tg:polit")
         assert len(CARDS) == c0 + 1
-        cap, m = card_then_text(said(BC, n2), "Политика 24")
-        assert "250 000" in cap and "Охват рекламного поста ≈" in cap, cap
+        m = analytics(BC, n2, "Политика 24", "tg:polit")
+        kind, d = RENDERED[-1]
+        assert d["subs"] == 250000 and d["median"], d
         assert m["subs"] == "250 000" and m["v24"] != "—", m.groupdict()      # просмотры (посты 30–41 ч) — через аккаунт
         assert watermark(CARDS[-1]) > 150
         n3 = len(srv.messages)
@@ -512,14 +549,71 @@ def f10():
         menu_ok(said(BC, n3)[0], "tgc:777", "Закрытый клуб")
         n4 = len(srv.messages)
         press(BUYER, BC, "fw:pot:tgc:777")
-        cap, m = card_then_text(said(BC, n4), "Закрытый клуб")
-        assert "Оценка потенциала" in cap and m["subs"] == "3 100", (cap, m.groupdict())
+        m = analytics(BC, n4, "Закрытый клуб", "tgc:777")
+        assert RENDERED[-1][0] == "render_potential" and m["subs"] == "3 100", m.groupdict()
         n5 = len(srv.messages)
         msg(BUYER, BC, "https://t.me/+NotMember")         # приглашение, где аккаунта нет, — правда закрытый
         assert texts(BC, n5) == [CLOSED], texts(BC, n5)
     finally:
         bot.TG_CLIENT, bot.MAIN_LOOP = real_client, real_loop
         loop.call_soon_threadsafe(loop.stop)
+
+
+@check
+def f11():
+    """🤖 4-я строка — вывод ИИ (через ротацию ключей) по цифрам канала: «Based on these stats…» по-русски, 1–2
+    предложения, одной строкой, без разметки; ИИ нет или упал — ровно три строки; те же цифры — ИИ не
+    спрашиваем повторно (ответ из памяти)"""
+    calls = []
+    real_ready, real_ask = bot.ai_llm_ready, bot.ai_ask_text
+
+    def fake_ask(text, rotators, http, settings, log=print, prompt="", timeout=25):
+        calls.append((text, prompt, rotators))
+        return ("**Вывод:** канал растёт:\n+4 за неделю, и вовлечённость высокая — просмотров много.\n\n- лишнее\n"
+                "- ещё пункт")
+
+    bot.ai_llm_ready, bot.ai_ask_text = (lambda: True), fake_ask
+    try:
+        n0 = len(srv.messages)
+        press(BUYER, BC, f"fw:pot:max:{PUB_ID}")
+        m = analytics(BC, n0, "robloxnews", f"max:{PUB_ID}")
+        ai = m["ai"] or ""
+        assert "канал растёт" in ai and "**" not in ai and "лишнее" not in ai and len(ai) <= 300, ai
+        text, prompt, rot = calls[-1]
+        assert "Based on these stats" in prompt and "Russian" in prompt and rot is bot.AI_ROTATORS, prompt
+        assert "1 004" in text and "ER24" in text, text                       # ИИ видит те самые три строки
+        n1, k = len(srv.messages), len(calls)
+        press(BUYER, BC, f"fw:ad:max:{PUB_ID}")
+        assert analytics(BC, n1, "robloxnews", f"max:{PUB_ID}")["ai"] == ai and len(calls) == k, "из памяти"
+        bot.ai_ask_text = lambda *a, **kw: (_ for _ in ()).throw(bot.AiUnavailable("ключи кончились"))
+        n2 = len(srv.messages)
+        press(BUYER, BC, f"fw:mass:max:{BOUND_ID}")
+        assert analytics(BC, n2, "mychan", f"max:{BOUND_ID}")["ai"] is None, "ИИ упал — ровно три строки"
+    finally:
+        bot.ai_llm_ready, bot.ai_ask_text = real_ready, real_ask
+
+
+@check
+def f12():
+    """🧹 чистый чат: картинки аналитики и сообщения с цифрами остаются (их не удаляет и «прошёл час»);
+    промежуточное («Этого канала нет в вашей сетке…», «MAX не показывает…», «Анализирую…», меню канала) —
+    убираем после следующего нажатия (любой кнопки) или когда пришла аналитика"""
+    n0 = len(srv.messages)
+    press(BUYER, BC, f"fw:mass:max:{PUB_ID}")
+    nb = [x for x in live(BC, n0) if x["body"].get("text") == NOT_BOUND]
+    assert len(nb) == 1, live_texts(BC, n0)
+    n1 = len(srv.messages)
+    press(BUYER, BC, f"fw:ad:max:{PUB_ID}")
+    assert str(nb[0]["mid"]) in gone(), "нажал снова — «нет в вашей сетке» убрано"
+    got = live(BC, n1)
+    bot.purge_autodel(time.time() + 7200)                                     # прошло два часа
+    assert str(got[0]["mid"]) not in gone() and str(got[1]["mid"]) not in gone(), "картинка и цифры остались"
+    n2 = len(srv.messages)
+    press(BUYER, BC, f"fw:ad:max:{CLOSED_ID}")
+    hidden = live(BC, n2)
+    assert [m["body"].get("text") for m in hidden] == [bot.FWD_HIDDEN]
+    press(BUYER, BC, "m:main")                                                # любая кнопка меню
+    assert str(hidden[0]["mid"]) in gone(), "нажал любую кнопку — промежуточное убрано"
 
 
 if FAILS:

@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110623            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110624            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -3029,7 +3029,7 @@ def new_host_code():
     print("=" * 40)
 
 
-def api_send(chat_id, text, rows=None, image_token=None):
+def api_send(chat_id, text, rows=None, image_token=None, keep=False):
     body = {"text": text} if text is not None else {}          # картинка без подписи — без текста
     atts = []
     if image_token:
@@ -3047,8 +3047,9 @@ def api_send(chat_id, text, rows=None, image_token=None):
         mid = ((r.json().get("message") or {}).get("body") or {}).get("mid")
     except Exception:
         return None
-    with contextlib.suppress(Exception):
-        track_sent(chat_id, mid, text or "", rows)
+    if not keep:                                    # keep — аналитика: остаётся в истории чата
+        with contextlib.suppress(Exception):
+            track_sent(chat_id, mid, text or "", rows)
     return mid
 
 
@@ -3072,6 +3073,41 @@ def track_sent(chat_id, mid, text, rows):
     with AUTODEL_LOCK:
         AUTODEL["temp"].append({"chat": chat_id, "mid": mid, "at": time.time() + AUTODEL_SEC})
         save_json(AUTODEL_FILE, AUTODEL)
+
+
+TRANSIENT = {}                 # чат -> [(mid, меню?)]: промежуточное (ошибки, «Анализирую…», меню канала)
+TRANSIENT_LOCK = threading.Lock()
+
+
+def send_transient(chat, text, rows=None, menu=False):
+    """Промежуточное сообщение: уберём после следующего нажатия (меню канала — когда придёт аналитика)."""
+    mid = api_send(chat, text, rows)
+    if mid and chat is not None:
+        with TRANSIENT_LOCK:
+            TRANSIENT.setdefault(str(chat), []).append((mid, bool(menu)))
+    return mid
+
+
+def clear_transient(chat, menus=True, only=None):
+    """Убрать промежуточные сообщения чата: ошибки и «Анализирую…»; menus — и меню канала; only — одно это."""
+    if chat is None:
+        return
+    with TRANSIENT_LOCK:
+        box = TRANSIENT.get(str(chat)) or []
+        drop = [mid for mid, menu in box if (only is None or mid == only) and (menus or not menu)]
+        if not drop:
+            return
+        rest = [x for x in box if x[0] not in drop]
+        if rest:
+            TRANSIENT[str(chat)] = rest
+        else:
+            TRANSIENT.pop(str(chat), None)
+    with AUTODEL_LOCK:
+        AUTODEL["temp"] = [x for x in AUTODEL["temp"] if x["mid"] not in drop]
+        save_json(AUTODEL_FILE, AUTODEL)
+    for mid in drop:
+        with contextlib.suppress(Exception):
+            delete_msg(mid)
 
 
 def send_screen(chat_id, text, rows):
@@ -4685,6 +4721,7 @@ def handle_callback(cb):
     cid = cb.get("callback_id")
     payload = cb.get("payload") or ""
     kind, _, rest = payload.partition(":")
+    clear_transient(cb.get("_chat"), menus=False)          # нажал кнопку — промежуточные сообщения убираем
     if HOST_MODE and not is_host(uid):
         key = tenant_by_chat(cb.get("_chat")) or tenant_key(uid)
         if key and not tenant_live(key) and payload not in ("m:pay", "p:promo", "m:legal", "m:privacy", "m:terms",
@@ -8735,8 +8772,9 @@ def fwd_menu(uid, chat, src):
     """Пост из любого канала (или ссылка на канал) — в фоне (MAX и t.me не тормозят бота): «Вижу пост из канала: …»
     и три кнопки. «Это закрытый канал…» — только для приглашения, где аккаунта Telegram бота нет; MAX или t.me не
     ответили — «ещё раз»; канал, который MAX не показывает боту, — меню с честной пометкой (это не «закрытый»)."""
+    clear_transient(chat)                              # новый пост — прежнее промежуточное убираем
     if src.get("kind") == "closed":
-        api_send(chat, fwdw.CLOSED_TEXT)
+        send_transient(chat, fwdw.CLOSED_TEXT)
         return
     try:
         res = fwd_lookup(src)
@@ -8745,13 +8783,13 @@ def fwd_menu(uid, chat, src):
         res = {"state": "error"}
     tg = src.get("kind") in ("tg", "tginvite", "tgc")
     if res["state"] == "error":
-        api_send(chat, FWD_RETRY_TG if tg else FWD_RETRY)
+        send_transient(chat, FWD_RETRY_TG if tg else FWD_RETRY)
         return
     if res["state"] in ("closed", "missing") or not res.get("key"):
-        api_send(chat, fwdw.CLOSED_TEXT if res["state"] == "closed" else FWD_MISSING_TG)
+        send_transient(chat, fwdw.CLOSED_TEXT if res["state"] == "closed" else FWD_MISSING_TG)
         return
     fwd_remember(uid, res)
-    api_send(chat, fwd_menu_text(res["title"], res["state"]), fwd_menu_rows(res["key"]))
+    send_transient(chat, fwd_menu_text(res["title"], res["state"]), fwd_menu_rows(res["key"]), menu=True)
 
 
 def fwd_callback(rest, uid, chat):
@@ -8764,20 +8802,29 @@ def fwd_callback(rest, uid, chat):
         busy = f"{uid}:{act}:{key}"
         if time.time() - FWD_BUSY.get(busy, 0) > 120:
             FWD_BUSY[busy] = time.time()
-            in_background(fwd_job, uid, chat, act, key, name=f"fwd-{act}")
+            threading.Thread(target=contextvars.copy_context().run, args=(fwd_job, uid, chat, act, key),
+                             daemon=True, name=f"fwd-{act}").start()
     return fwd_menu_screen(uid, key)
 
 
 def fwd_job(uid, chat, act, key):
+    """Кнопка канала: «⏳ Анализирую…» — пока считаем; пришла аналитика (картинка и цифры) — промежуточное и старое
+    меню убираем, под цифрами — снова меню канала."""
+    wait = send_transient(chat, "⏳ Анализирую канал…")
     try:
         with chat_busy(chat, "sending_photo", after=1.0):
-            {"ad": fwd_ad, "mass": fwd_mass, "pot": fwd_potential}[act](uid, chat, key, fwd_src_of_key(key))
+            title = {"ad": fwd_ad, "mass": fwd_mass, "pot": fwd_potential}[act](uid, chat, key, fwd_src_of_key(key))
+        if title:
+            clear_transient(chat)
+            send_transient(chat, f"📊 {title} — что ещё посчитать?", fwd_menu_rows(key), menu=True)
     except Exception:
         log_exc(f"проверка канала ({act})")
         with contextlib.suppress(Exception):
-            api_send(chat, FWD_RETRY_BTN)
+            send_transient(chat, FWD_RETRY_BTN)
     finally:
         FWD_BUSY.pop(f"{uid}:{act}:{key}", None)
+        if wait:
+            clear_transient(chat, only=wait)
 
 
 def fwd_bound_theme(uid, src):
@@ -8797,12 +8844,12 @@ def fwd_open(uid, chat, src):
     MAX не показывает боту — так и пишем; не ответил — «ещё раз»): тогда None."""
     res = fwd_lookup(src)
     if res["state"] == "error":
-        api_send(chat, FWD_RETRY_BTN)
+        send_transient(chat, FWD_RETRY_BTN)
         return None
     if res.get("key"):
         fwd_remember(uid, res)
     if res["state"] != "ok":
-        api_send(chat, {"closed": fwdw.CLOSED_TEXT, "hidden": FWD_HIDDEN}.get(res["state"], FWD_MISSING_TG))
+        send_transient(chat, {"closed": fwdw.CLOSED_TEXT, "hidden": FWD_HIDDEN}.get(res["state"], FWD_MISSING_TG))
         return None
     return res
 
@@ -8840,47 +8887,38 @@ def fwd_numbers(res, key, posts):
 
 
 def fwd_mass(uid, chat, key, src):
-    """📈 Массовая проверка: канал из своей сетки — аналитика канала картинкой и 📈/👥/👁; чужой — ровно одна фраза."""
+    """📈 Массовая проверка: канал из своей сетки — аналитика канала картинкой и 📈/👥/👁 (+ 🤖); чужой — ровно одна
+    фраза (промежуточная — уберём после следующего нажатия). Название канала — аналитика пришла."""
     t = fwd_bound_theme(uid, src)
     if t is None:
-        api_send(chat, FWD_NOT_BOUND)
-        return
+        send_transient(chat, FWD_NOT_BOUND)
+        return None
     n = anl_channel(t.name, t.chat_id)
     img = anlimg.render_channel(n, card_font, card_bg(anl_bg_mode(uid), n["title"]), fetch_thumb(n.get("icon")))
-    send_card(chat, img, card_caption(n))
+    send_card(chat, img, stats_text(n))
+    return n["title"]
 
 
 def fwd_ad(uid, chat, key, src):
     """📊 Рекламный охват: вилка просмотров рекламного поста по медиане последних постов, подписчики, ER, приток
-    и отток — картинкой (подпись — коротко), за ней — 📈/👥/👁."""
+    и отток — на картинке (без подписи), за ней — 📈/👥/👁 (+ 🤖 вывод ИИ). Название канала — аналитика пришла."""
     res = fwd_open(uid, chat, src)
     if res is None:
         return
-    key, f = res["key"], anlimg                        # ссылка могла открыться по-другому — снимки по каналу
+    key = res["key"]                                   # ссылка могла открыться по-другому — снимки по каналу
     posts = fwd_posts(res)
     reach = anlpot.ad_reach(res["subs"], fwd_views(posts))
     j, l, tot = FWD_WATCH.deltas(key)
     d = dict(reach, title=res["title"], subs=res["subs"], joins=j, leaves=l, total=tot,
              series=[n for _, n in FWD_WATCH.history(key)][-60:])
-    lines = [f"📊 Рекламный охват · {res['title']}", f"👥 Подписчиков: {f.fmt_int(res['subs'])}"]
-    if d["median"] is None:
-        lines.append("👁 Просмотров постов не видно — охват посчитаю, когда бот увидит посты канала.")
-    else:
-        lines.append(f"👁 Охват рекламного поста ≈ {f.fmt_int(d['low'])}–{f.fmt_int(d['high'])} просмотров "
-                     f"(медиана {f.fmt_int(d['median'])} по {d['posts']} "
-                     f"{n_word(d['posts'], 'посту', 'постам', 'постам')})"
-                     + (f", ER {f.fmt_pct(d['er'])}" if d["er"] is not None else ""))
-    lines += ["", fwdw.stats_line(j, l, tot)]
     img = anlimg.render_ad_reach(d, card_font, card_bg(anl_bg_mode(uid), res["title"]))
-    send_card(chat, img, card_caption(fwd_numbers(res, key, posts)), "\n".join(lines))
-
-
-FWD_PART_NAMES = (("growth", "рост"), ("engagement", "вовлечённость"), ("activity", "регулярность"), ("reach", "охват"))
+    send_card(chat, img, stats_text(fwd_numbers(res, key, posts)))     # картинка без подписи, за ней — цифры
+    return res["title"]
 
 
 def fwd_potential(uid, chat, key, src):
-    """⚡ Оценка потенциала (0–100): рост по снимкам, вовлечённость, регулярность постов, размер аудитории —
-    картинкой (подпись — коротко), за ней — 📈/👥/👁."""
+    """⚡ Оценка потенциала (0–100): рост по снимкам, вовлечённость, регулярность постов, размер аудитории — на
+    картинке (без подписи), за ней — 📈/👥/👁 (+ 🤖 вывод ИИ). Название канала — аналитика пришла."""
     res = fwd_open(uid, chat, src)
     if res is None:
         return
@@ -8888,14 +8926,9 @@ def fwd_potential(uid, chat, key, src):
     sc = anlpot.score(res["subs"], FWD_WATCH.history(key), fwd_views(posts), [t for t, _ in posts if t])
     j, l, tot = FWD_WATCH.deltas(key)
     d = dict(sc, title=res["title"], subs=res["subs"], joins=j, leaves=l, total=tot)
-    head = f"⚡ Оценка потенциала · {res['title']}: {'—' if sc['score'] is None else sc['score']}/100"
-    parts = ", ".join(f"{name} {sc['parts'][k]}" for k, name in FWD_PART_NAMES if sc["parts"].get(k) is not None)
-    lines = [head + (f" — {sc['label']}" if sc["label"] else " — мало данных")]
-    if parts:
-        lines.append(f"Из чего: {parts}.")
-    lines += ["", fwdw.stats_line(j, l, tot)]
     img = anlimg.render_potential(d, card_font, card_bg(anl_bg_mode(uid), res["title"]))
-    send_card(chat, img, card_caption(fwd_numbers(res, key, posts)), "\n".join(lines))
+    send_card(chat, img, stats_text(fwd_numbers(res, key, posts)))     # картинка без подписи, за ней — цифры
+    return res["title"]
 
 
 def fwd_snapshot_all():
@@ -9030,11 +9063,43 @@ def card_caption(n):
             f"72 ч — {f.fmt_int(n.get('v72'))} · ER24 {f.fmt_pct(n.get('er24'))}")
 
 
-def net_caption(net):
-    f = anlimg
-    return (f"🌐 Сеть из {net['n']} {n_word(net['n'], 'канала', 'каналов', 'каналов')}: "
-            f"{f.fmt_int(net['subs'])} подписчиков, {f.fmt_int(net['v24'])} просмотров за сутки, "
-            f"общий ER {f.fmt_pct(net['er'])}")
+from reloader.services.analytics import insight as anlinsight  # noqa: E402
+
+INSIGHT_CACHE = {}                       # цифры канала -> (когда, вывод ИИ): те же цифры за час — ИИ не спрашиваем
+INSIGHT_TTL = 3600
+INSIGHT_MAX = 10                         # выводов ИИ за одну сводку сети (дальше — только цифры)
+
+
+def ai_insight(n, caption):
+    """🤖 Вывод ИИ по цифрам канала (ротация ключей Gemini → OpenRouter → DeepSeek): 1–2 предложения по-русски —
+    растёт ли канал, высокая ли вовлечённость. Нет ключей или ИИ не ответил — None (тогда три строки)."""
+    if not ai_llm_ready():
+        return None
+    ask = anlinsight.ask_text(caption, anlimg.fmt_delta(n.get("d30")) if anlimg.num(n.get("d30")) is not None else None)
+    got = INSIGHT_CACHE.get(ask)
+    if got and time.time() - got[0] < INSIGHT_TTL:
+        return got[1]
+    t0 = time.perf_counter()
+    try:
+        out = anlinsight.clean(ai_ask_text(ask, AI_ROTATORS, S, ai_settings(), journal, prompt=anlinsight.PROMPT,
+                                           timeout=20))
+    except Exception as e:
+        _log_line(time.strftime("%H:%M:%S") + f" Вывод ИИ по каналу: не получен ({type(e).__name__}: {str(e)[:120]})")
+        return None
+    finally:
+        perf_add("ai", "вывод по каналу", time.perf_counter() - t0)
+    if out:
+        INSIGHT_CACHE[ask] = (time.time(), out)
+        while len(INSIGHT_CACHE) > 300:                # память не растёт
+            INSIGHT_CACHE.pop(min(INSIGHT_CACHE, key=lambda k: INSIGHT_CACHE[k][0]), None)
+    return out
+
+
+def stats_text(n, ai=True):
+    """Сообщение после картинки: три строки 📈/👥/👁 и 4-я — 🤖 вывод ИИ (если ИИ подключён и ответил)."""
+    caption = card_caption(n)
+    line = ai_insight(n, caption) if ai else None
+    return f"{caption}\n🤖 {line}" if line else caption
 
 
 def upload_card(img, photo_like=False):
@@ -9057,25 +9122,24 @@ def upload_card(img, photo_like=False):
 
 
 def send_blocks(chat, text, limit=3800):
-    """Длинный текст — несколькими сообщениями, режем по пустой строке (блок канала не разрываем)."""
+    """Длинный текст — несколькими сообщениями, режем по пустой строке (блок канала не разрываем). Это цифры
+    каналов — остаются в чате."""
     part = ""
     for block in str(text).split("\n\n"):
         if part and len(part) + 2 + len(block) > limit:
-            api_send(chat, part)
+            api_send(chat, part, keep=True)
             part = ""
         part = f"{part}\n\n{block}" if part else block
     if part:
-        api_send(chat, part)
+        api_send(chat, part, keep=True)
 
 
-def send_card(chat, img, text_after=None, caption=None):
-    """Картинка аналитики (с короткой подписью или без), за ней — текст (📈/👥/👁 про канал). Картинка не
-    загрузилась — только текст."""
+def send_card(chat, img, text_after=None):
+    """Картинка аналитики — БЕЗ подписи, сразу за ней — текст (📈/👥/👁 про канал, 🤖). И то и другое остаётся в
+    чате (не удаляем через час). Картинка не загрузилась — только текст."""
     tok = upload_card(img, True)
     if tok:
-        api_send(chat, caption, None, tok)
-    elif caption:
-        api_send(chat, caption)
+        api_send(chat, None, None, tok, keep=True)
     if text_after:
         send_blocks(chat, text_after)
 
@@ -9093,18 +9157,19 @@ def anl_cards_send(chat, chans, mode, bg="pattern"):
             if mode == "net":
                 net = anlimg.network_numbers(nums)
                 bg_img = card_bg(bg, " ".join(n["title"] for n in nums)[:80])
-                send_card(chat, anlimg.render_network(net, card_font, bg_img),       # картинка сети, за ней —
-                          "\n\n".join(card_caption(n) for n in nums), net_caption(net))   # 📈/👥/👁 по каналам
+                with ThreadPoolExecutor(max_workers=4) as pool:          # 📈/👥/👁 (+ 🤖) по каждому каналу
+                    texts = list(pool.map(lambda x: stats_text(x[1], x[0] < INSIGHT_MAX), enumerate(nums)))
+                send_card(chat, anlimg.render_network(net, card_font, bg_img), "\n\n".join(texts))
             else:
-                def card(n):                             # фон, рисунок и загрузка — параллельно по каналам…
+                def card(n):                             # фон, рисунок, загрузка и вывод ИИ — параллельно…
                     img = anlimg.render_channel(n, card_font, card_bg(bg, n["title"]), fetch_thumb(n.get("icon")))
-                    return upload_card(img, True)
+                    return upload_card(img, True), stats_text(n)
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     tokens = list(pool.map(card, nums))
-                for n, tok in zip(nums, tokens):         # …а в чат — по порядку каналов
-                    if tok:                              # картинка, за ней — ровно 📈/👥/👁
-                        api_send(chat, None, None, tok)
-                    api_send(chat, card_caption(n))
+                for tok, text in tokens:                 # …а в чат — по порядку каналов
+                    if tok:                              # картинка без подписи, за ней — 📈/👥/👁 (+ 🤖)
+                        api_send(chat, None, None, tok, keep=True)
+                    api_send(chat, text, keep=True)
         print(f"⏱ Карточки аналитики ({'сеть' if mode == 'net' else 'каналы'}, {len(nums)}): "
               f"данные MAX {t1 - t0:.1f} с, картинки и отправка {time.perf_counter() - t1:.1f} с")
     except Exception as e:
@@ -9203,7 +9268,9 @@ def predict_start(uid, chat, text, atts=()):
         except Exception as e:
             log_exc("прогноз поста")
             answer = f"⚠️ Прогноз не получился: {type(e).__name__}. Попробуй ещё раз."
-        api_send(chat, answer, rows, tok) if tok else api_send(chat, answer, rows)
+        if tok:                                        # картинка прогноза без подписи, за ней — ответ
+            api_send(chat, None, None, tok, keep=True)
+        api_send(chat, answer, rows, keep=True)
 
     threading.Thread(target=run, daemon=True, name="predict").start()
 

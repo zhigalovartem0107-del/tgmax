@@ -993,8 +993,10 @@ n0 = len(OUT)
 press(5001, 62000, "a:anl")
 assert any("до 1–2 минут" in o[0] for o in OUT[n0:]), [o[0][:60] for o in OUT[n0:]]
 assert "5001" in bot.ANL_BUSY
-time.sleep(0.5)
-assert "5001" not in bot.ANL_BUSY
+end = time.time() + 5                                        # подсчёт (0,2 с) закончился — отметка «занят» снята
+while "5001" in bot.ANL_BUSY and time.time() < end:          # (под нагрузкой поток может стартовать не сразу)
+    time.sleep(0.05)
+assert "5001" not in bot.ANL_BUSY, "после подсчёта отметка «занят» снимается"
 bot.analytics_send = real_send
 press(5001, 62000, "m:main")
 assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 6, OUT[-1]   # главное меню — 6 кнопок
