@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110624            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110625            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -5075,7 +5075,9 @@ def client_main(uid=None):
 
 def help_text(uid=None):
     hide = {"check"} if simple_menu(uid) else set()     # 🔎 проверки связи у покупателя нет
-    return "❓ Команды\n\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_HELP if n not in hide)
+    own = ("\n\nДля хозяина:\n/ref — 🔗 Сгенерировать ссылку для клиента (партнёрская)\n"
+           "/partner — ID партнёра, его ссылка и покупки клиентов") if uid is not None and can_panel(uid) else ""
+    return "❓ Команды\n\n" + "\n".join(f"/{n} — {d}" for n, d in COMMAND_HELP if n not in hide) + own
 
 
 HOOKS = {"dropped": 0, "warned": False}
@@ -5143,7 +5145,11 @@ def run_command(cmd, arg, uid, chat_id):
         return max(lo, min(hi, int(m.group()))) if m else None
 
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
-    if HOST_MODE and can_panel(uid) and cmd in ("start", "menu", "m", "panel", "admin", "p"):
+    if cmd == "start" and arg:
+        ref_from_payload(uid, arg)                     # «/start ref_…» — пришёл по ссылке партнёра
+    if cmd in ("partner", "ref", "reflink") and can_panel(uid):   # 🤝 партнёрская ссылка — только хозяин
+        say(*ref_start(uid)) if cmd != "partner" else say(partner_screen(arg))
+    elif HOST_MODE and can_panel(uid) and cmd in ("start", "menu", "m", "panel", "admin", "p"):
         show("cl")
     elif cmd in ("panel", "admin", "p"):
         if can_panel(uid) and not CLIENT_MODE:
@@ -5526,6 +5532,12 @@ def handle_message(uid, chat_id, name, text, msg=None):
         run_command(cmd.split("@")[0].strip().lower(), arg.strip(), uid, chat_id)
         return
     action = PENDING.get(uid)
+    if action == "reflink":                                # 🔗 ссылка для клиента: ждём его сообщение или ID
+        if can_panel(uid):
+            ref_input(uid, chat_id, msg, t)
+        else:
+            PENDING.pop(uid, None)
+        return
     if not action and not (HOST_MODE and can_panel(uid) and session_atts(atts)) \
             and (src := fwdw.source_of(msg, t)) is not None:      # 📊 пост из любого канала / ссылка на канал
         in_background(fwd_menu, uid, chat_id, src, name="fwd-menu")
@@ -5789,6 +5801,8 @@ def _handle_update(u, kind):
             on_channel_message({"chat_id": u.get("chat_id"), "chat_type": "channel"}, adder, added=True)
     elif kind == "bot_started":
         user = u.get("user") or {}
+        with contextlib.suppress(Exception):           # ?start=ref_<ID> — пришёл по ссылке партнёра
+            ref_from_payload(user.get("user_id"), u.get("payload"), user.get("first_name") or user.get("name") or "")
         handle_message(user.get("user_id"), u.get("chat_id"),
                        user.get("first_name") or user.get("name") or "", "/start")
 
@@ -12177,12 +12191,123 @@ def promo_apply(key, code, uid=None):
 
 
 def log_purchase(key, plan, days, price, how, code=""):
-    """Покупка подписки — в журнал (для статистики в панели и карточки покупателя). code — только хвост кода."""
+    """Покупка подписки — в журнал (для статистики в панели и карточки покупателя). code — только хвост кода.
+    Клиент пришёл от партнёра — хозяину «💰 …» (партнёру хозяин платит сам)."""
     log = GCFG.setdefault("pay_log", [])
     log.append({"t": time.time(), "key": key, "name": (TENANTS.get(key) or {}).get("name") or "", "plan": plan,
                 "days": int(days), "price": int(price or 0), "how": how, "code": code})
     del log[:-3000]
     save_cfg()
+    try:
+        ref_on_purchase(key, plan, days, price, how)
+    except Exception:
+        log_exc("партнёрская покупка")                  # оплату это не останавливает
+
+
+# ---------- 🤝 ПАРТНЁРСКАЯ ССЫЛКА: хозяин делает ссылку для партнёра, бот помнит, кто от кого, и сообщает о покупках ----------
+from reloader.services import referral as refs  # noqa: E402
+
+REF_FILE = "referrals.json"             # кто из клиентов за каким партнёром и что купил (для выплат вручную)
+REFS = refs.Referrals(REF_FILE, save=save_json, load=load_json_safe)
+REF_FREE = ("промокод 100%",)           # так подписка достаётся бесплатно — это не покупка
+
+
+def partner_id():
+    """ID партнёра: из настроек (/partner 123456), иначе переменная хостинга PARTNER_ID. Нет — None."""
+    for v in (GCFG.get("partner_id"), os.environ.get("PARTNER_ID")):
+        v = str(v or "").strip()
+        if refs.valid_pid(v):
+            return v
+    return None
+
+
+def ref_link(pid=None):
+    """https://max.ru/<бот>?start=ref_<ID партнёра> или None (нет ID партнёра или MAX не сказал ник бота)."""
+    pid = pid or partner_id()
+    username = (bot_me() or {}).get("username")
+    return refs.link(username, pid) if pid and username else None
+
+
+def ref_from_payload(uid, payload, name=""):
+    """Пришёл по ссылке ?start=ref_<ID>: новый клиент — за партнёром (первый партнёр остаётся). Хозяина и тех, кто
+    уже покупал до ссылки, не закрепляем."""
+    pid = refs.partner_from_payload(payload)
+    if not pid or uid is None or can_panel(uid):
+        return
+    key = tenant_key(uid)
+    if key and any(e.get("key") == key for e in GCFG.get("pay_log") or ()):
+        return
+    ok, _ = REFS.attach(uid, pid, "ссылка", name)
+    if ok:
+        _log_line(time.strftime("%H:%M:%S") + f" 🤝 Пришёл по ссылке партнёра {pid}: {name or uid} ({uid})")
+
+
+def ref_on_purchase(key, plan, days, price, how):
+    """Клиент партнёра купил подписку — хозяину «💰 Клиент [Имя] купил подписку по ссылке партнера [ID]!»
+    (и тариф, сумма, ID клиента — чтобы заплатить партнёру вручную). Бесплатно (промокод 100%) — не покупка."""
+    if how in REF_FREE:
+        return
+    rec = TENANTS.get(key) or {}
+    pid = REFS.partner_of([key] + list(rec.get("admins") or []))
+    if not pid:
+        return
+    name = rec.get("name") or str(key)
+    REFS.sale(pid, key, name, plan, days, price, how)
+    host_alert(f"💰 Клиент {name} купил подписку по ссылке партнера {pid}!\n"
+               f"{plan}, {int(days or 0)} дн." + (f", {int(price)} ₽" if price else "") + f" ({how}) · ID клиента {key}")
+
+
+def partner_screen(arg):
+    """/partner [ID | -]: показать, задать или убрать ID партнёра; ссылка и итоги для выплат."""
+    arg = (arg or "").strip()
+    if arg == "-":
+        GCFG.pop("partner_id", None)
+        save_cfg()
+    elif arg:
+        if not refs.valid_pid(arg):
+            return ("ID партнёра — буквы, цифры, «_» или «-», до 32 знаков, без пробелов. Например: "
+                    "/partner 123456")
+        GCFG["partner_id"] = arg
+        save_cfg()
+    pid = partner_id()
+    if not pid:
+        return ("🤝 Партнёр не задан.\n\nЗадайте его ID: /partner 123456 (или переменная PARTNER_ID на хостинге). "
+                "Потом /ref — ссылка для клиента.")
+    st = REFS.stats(pid)
+    return (f"🤝 Партнёр: {pid}\nСсылка: {ref_link(pid) or 'не узнал ник бота в MAX — попробуйте позже'}\n\n"
+            f"Клиентов за партнёром: {st['clients']} · покупок: {st['sales']} на {anlimg.fmt_int(st['sum'])} ₽\n\n"
+            "🔗 Ссылка для клиента: /ref · поменять партнёра: /partner 123456 · убрать: /partner -")
+
+
+def ref_start(uid):
+    """🔗 Сгенерировать ссылку для клиента: ждём пересланное сообщение клиента (или его ID в MAX)."""
+    pid = partner_id()
+    if not pid:
+        return ("Сначала задайте ID партнёра: /partner 123456 (или переменная PARTNER_ID на хостинге).", None)
+    PENDING[uid] = "reflink"
+    return (f"🔗 Сгенерировать ссылку для клиента\n\nПерешлите сюда любое сообщение нового клиента — или пришлите "
+            f"его ID в MAX (цифрами). Сделаю ссылку партнёра {pid} и закреплю клиента за ним.",
+            [[B("✖️ Отмена", "m:cl" if HOST_MODE else "m:main")]])
+
+
+def ref_input(uid, chat, msg, text):
+    """Хозяин переслал сообщение клиента (или прислал ID): ссылка для партнёра, клиент — за партнёром."""
+    cid, name = refs.client_from_message(msg, text)
+    if cid is None:
+        api_send(chat, "Не вижу клиента: перешлите сообщение, которое написал сам клиент (не пост канала), или "
+                       "пришлите его ID в MAX — только цифры.", [[B("✖️ Отмена", "m:cl" if HOST_MODE else "m:main")]])
+        return
+    PENDING.pop(uid, None)
+    pid = partner_id()
+    url = ref_link(pid)
+    if not pid or not url:
+        api_send(chat, "Не получилось сделать ссылку: " + ("не задан ID партнёра (/partner 123456)." if not pid
+                                                           else "MAX не сказал ник бота — попробуйте через минуту."))
+        return
+    ok, who = REFS.attach(cid, pid, "хозяин", name or "")
+    tail = ("Клиент закреплён за партнёром: когда купит подписку, я напишу вам." if who == pid else
+            f"⚠️ Этот клиент уже закреплён за партнёром {who} — его покупки засчитаются ему.")
+    api_send(chat, f"🔗 Ссылка для клиента {name or cid} (ID {cid}):\n{url}\n\nОтправьте её партнёру {pid}.\n{tail}")
 
 
 def host_apply_paid(key, plan, days, price=0, how=""):
@@ -12943,6 +13068,8 @@ def legal_forget(key):
         for box in (TREND_ALERTS.sent, TREND_ALERTS.seen):
             box.pop(f"cab:{key}", None)
         TREND_ALERTS.save()
+    with contextlib.suppress(Exception):               # 🤝 отметка партнёра — тоже (суммы для расчёта — без имени)
+        REFS.forget(ids)
 
 
 def ads_opt_out(uid):
