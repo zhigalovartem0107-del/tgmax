@@ -121,6 +121,22 @@ def t5():
 
 
 @check
+def t7():
+    """защита в глубину: tg_to_max.py запущен напрямую (в обход main.py) без BOT_SECRET — тоже «Unauthorized copy
+    detected» и выход (ненулевой код); замок стоит раньше любой работы, даже --check не выполняется"""
+    env = dict(os.environ, PYTHONPATH=ROOT, PYTHONIOENCODING="utf-8")
+    env.pop("BOT_SECRET", None)
+    for args in ([], ["--check"]):
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "tg_to_max.py"), *args], cwd=tempfile.mkdtemp(),
+                           env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                           timeout=60)
+        out = (p.stdout or "") + (p.stderr or "")
+        assert p.returncode != 0 and "Unauthorized copy detected" in out, (args, p.returncode, out[-500:])
+    src = open(os.path.join(ROOT, "tg_to_max.py"), encoding="utf-8").read()
+    assert "from reloader.services import license" in src, "замок в tg_to_max.py использует общий модуль лицензии"
+
+
+@check
 def t6():
     """build_obfuscated.sh есть, это корректный sh-скрипт (sh -n), упоминает PyArmor и выходит при ошибке
     (set -e); README рассказывает, как выложить защищённую версию и про BOT_SECRET"""

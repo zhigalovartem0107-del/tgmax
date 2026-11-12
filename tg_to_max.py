@@ -38,10 +38,19 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110626            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110627            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
+    # 🔒 Защита от кражи (как в main.py): при прямом запуске бота — тоже требуем правильный BOT_SECRET.
+    #   На импорт (тесты) не влияет: сработает только при запуске как главный файл. Проверка — до любой работы.
+    try:
+        from reloader.services import license as _license
+    except Exception:
+        print("🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized copy detected. Модуль лицензии недоступен — бот остановлен.",
+              flush=True)
+        sys.exit(3)
+    _license.enforce(log=lambda _m: print(_m, flush=True))
 
 # Хостинг ботов (Bothost и т.п.): файл бота назван main.py, или задан TG_MAX_DIR, или хостинг выдал BOT_ID.
 # Тогда все файлы бота живут в папке data рядом (она сохраняется между перезапусками), консоли нет.

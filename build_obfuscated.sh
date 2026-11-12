@@ -27,7 +27,9 @@ mkdir -p "$OUT"
 # в нём замок BOT_SECRET, который PyArmor тоже защитит.
 pyarmor gen -O "$OUT" -r main.py login.py tg_to_max.py reloader
 
-# Нешифруемое, что нужно рядом (документация). Данные бота (config, очередь) создаются сами в папке data.
+# Нешифруемое, что нужно рядом: зависимости (хостинг ставит их по requirements.txt) и документация.
+# Данные бота (config, очередь, вход) создаются сами в папке data при первом запуске.
+cp -f requirements.txt "$OUT"/ 2>/dev/null || true
 cp -f README.txt "$OUT"/ 2>/dev/null || true
 
 echo "✅ Готово: $OUT/"
