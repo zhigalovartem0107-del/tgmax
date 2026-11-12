@@ -17,3 +17,6 @@ bg_daily.json.tmp
 bg_daily.jpg
 referrals.json
 referrals.json.tmp
+.bot_secret
+dist_obf/
+.pyarmor/

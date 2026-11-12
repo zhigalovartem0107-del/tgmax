@@ -2,12 +2,31 @@
 # Сам находит рядом файл бота с самой свежей версией (строка BOT_VERSION = ...), как бы он ни назывался:
 # чтобы обновить бота, просто загрузи новый файл рядом — переименовывать и удалять старые не нужно.
 # Все файлы бота (настройки, админы, очередь) лежат в папке data — она сохраняется между перезапусками.
+import hashlib
+import hmac
 import os
 import re
 import runpy
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# 🔒 Защита от кражи: без правильного BOT_SECRET бот не запускается. В коде — только SHA-256 секрета, не сам секрет
+#   (держи в синхроне с reloader/services/license.py — это проверяет тест). Секрет задаётся в переменных хостинга.
+_SECRET_SHA256 = "2ce7077c94ee1b5c55f7ea2bda1308e0814fbf2696e2f3d4fadcc7c3294066d9"
+
+
+def _license_gate():
+    secret = (os.environ.get("BOT_SECRET") or "").strip()
+    if secret and hmac.compare_digest(hashlib.sha256(secret.encode("utf-8")).hexdigest(), _SECRET_SHA256):
+        return
+    why = "нет переменной BOT_SECRET" if not secret else "BOT_SECRET не совпадает"
+    print(f"🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized copy detected. Неверный или отсутствующий BOT_SECRET — "
+          f"бот остановлен. ({why})\n   Задай правильный BOT_SECRET в переменных окружения хостинга.", flush=True)
+    sys.exit(3)
+
+
+_license_gate()
 
 
 def bot_version(path):
