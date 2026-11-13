@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026111328            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111329            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1134,6 +1134,9 @@ AD_CTA = re.compile(r"подпис(?:ыв|ат|ыва|ка\b|ывайся|ыва
                     r"регистрир|по ссылке|ссылк\w* в (?:профиле|описании|шапке|био)|в нашем боте|в бот[ае]\b|"
                     r"акци[яи] до|только сегодня|бесплатн\w* (?:курс|доступ|урок)|пасс?ивн\w* доход", re.I)
 AD_LINK = re.compile(r"https?://[^\s)\]]+|(?<![\w@/])t\.me/[^\s)\]]+|(?<!\w)@[A-Za-z0-9_]{4,}bot\b", re.I)
+# Известные рекламные редиректы/лендинги/трекеры и партнёрские метки — локальный «точно реклама» без ИИ.
+AD_HOSTS = re.compile(r"justclick\.ru|salebot\.|getcourse\.|bit\.ly|clck\.ru|vk\.cc|tinyurl\.com|cutt\.ly|"
+                      r"goo\.su|taplink\.cc|u\.to/|t\.me/\S*start=|[?&](?:utm_source|utm_campaign|erid)=", re.I)
 # Правила «точно реклама», общие для любой темы (игры, вязание, магазины…):
 AD_REF = re.compile(r"(?<![\w@/])@([A-Za-z]\w{3,31})|t\.me/(?:s/)?([A-Za-z]\w{3,31})", re.I)     # чужой канал
 AD_SUB = re.compile(r"подпи(?:шись|шитесь|сывайся|сывайтесь|саться)|вступа(?:й|йте)\b|вступи(?:те)?\b", re.I)
@@ -1217,6 +1220,9 @@ def ad_score(raw, ch="", buttons=0):
     if external:
         score += min(6, 2 * external)
         why.append("внешние ссылки")
+    if AD_HOSTS.search(text):
+        score += 4
+        why.append("рекламная ссылка (трекер/лендинг)")
     cta = {m.group(0).lower() for m in AD_CTA.finditer(text)}
     if cta:
         score += min(6, 2 * len(cta))
@@ -1407,6 +1413,29 @@ def ai_settings():
 
 def ai_llm_ready():
     return any(ai_keys(p) for p in AI_PROVIDERS)
+
+
+# 🧠 ИИ-расход (экономия ключей): бот зовёт ИИ только когда это оправдано. «Максимально экономить» —
+# авто-пересказ постов лишь для VIP-кабинетов; «Стандарт»/«Без лимитов» — как раньше.
+AI_EXHAUSTED_LOG = "AI skipped: all keys exhausted. Falling back to local rules."
+AI_BUDGETS = {"save": "Максимально экономить", "std": "Стандарт", "max": "Без лимитов"}
+
+def ai_budget():
+    b = GCFG.get("ai_budget")
+    return b if b in AI_BUDGETS else "std"
+
+def theme_is_vip(t=None):
+    """VIP-кабинет: ИИ работает даже в «Максимально экономить». Хозяин — всегда VIP; покупателя
+    хозяин отмечает сам (TENANTS[owner]['vip'])."""
+    t = t if t is not None else cur()
+    owner = str(getattr(t, "owner", "") or "")
+    if HOST_MODE and owner and owner == host_id():
+        return True
+    return bool((TENANTS.get(owner) or {}).get("vip"))
+
+def ai_rewrite_allowed(t=None):
+    """Авто-пересказ постов ИИ. В режиме «Максимально экономить» — только VIP-кабинеты (бережём ключи)."""
+    return ai_budget() != "save" or theme_is_vip(t)
 
 
 def ai_rewrite(text):
@@ -6649,11 +6678,14 @@ async def _publish_item(client, chat_id, it):
         return mid
     try:
         body = it["text"]
-        if ai_on() and ai_llm_ready() and (body or "").strip():
+        if ai_on() and ai_rewrite_allowed() and ai_llm_ready() and (body or "").strip():
             if not it.get("ai_text"):                  # пересказ — один раз: повтор отправки его не повторяет
-                it["ai_text"] = await asyncio.to_thread(ai_rewrite, body)
-                save_queue()
-            body = it["ai_text"]
+                try:
+                    it["ai_text"] = await asyncio.to_thread(ai_rewrite, body)
+                    save_queue()
+                except AiUnavailable:                  # все ключи ИИ 429 — выкладываем оригинал, пост не теряем
+                    journal(AI_EXHAUSTED_LOG)
+            body = it.get("ai_text") or body
         chunks = split_text(compose_text(body, it.get("ch", ""), rewritten=bool(it.get("ai_text"))))
         text, extra = chunks[0], chunks[1:]
         photos = await ensure_photos(client, it)
@@ -6719,8 +6751,6 @@ async def _publish_item(client, chat_id, it):
     except MediaLost as e:
         await asyncio.to_thread(rollback_post, it)    # «огрызок» прошлой попытки (если был) — из канала
         return skip_post(it, str(e))
-    except AiUnavailable as e:                          # 🤖 все ключи ИИ исчерпаны — пост пропускаем
-        return skip_post(it, f"AI keys exhausted ({str(e)[:300]})")
     except ChatDenied as e:
         await asyncio.to_thread(note_denied, chat_id, e)
         it["retry_at"] = DENIED.get(chat_id, time.time() + 600)
@@ -9017,6 +9047,9 @@ def ai_insight(n, caption):
     try:
         out = anlinsight.clean(ai_ask_text(ask, AI_ROTATORS, S, ai_settings(), journal, prompt=anlinsight.PROMPT,
                                            timeout=20))
+    except AiUnavailable:                              # все ключи 429 — без 🤖-строки, только три стандартные
+        _log_line(time.strftime("%H:%M:%S") + " " + AI_EXHAUSTED_LOG)
+        return None
     except Exception as e:
         _log_line(time.strftime("%H:%M:%S") + f" Вывод ИИ по каналу: не получен ({type(e).__name__}: {str(e)[:120]})")
         return None
@@ -13897,6 +13930,7 @@ def host_screen(name, uid):
                  [B(f"📌 Обязательная подписка ({len(force_subs())})", "m:clfs")],
                  [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
                  [B("🔑 Ключи и доступы", "m:clkeys")],
+                 [B(f"🧠 ИИ-расход: {AI_BUDGETS[ai_budget()]}"[:60], "m:clai")],
                  [B("👥 Покупатели", "m:buyers"), B("🎟 Коды", "m:codes")],
                  [B("👀 Посмотреть меню покупателя", "m:bview")],
                  [B("🗑 Очистить старые каналы", "m:clwipe")]]
@@ -13933,6 +13967,18 @@ def host_screen(name, uid):
                   "Кабинеты покупателей не трону. Вернуть нельзя.\n\n"
                   "Потом подключишь новые каналы: «🎭 Мои каналы (мой кабинет)»."), \
             [[B("✅ Да, очистить", "a:clwipeok")], [B("Нет", "m:cl")]]
+    if name == "clai":                                   # 🧠 ИИ-расход — сколько ключей ИИ тратить
+        b = ai_budget()
+        text = ("🧠 ИИ-расход\n\nСколько ключей ИИ тратить на автопересказ постов. Если ключи кончаются "
+                "за день — выбери «Максимально экономить».\n\n"
+                "• Максимально экономить — пересказ только для VIP-кабинетов, остальным выкладываем оригинал "
+                "(ИИ-подсказки и аналитика по запросу работают как прежде).\n"
+                "• Стандарт — пересказ для всех, у кого включён 🪄 ИИ-редактор.\n"
+                "• Без лимитов — то же, что «Стандарт».\n\n"
+                f"Сейчас: {AI_BUDGETS[b]}.")
+        opts = [("save", "Максимально экономить"), ("std", "Стандарт"), ("max", "Без лимитов")]
+        rows = [[B(("✅ " if k == b else "") + lbl, f"a:claibud:{k}")] for k, lbl in opts]
+        return text, rows + [back]
     kind, _, key = name.partition(":")
     if kind == "cll":                                     # все покупатели: срок, тариф, дата регистрации
         page = int(key or 0)
@@ -14221,6 +14267,11 @@ def host_action(p, uid):
                 save_cfg()
                 journal(f"📡 Продавец убрал источник {ch_label(gone)}")
         return f"clsrt:{t.id}"
+    if p[0] == "claibud" and len(p) > 1 and p[1] in AI_BUDGETS:   # 🧠 ИИ-расход — сохранить выбор
+        GCFG["ai_budget"] = p[1]
+        save_cfg()
+        FLASH[uid] = f"🧠 ИИ-расход: {AI_BUDGETS[p[1]]}."
+        return "clai"
     if p[0] == "clwipeok":                                  # 🗑 очистить старые каналы своего кабинета
         PENDING.pop(uid, None)                              # и «ожидание ввода» для удалённых тем — тоже
         n, n_src, n_posts = wipe_themes(wipe_scope(uid))

@@ -129,7 +129,8 @@ assert bot.ai_rewrite("Пост 3") == "Пересказ (0005)", CALLS         
 assert CALLS[-1][0].endswith("/chat/completions") and "openrouter" in CALLS[-1][0], CALLS
 print("a4 ok: 429 — следующий ключ (и дальше работаем с ним); все ключи Gemini исчерпаны — OpenRouter")
 
-# 5) все ключи всех провайдеров исчерпаны: в журнал — причина, пост ПРОПУСКАЕТСЯ (ничего не уходит в MAX)
+# 5) все ключи всех провайдеров исчерпаны (429): бот НЕ падает и НЕ пропускает — выкладывает ОРИГИНАЛ без
+#    пересказа; в журнал — точная причина «AI skipped: all keys exhausted. Falling back to local rules.»
 PLAN["sk-or-v1-OPEN0005"] = 429
 press(1, 61000, "p:claikeys:deepseek"); msg(1, 61000, "sk-deep-0007", mid="mid-ds")
 PLAN["sk-deep-0007"] = 429
@@ -138,25 +139,88 @@ for r in bot.AI_ROTATORS.values():
 SENT = []
 bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: SENT.append(text) or "mid"
 bot.ai_on = lambda: True
+bot.JOURNAL.clear()
 it = {"id": "x:1", "ch": "src", "date": time.time(), "enq": time.time(), "text": "Новость дня", "photos": [],
       "vids": [], "docs": [], "sent": 0, "fails": 0, "status": "ok"}
 bot.QUEUE[:] = [it]
-assert asyncio.run(bot.publish_item(None, 5, it)) == "dropped", it
-assert not SENT and it not in bot.QUEUE, SENT
-assert any("Skipped: AI keys exhausted" in j for j in bot.JOURNAL), list(bot.JOURNAL)[-3:]
-assert any("deepseek" in j for j in bot.JOURNAL)                         # видно, у какого провайдера кончилось
-print("a5 ok: все ключи исчерпаны — причина в журнале, пост пропущен целиком")
+assert asyncio.run(bot.publish_item(None, 5, it)) == "ok", it               # пост ВЫХОДИТ, не пропускается
+assert SENT and SENT[0].startswith("Новость дня") and not it.get("ai_text"), SENT   # оригинал, без пересказа
+assert bot.AI_EXHAUSTED_LOG == "AI skipped: all keys exhausted. Falling back to local rules."
+assert any(bot.AI_EXHAUSTED_LOG in j for j in bot.JOURNAL), list(bot.JOURNAL)[-3:]
+# и ещё раз — тот же пост при повторной отправке не зовёт ИИ заново и так же выходит
+SENT.clear(); it2x = dict(it, id="x:1b", sent=0); bot.QUEUE[:] = [it2x]
+assert asyncio.run(bot.publish_item(None, 5, it2x)) == "ok" and SENT[0].startswith("Новость дня"), SENT
+print("a5 ok: все ключи 429 — бот не падает, выкладывает оригинал без пересказа, точная причина в журнале")
 
 # 6) ИИ сработал — пост выходит пересказанным (и пересказ не делаем второй раз при повторной отправке)
 PLAN.clear()
 for r in bot.AI_ROTATORS.values():
     r.reset()
 CALLS.clear(); SENT.clear()
-it2 = dict(it, id="x:2", text="Новость два")
+it2 = {"id": "x:2", "ch": "src", "date": time.time(), "enq": time.time(), "text": "Новость два",
+       "photos": [], "vids": [], "docs": [], "sent": 0, "fails": 0, "status": "ok"}
 bot.QUEUE[:] = [it2]
 assert asyncio.run(bot.publish_item(None, 5, it2)) == "ok"
 assert SENT and SENT[0].startswith("Пересказ"), SENT
 print("a6 ok: пост выходит пересказанным через ИИ")
+
+# 6b) 🧠 ИИ-расход «Максимально экономить»: автопересказ — только для VIP-кабинета, остальным оригинал (бережём ключи)
+PLAN.clear()
+for r in bot.AI_ROTATORS.values():
+    r.reset()
+SENT.clear()
+bot.GCFG["ai_budget"] = "save"
+assert bot.ai_budget() == "save" and bot.ai_rewrite_allowed() is False       # по умолчанию кабинет не VIP
+itns = {"id": "s:1", "ch": "src", "date": time.time(), "enq": time.time(), "text": "Экономный пост",
+        "photos": [], "vids": [], "docs": [], "sent": 0, "fails": 0, "status": "ok"}
+bot.QUEUE[:] = [itns]
+assert asyncio.run(bot.publish_item(None, 5, itns)) == "ok"
+assert SENT and SENT[0].startswith("Экономный пост") and not itns.get("ai_text"), SENT   # ИИ не звали — оригинал
+vt = bot.Theme("tV", "VIP-тема", "", None, {}, False, bot.host_id())          # кабинет хозяина — всегда VIP
+SENT.clear()
+itv = {"id": "s:2", "ch": "src", "date": time.time(), "enq": time.time(), "text": "VIP пост",
+       "photos": [], "vids": [], "docs": [], "sent": 0, "fails": 0, "status": "ok"}
+bot.QUEUE[:] = [itv]
+with bot.theme_ctx(vt):
+    assert bot.ai_rewrite_allowed() is True
+    assert asyncio.run(bot.publish_item(None, 5, itv)) == "ok"
+assert SENT and SENT[0].startswith("Пересказ"), SENT                          # VIP — пересказ работает и в экономии
+bot.GCFG["ai_budget"] = "std"
+print("a6b ok: 🧠 ИИ-расход «Максимально экономить» — пересказ только для VIP, остальным оригинал")
+
+# 6c) фильтр рекламы — локальный (regex/ключевые слова), ИИ не трогает: обычный пост → ok, явная реклама → ad
+CALLS.clear()
+v_ok, _ = bot.ad_verdict("Вышло обновление Roblox 1.2, новые скины уже в игре!")
+v_ad, why_ad = bot.ad_verdict("Курс по заработку! Регистрация: https://justclick.ru/x?ref=99 — успей, промокод SALE")
+assert v_ok == "ok" and v_ad == "ad" and CALLS == [], (v_ok, v_ad, CALLS)    # ни одного вызова ИИ
+assert any("трекер" in w for w in why_ad), why_ad                            # justclick.ru распознан локально
+print("a6c ok: ад-фильтр работает локально (regex/ключевые слова), без вызовов ИИ")
+
+# 6d) аналитика при исчерпании ключей: 🤖-строки нет — только стандартные строки; бот не падает, пишет причину
+bot.INSIGHT_CACHE.clear()
+for r in bot.AI_ROTATORS.values():
+    r.reset()
+for k in ("gemKEY_A_0001", "gemKEY_B_0002", "sk-or-v1-OPEN0005", "sk-deep-0007"):
+    PLAN[k] = 429
+nums = {"title": "Канал", "subs": 1000, "v24": 100, "v48": 120, "v72": 130, "er24": 10.0, "today": 5, "d7": 20}
+assert bot.ai_llm_ready() and bot.ai_insight(nums, bot.card_caption(nums)) is None
+assert bot.stats_text(nums) == bot.card_caption(nums) + "\n" + bot.info_line(nums)   # ровно три строки + 📊, без 🤖
+PLAN.clear()
+for r in bot.AI_ROTATORS.values():
+    r.reset()
+print("a6d ok: аналитика при 429 — без 🤖-строки, бот не падает")
+
+# 6e) панель: «🧠 ИИ-расход» — три варианта (save/std/max), выбор сохраняется в settings.json
+press(1, 61000, "m:cl")
+assert any(b.get("payload") == "m:clai" for r in OUT[-1][1] for b in r), payloads(OUT[-1][1])
+press(1, 61000, "m:clai")
+assert "ИИ-расход" in OUT[-1][0] and all(f"a:claibud:{k}" in payloads(OUT[-1][1]) for k in ("save", "std", "max")), OUT[-1]
+press(1, 61000, "a:claibud:save")
+assert bot.GCFG["ai_budget"] == "save" and json.load(open(os.path.join(DATA, "settings.json")))["ai_budget"] == "save"
+assert "✅ Максимально экономить" in str(OUT[-1][1]), OUT[-1][1]
+press(1, 61000, "a:claibud:std")
+assert bot.GCFG["ai_budget"] == "std"
+print("a6e ok: панель — «🧠 ИИ-расход» переключается и сохраняется")
 
 # 7) перезапуск: ключи из settings.json на месте; убрали из панели — снова из переменной
 bot2 = load_bot("bot_restart")
