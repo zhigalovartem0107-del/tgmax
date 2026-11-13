@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110627            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026110628            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -365,11 +365,8 @@ DEFAULTS = {
     # расписание: посты не пачкой, а постепенно
     "queue_on": True,
     "gap_min": 60,                     # пауза между публикациями (минут)
-    "burst_min": 30,                   # посты ОДНОГО канала с разницей до N минут выходят сразу вместе
-    "burst_max": 3,                    # но не больше стольких подряд
     "max_age_h": 24,                   # пост, ждущий в очереди дольше, удаляется
     "later_min": 60,                   # кнопка «⏰ Через…» на карточке поста: через сколько минут выложить
-    "auto_series": False,              # посты одного канала сами выходят пачкой (ВЫКЛ: именно это выкладывало «кучей»)
     "empty_warn_on": True,             # предупреждать админов, если на ближайший час нет постов
     # админы бота в MAX (первый — владелец); заполняется через меню
     "admins": [],
@@ -379,10 +376,6 @@ DEFAULTS = {
     "night_on": False,
     "night_from": 0,
     "night_to": 8,
-    # срочные посты (например со словом «официально») выходят без очереди
-    "urgent_on": True,
-    "urgent_words": ["официально"],
-    "urgent_max_h": 3,                 # не больше стольких срочных в час
     # посты с этими словами не публикуются (конкурсы, розыгрыши, раздачи)
     "stop_words": ["конкурс", "розыгр", "разыгр", "giveaway", "раздач"],
     # автозамена слов: [["старое", "новое"], ...]
@@ -392,8 +385,6 @@ DEFAULTS = {
     # ежедневный отчёт админам
     "report_on": True,
     "report_hour": 21,
-    # приоритет каналов: {"имя_канала": 2}; 1 — обычный, 2 — важный
-    "priority": {},
 }
 # Последние строки поста, где ТОЛЬКО ссылки на эти сайты (футеры), удаляются.
 FOOTER_DOMAINS = ["t.me", "telegram.me", "max.ru", "vk.com", "vk.ru", "vk.cc",
@@ -622,7 +613,7 @@ if GCFG.get("owner_id") and GCFG["owner_id"] not in GCFG["admins"]:
 # Общие для всех тем. Всё остальное — настройки конкретной темы.
 GLOBAL_KEYS = {"paused", "interval", "admins", "admin_names", "admin_chats",
                "report_on", "report_hour", "owner_id", "owner_chat"}
-STAT_KEYS = ("published", "dups", "errors", "expired", "blocked", "rejected", "urgent", "ads")
+STAT_KEYS = ("published", "dups", "errors", "expired", "blocked", "rejected", "ads")
 
 
 def theme_files(tid):
@@ -1329,11 +1320,6 @@ def is_ad_post(raw, ch="", buttons=0):
     спорную бот присылает владельцу на «да/нет» (или отсеивает, если вопросы выключены)."""
     v, why = ad_verdict(raw, ch, buttons)
     return v != "ok", why
-
-
-def is_urgent(body: str) -> bool:
-    low = body.lower()
-    return CFG["urgent_on"] and any(w.strip() and w.lower() in low for w in CFG["urgent_words"])
 
 
 # ===== 🧠 УМНОЕ ВРЕМЯ: публикуем в часы, когда у канала больше просмотров =====
@@ -2342,7 +2328,7 @@ def make_report(title=None):
         return STATS.get(k, 0) - base.get(k, 0)
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
     return ("📈 Отчёт" + (f" · 🎭 {title}" if title else "") + "\n\n"
-            f"Опубликовано: {d('published')} (срочных: {d('urgent')})\n"
+            f"Опубликовано: {d('published')}\n"
             f"Дублей пропущено: {d('dups')}\n"
             f"Рекламы отсеяно: {d('ads')}\n"
             f"Отсеяно стоп-словами: {d('blocked')}\n"
@@ -3234,7 +3220,7 @@ def preview_text(it):
         media.append(f"видео: {len(it['vids'])}")
     if it.get("docs"):
         media.append("файлы: " + ", ".join(d["name"] for d in it["docs"])[:120])
-    head = f"✋ Новый пост из @{it['ch']}{theme_tag()}" + (" ⚡ срочный" if it.get("urgent") else "")
+    head = f"✋ Новый пост из @{it['ch']}{theme_tag()}"
     return f"{head}\n({', '.join(media) or 'только текст'})\n\n{text}"
 
 
@@ -3684,11 +3670,10 @@ def _screen(name, uid=None):
                      "тема та же, длина та же. Ссылки, @каналы, хэштеги, цифры и КАПС не трогаю.")
             rows += [[B(f"🪄 ИИ-редактор: {on_off(CFG.get('ai_edit'))}", "a:aied")]]
         rows.append(back)
-    elif name == "q":
+    elif name.split(":")[0] == "q":
+        page = 1 if name.partition(":")[2] == "1" else 0
         text = (f"⏳ Расписание публикаций: {on_off(CFG['queue_on'])}\n\n"
                 f"Пауза между публикациями: {fmt_min(CFG['gap_min'])}\n"
-                f"Авто-серии: {on_off(CFG['auto_series'])} — посты одного канала с разницей до "
-                f"{fmt_min(CFG['burst_min'])} сами выходят вместе (не больше {CFG['burst_max']} подряд)\n"
                 f"Кнопка «⏰ Через…» на карточке поста: {fmt_min(CFG['later_min'])}\n"
                 f"Старые посты удаляются из очереди через {CFG['max_age_h']} ч\n\n"
                 f"В очереди: {len(QUEUE)} · следующая публикация: {next_pub_text()}\n\n"
@@ -3696,26 +3681,27 @@ def _screen(name, uid=None):
         backlog = sum(1 for x in QUEUE if x.get("status", "ok") == "ok")
         if CFG["queue_on"] and backlog >= 3 and backlog * CFG["gap_min"] >= 120:
             text += (f"\n\n⚠️ Очередь длинная: последний пост выйдет примерно через "
-                     f"{fmt_min(backlog * CFG['gap_min'])}. Новые посты встают в конец. Уменьши паузу "
-                     f"(например, 20–30 мин), чтобы свежие посты выходили быстрее.")
-        rows = [[B(f"⏳ Расписание: {on_off(CFG['queue_on'])}", "a:qon")],
-                [B("➖15 мин", "a:gap:-15"), B("➕15 мин", "a:gap:15"), B("✏️ Своя", "p:gapx")],
-                [B("30 мин", "a:gapset:30"), B("1 час", "a:gapset:60"), B("2 часа", "a:gapset:120")],
-                [B(f"🔗 Авто-серии: {on_off(CFG['auto_series'])}", "a:ser")],
-                [B(f"📭 Предупреждать о пустой очереди: {on_off(CFG['empty_warn_on'])}", "a:ewarn")],
-                [B("⏰ «Через…»: −15 мин", "a:later:-15"), B("+15 мин", "a:later:15")],
-                [B("🔗 Окно серии −5", "a:bur:-5"), B("+5", "a:bur:5"), B("✏️ Своё", "p:burx")],
-                [B("Серия до: −1", "a:bmax:-1"), B("+1", "a:bmax:1")],
-                [B(f"🗑 Хранить пост до {CFG['max_age_h']} ч (сменить)", "a:age")],
-                [B("📋 Очередь", "m:ql"), B("⏩ Выложить всё сейчас", "a:qnow")],
-                [B("🌙 Ночь", "m:nt"), B("⚡ Срочные", "m:ur"), B("⭐ Приоритет", "m:pr")], back]
+                     f"{fmt_min(backlog * CFG['gap_min'])}. Уменьши паузу (например, 20–30 мин).")
+        text += f"\n\nСтраница {page + 1} из 2."
+        if page == 0:
+            rows = [[B(f"⏳ Расписание: {on_off(CFG['queue_on'])}", "a:qon")],
+                    [B("➖15 мин", "a:gap:-15"), B("➕15 мин", "a:gap:15"), B("✏️ Своя", "p:gapx")],
+                    [B("30 мин", "a:gapset:30"), B("1 час", "a:gapset:60"), B("2 часа", "a:gapset:120")],
+                    [B("🌙 Ночь", "m:nt")],
+                    [B("📋 Очередь", "m:ql"), B("⏩ Выложить сейчас", "a:qnow")],
+                    [B("Далее ➡️", "m:q:1")], back]
+        else:
+            rows = [[B("⏰ «Через…» −15", "a:later:-15"), B("+15", "a:later:15")],
+                    [B(f"🗑 Хранить: {CFG['max_age_h']} ч", "a:age")],
+                    [B(f"📭 Пустая очередь: {on_off(CFG['empty_warn_on'])}", "a:ewarn")],
+                    [B("⬅️ Назад", "m:q")], back]
     elif name == "ql":
         now = time.time()
         items = sorted(QUEUE, key=lambda x: x["date"])[:10]
         lines = []
         for i, it in enumerate(items):
             snip = plain_snip(it.get("text"), 40)
-            mark = ({"pending": "✋"}.get(it.get("status"), "")) + ("⚡" if it.get("urgent") else "")
+            mark = {"pending": "✋"}.get(it.get("status"), "")
             if it.get("status") == "pending":
                 when = f"ждёт ТВОЕГО одобрения уже {fmt_min((now - it['enq']) / 60)}"
             elif it.get("at", 0) > now:
@@ -3746,22 +3732,6 @@ def _screen(name, uid=None):
         rows = [[B(f"🌙 Ночной режим: {on_off(CFG['night_on'])}", "a:night")],
                 [B("С: −1 ч", "a:nfrom:-1"), B("С: +1 ч", "a:nfrom:1")],
                 [B("До: −1 ч", "a:nto:-1"), B("До: +1 ч", "a:nto:1")], [B("◀️ Назад", "m:q")]]
-    elif name == "ur":
-        text = (f"⚡ Срочные посты: {on_off(CFG['urgent_on'])}\n\n"
-                f"Слова-триггеры: {fmt_words(CFG['urgent_words'])}\n"
-                f"Не больше {CFG['urgent_max_h']} срочных в час\n\n"
-                "Пост со словом-триггером выходит сразу, не ждёт очереди и паузы. "
-                "Посты со стоп-словами (конкурсы и т.п.) не публикуются в любом случае.")
-        rows = [[B(f"⚡ Срочные: {on_off(CFG['urgent_on'])}", "a:urg")],
-                [B("➕ Слово", "p:addur"), B("➖ Слово", "p:delur")],
-                [B("Лимит в час: −1", "a:urgmax:-1"), B("+1", "a:urgmax:1")], [B("◀️ Назад", "m:q")]]
-    elif name == "pr":
-        chs = CFG["channels"]
-        text = ("⭐ Приоритет каналов\n\nВажные каналы (⭐) выходят из очереди раньше: "
-                "их посты считаются на 3 часа «старше». Нажми на канал, чтобы переключить.\n\n"
-                + ("\n".join(f"{'⭐' if CFG['priority'].get(c, 1) == 2 else '▫️'} @{c}" for c in chs) or "каналов нет"))
-        rows = [[B(f"{'⭐' if CFG['priority'].get(c, 1) == 2 else '▫️'} {c}", f"a:prio:{i}")] for i, c in enumerate(chs)]
-        rows.append([B("◀️ Назад", "m:q")])
     elif name == "sw":
         text = ("🚫 Стоп-слова\n\nПосты, где есть любое из этих слов, не публикуются "
                 "(по умолчанию — конкурсы, розыгрыши, раздачи).\n\n" + fmt_words(CFG["stop_words"]))
@@ -3857,30 +3827,43 @@ def _screen(name, uid=None):
         if not t.legacy:
             rows.append([B("🗑 Удалить тему", "m:thd")])
         rows.append([B("◀️ Темы", "m:th")])
-    elif name == "chpick":
+    elif name.split(":")[0] == "chpick":
         t = cur()
         chans = pick_channels(uid)
+        per = 5                                            # по 5 каналов на страницу
+        pages = max(1, (len(chans) + per - 1) // per)
+        tail = name.partition(":")[2]
+        page = min(max(0, int(tail) if tail.isdigit() else 0), pages - 1)
         if t.chat_id:
             text = f"📢 Тема «{t.name}» уже выкладывает в канал MAX ✅\n\nМожно выбрать другой канал:"
         else:
             text = f"📢 Куда выкладывать тему «{t.name}» — выбери свой канал MAX:"
         if chans:
-            text += "\n\n(в списке каналы, где бот — админ и которые ещё ни к чему не привязаны)"
+            text += f"\n\n(каналы, где бот — админ. Страница {page + 1} из {pages})"
         else:
             text += ("\n\nПока не вижу твоих каналов. Сделай так:\n1. Открой свой канал MAX → Админы → Добавить → "
-                     "найди этого бота.\n2. Включи ему право «Публиковать сообщения».\n3. Вернись сюда и нажми «🔄 Обновить».")
+                     "найди этого бота.\n2. Включи ему право «Публиковать сообщения».\n3. Вернись и нажми «🔄 Обновить».")
         def label(c):
             if c["theme"] is t:
-                return "✅ " + c["title"] + " (эта тема)"
+                return "✅ " + c["title"]
             if c["theme"] is not None:
-                return "🔁 " + c["title"] + f" (сейчас у «{c['theme'].name}»)"
+                return "🔁 " + c["title"]
             return "📢 " + c["title"]
         if any(c["theme"] is not None and c["theme"] is not t for c in chans):
-            text += "\n\n🔁 — канал сейчас привязан к другой теме: нажми, и он перейдёт в эту."
-        rows = [[B(label(c)[:60], f"a:chbind:{c['chat_id']}")] for c in chans[:20]]
+            text += "\n🔁 — канал сейчас у другой темы: нажми, и он перейдёт в эту."
+        shown = chans[page * per:(page + 1) * per]
+        rows = [[B(label(c)[:30], f"a:chbind:{c['chat_id']}")] for c in shown]
+        nav = []
+        if page > 0:
+            nav.append(B("⬅️ Назад", f"m:chpick:{page - 1}"))
+        if page < pages - 1:
+            nav.append(B("Далее ➡️", f"m:chpick:{page + 1}"))
+        if nav:
+            rows.append(nav)
         if t.chat_id:
             rows.append([B("🩺 Проверить публикацию", "a:chtest")])
-        rows += [[B("🔄 Обновить", "m:chpick"), B("🔗 Ввести ссылку", "p:thlink")], [B("◀️ Назад", "m:main")]]
+        rows += [[B("🔄 Обновить", f"m:chpick:{page}"), B("🔗 Ввести ссылку", "p:thlink")],
+                 [B("◀️ В меню", "m:main")]]
     elif name == "pinset":
         h = int(CFG.get("autodel_h") or 0)
         when = "не удалять" if not h else (f"через {h // 24} дн." if h >= 24 and h % 24 == 0 else f"через {h} ч")
@@ -4101,7 +4084,6 @@ PROMPTS = {
     "delo": "Пришли слово подписи донора, которое нужно убрать из списка.",
     "sgtext": "Пришли новый текст подписи (до 60 символов).",
     "gapx": "Пришли паузу между публикациями в минутах (0–720), например 45.",
-    "burx": "Пришли окно серии в минутах (0–120). 0 = серии выключены.",
     "addts": "Пришли сайт, ссылки на который НЕ считать рекламой (официальный сайт игры и т.п.), например "
              "brawlstars.com — можно несколько через запятую. Сайты Roblox, Minecraft, PUBG, Brawl Stars, Standoff 2, "
              "Genshin и YouTube уже в списке.",
@@ -4110,8 +4092,6 @@ PROMPTS = {
     "delsw": "Пришли стоп-слово, которое нужно убрать.",
     "addrw": "Пришли замену в виде: старое = новое\n(можно несколько строк). Если справа пусто — слово просто удаляется.",
     "delrw": "Пришли слово слева (то, что заменяется), чтобы убрать эту замену.",
-    "addur": "Пришли слово-триггер для срочных постов (или несколько через запятую).",
-    "delur": "Пришли слово-триггер, которое нужно убрать.",
 }
 
 
@@ -4327,20 +4307,17 @@ def apply_text(action, text, uid=None):
         CFG["signature_text"] = text.strip()[:60]
         save_cfg()
         return "Подпись обновлена.", "sg"
-    if action in ("addsw", "addur"):
-        key = "stop_words" if action == "addsw" else "urgent_words"
-        added = [w for w in split_words(text) if w not in [x.lower() for x in CFG[key]]]
-        CFG[key] += added
+    if action == "addsw":
+        added = [w for w in split_words(text) if w not in [x.lower() for x in CFG["stop_words"]]]
+        CFG["stop_words"] += added
         save_cfg()
-        return (f"Добавил: {fmt_words(added)}" if added else "Такие слова уже есть."), \
-            ("sw" if action == "addsw" else "ur")
-    if action in ("delsw", "delur"):
-        key = "stop_words" if action == "delsw" else "urgent_words"
+        return (f"Добавил: {fmt_words(added)}" if added else "Такие слова уже есть."), "sw"
+    if action == "delsw":
         gone = split_words(text)
-        before = len(CFG[key])
-        CFG[key] = [x for x in CFG[key] if x.lower() not in gone]
+        before = len(CFG["stop_words"])
+        CFG["stop_words"] = [x for x in CFG["stop_words"] if x.lower() not in gone]
         save_cfg()
-        return f"Убрал слов: {before - len(CFG[key])}", ("sw" if action == "delsw" else "ur")
+        return f"Убрал слов: {before - len(CFG['stop_words'])}", "sw"
     if action == "addrw":
         added = 0
         for line in text.split("\n"):
@@ -4361,15 +4338,11 @@ def apply_text(action, text, uid=None):
         CFG["replacements"] = [p for p in CFG["replacements"] if p[0].lower() not in gone]
         save_cfg()
         return f"Убрал замен: {before - len(CFG['replacements'])}", "rw"
-    if action in ("gapx", "burx"):
+    if action == "gapx":
         m = re.search(r"\d+", text)
         if not m:
             return "Нужно число минут. Попробуй ещё раз.", "q"
-        v = int(m.group())
-        if action == "gapx":
-            CFG["gap_min"] = max(0, min(720, v))
-        else:
-            CFG["burst_min"] = max(0, min(120, v))
+        CFG["gap_min"] = max(0, min(720, int(m.group())))
         save_cfg()
         return "Готово.", "q"
     return "Не понял.", "main"
@@ -4522,12 +4495,6 @@ def do_action(act, uid=None):
     elif p[0] == "gapset":
         CFG["gap_min"] = int(p[1])
         scr = "q"
-    elif p[0] == "bur":
-        CFG["burst_min"] = max(0, min(120, CFG["burst_min"] + int(p[1])))
-        scr = "q"
-    elif p[0] == "bmax":
-        CFG["burst_max"] = max(1, min(10, CFG["burst_max"] + int(p[1])))
-        scr = "q"
     elif p[0] == "age":
         opts = [6, 12, 24, 48]
         CFG["max_age_h"] = opts[(opts.index(CFG["max_age_h"]) + 1) % 4] if CFG["max_age_h"] in opts else 24
@@ -4554,18 +4521,6 @@ def do_action(act, uid=None):
         key = "night_from" if p[0] == "nfrom" else "night_to"
         CFG[key] = (CFG[key] + int(p[1])) % 24
         scr = "nt"
-    elif p[0] == "urg":
-        CFG["urgent_on"] = not CFG["urgent_on"]
-        scr = "ur"
-    elif p[0] == "urgmax":
-        CFG["urgent_max_h"] = max(1, min(20, CFG["urgent_max_h"] + int(p[1])))
-        scr = "ur"
-    elif p[0] == "prio":
-        i = int(p[1])
-        if 0 <= i < len(CFG["channels"]):
-            ch = CFG["channels"][i]
-            CFG["priority"][ch] = 1 if CFG["priority"].get(ch, 1) == 2 else 2
-        scr = "pr"
     elif p[0] == "apr":
         CFG["approval_on"] = not CFG["approval_on"]
         if not CFG["approval_on"]:                 # выключили — всё ожидающее уходит в очередь
@@ -4631,8 +4586,6 @@ def do_action(act, uid=None):
         if not cur().legacy:
             delete_theme(cur())
         scr = "th"
-    elif p[0] == "ser":
-        CFG["auto_series"] = not CFG["auto_series"]
         scr = "q"
     elif p[0] == "later":
         CFG["later_min"] = max(5, min(720, CFG["later_min"] + int(p[1])))
@@ -4663,11 +4616,11 @@ def all_mode(uid):
 
 
 # списки слов: «для всех тем» переносит само изменение (добавили/убрали), свои слова каждой темы остаются
-SPREAD_MERGE = {"ad_keywords", "old_signatures", "stop_words", "replacements", "trusted_sites", "urgent_words"}
+SPREAD_MERGE = {"ad_keywords", "old_signatures", "stop_words", "replacements", "trusted_sites"}
 # своё у каждой темы: меняется только у тем, где было то же, что у этой (общая подпись), — чужая не затирается
 SPREAD_OWN = {"signature_text"}
 SPREAD_LABELS = {"ad_keywords": "рекламные слова", "old_signatures": "подписи доноров", "stop_words": "стоп-слова",
-                 "replacements": "автозамены", "trusted_sites": "надёжные сайты", "urgent_words": "слова срочных",
+                 "replacements": "автозамены", "trusted_sites": "надёжные сайты",
                  "signature_text": "текст подписи", "signature_on": "подпись вкл/выкл", "gap_min": "пауза между постами",
                  "queue_on": "расписание", "video_on": "видео", "approval_on": "проверка постов",
                  "night_on": "ночной режим", "dedupe_on": "повторы", "ads_skip": "фильтр рекламы"}
@@ -6077,36 +6030,6 @@ def drop_item(it):
         QUEUE.remove(it)
 
 
-def batch_for_head(head):
-    """Первый пост + следующие посты ТОГО ЖЕ канала, вышедшие с разницей до окна серии."""
-    if not CFG["auto_series"]:
-        return [head]
-    burst = CFG["burst_min"] * 60
-    same = sorted([x for x in QUEUE if x["ch"] == head["ch"] and x is not head
-                   and x["date"] >= head["date"]], key=lambda x: x["date"])
-    batch = [head]
-    for x in same:
-        if len(batch) >= CFG["burst_max"] or burst <= 0:
-            break
-        if x["date"] - batch[-1]["date"] <= burst:
-            batch.append(x)
-        else:
-            break
-    return batch
-
-
-def is_followup(it):
-    """Пост канала вышел вслед за уже опубликованным (в окне серии) — можно сразу."""
-    if not CFG["auto_series"]:
-        return False
-    ch = it["ch"]
-    last = PUB["ch_last_date"].get(ch)
-    burst = CFG["burst_min"] * 60
-    if last is None or burst <= 0:
-        return False
-    return 0 <= it["date"] - last <= burst and PUB["series"].get(ch, 0) < CFG["burst_max"]
-
-
 VIDEO_RETRY_PAUSES = [2, 5, 10]   # повторы скачивания файла из Telegram (сек): 3 раза, коротко, молча
 DL_TIMEOUT_MIN = 90               # одна попытка скачать файл из Telegram: 90 с + по 128 КБ/с на размер файла
 
@@ -6818,8 +6741,8 @@ async def _publish_item(client, chat_id, it):
 
 
 def prio_key(x):
-    """Чем важнее канал, тем «старше» считается его пост (до 3 часов форы)."""
-    return x["date"] - (CFG["priority"].get(x["ch"], 1) - 1) * 3 * 3600
+    """Порядок публикации — по времени поста (старые раньше)."""
+    return x["date"]
 
 
 def mark_published(it):
@@ -6873,56 +6796,24 @@ async def publish_due(client, chat_id):
     if not ready:
         return
 
-    # 2) срочные посты — без паузы расписания (но не больше N в час) и не пачкой: по одному, минута между постами
-    PUB["urgent_times"] = [t for t in PUB.get("urgent_times", []) if now - t < 3600]
-    if CFG["urgent_on"] and not force and not free:
-        for x in sorted([x for x in ready if x.get("urgent")], key=lambda x: x["date"]):
-            if len(PUB["urgent_times"]) >= CFG["urgent_max_h"] or now - PUB["last_pub"] < MIN_GAP_SEC:
-                break
-            res = await publish_item(client, chat_id, x)
-            if res == "retry":
-                return
-            if res == "ok":
-                PUB["urgent_times"].append(time.time())
-                bump("urgent")
-                mark_published(x)                    # и обычный пост после срочного ждёт паузу расписания
-                break
-        ready = [x for x in ready if x in QUEUE]
-        if not ready:
-            return
-
-    # 3) обычные посты по расписанию: один пост за паузу
+    # 2) обычные посты по расписанию: один пост за паузу (старые раньше)
     if smart_hold(now, ready, limit):                # 🧠 умное время: холодный час — ждём лучшего
         return
     gap = max(CFG["gap_min"] * 60 if CFG["queue_on"] else 0, MIN_GAP_SEC)   # даже без расписания — не пачкой
     if free:
         gap = max(gap, FREE_PLAN["gap_min"] * 60)
-    new_series = True
     if force or gap == 0:
         due = sorted(ready, key=prio_key)
+    elif now - last_slot() >= gap:
+        due = [min(ready, key=prio_key)]
     else:
         due = []
-        if CFG["auto_series"] and not free:
-            for x in sorted(ready, key=lambda x: x["date"]):
-                if is_followup(x):                   # серия: сразу, не ждём паузу
-                    due, new_series = [x], False
-                    break
-        if not due and now - last_slot() >= gap:
-            head = min(ready, key=prio_key)
-            due = [head] if free else [x for x in batch_for_head(head) if x in ready]
-    seen = set()
     for it in due:
         res = await publish_item(client, chat_id, it)
         if res == "retry":
             break
         if res == "dropped":
             continue
-        ch = it["ch"]
-        if new_series and ch not in seen:
-            PUB["series"][ch] = 1
-        else:
-            PUB["series"][ch] = PUB["series"].get(ch, 0) + 1
-        seen.add(ch)
         mark_published(it)
 
 
@@ -7243,7 +7134,7 @@ async def _process_channel(client, ch, fails, fresh):
                         "date": grp[0].date.timestamp(), "enq": time.time(),
                         "text": body, "photos": img_paths, "pids": pids,
                         "vids": [m.id for m, _ in vids], "docs": docs, "sent": 0, "fails": 0,
-                        "urgent": is_urgent(body), "status": status, "raw": raw[:1500],
+                        "status": status, "raw": raw[:1500],
                         "buttons": sum(url_buttons(m) for m in grp)}
                 if on_free():                           # 🆓 до FREE_PLAN["queue_max"] в очереди: старые уходят
                     auto = sorted((x for x in QUEUE if not x.get("manual")), key=lambda x: x["enq"])

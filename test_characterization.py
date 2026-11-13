@@ -75,8 +75,7 @@ def item(i, ch="a", **kw):
 
 
 def run(items, minutes=180, **cfg):
-    base = dict(queue_on=True, gap_min=20, night_on=False, urgent_on=True, urgent_max_h=3, smart_time=False,
-                auto_series=False, approval_on=False, max_age_h=24)
+    base = dict(queue_on=True, gap_min=20, night_on=False, smart_time=False, approval_on=False, max_age_h=24)
     for k, v in dict(base, **cfg).items():
         bot.CFG[k] = v
     bot.QUEUE[:] = items
@@ -92,12 +91,12 @@ def run(items, minutes=180, **cfg):
 queue = {
     "schedule_20min": run([item(i, "ab"[i % 2]) for i in range(6)]),
     "schedule_off": run([item(i) for i in range(4)], minutes=10, queue_on=False),
-    "urgent_mix": run([item(i, urgent=i < 3) for i in range(5)], minutes=60),
+    "mixed_posts": run([item(i) for i in range(5)], minutes=60),       # «срочных» больше нет — общий порядок
     "night": run([item(i) for i in range(3)], minutes=90, night_on=True, night_from=8, night_to=9, gap_min=10),
     "manual_overdue": run([item(i, manual=True, at=T0 - 3600) for i in range(3)] + [item(9)], minutes=70),
     "waiting_file": run([item(1, status="stuck", retry_at=T0 + 25 * 60), item(2)], minutes=60),
 }
 check("queue", [[k, v] for k, v in queue.items()])
-print("g2 ok: очередь (расписание, без расписания, срочные, ночь, просроченные «Сейчас», ждущий файл) как до рефакторинга")
+print("g2 ok: очередь (расписание, без расписания, смешанные посты, ночь, просроченные «Сейчас», ждущий файл) — зафиксирована")
 print("ВСЕ ХАРАКТЕРИЗАЦИОННЫЕ ТЕСТЫ ПРОШЛИ")
 os._exit(0)

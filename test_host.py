@@ -51,6 +51,17 @@ def shown():
     return json.dumps(OUT[-1], ensure_ascii=False) if OUT else "[]"
 
 
+def chpick_find(uid, chat, needle, maxpage=8):
+    """Листает страницы выбора канала (пагинация по 5) и ищет подпись needle на любой из них."""
+    for page in range(maxpage):
+        press(uid, chat, "m:chpick" if page == 0 else f"m:chpick:{page}")
+        if needle in shown():
+            return True
+        if "Далее" not in shown():
+            break
+    return False
+
+
 def consent(uid, chat, plan):
     """⚖️ Бот показал «Перед оплатой» — отметил «✅ Я согласен…» и нажал «💳 Перейти к оплате»."""
     if f"lg:tick:{plan}" in shown():
@@ -296,15 +307,14 @@ print("h20 ok: второй бот на токене основного не з�
 srv.token = "HOSTTOKEN"                                       # фальшивый MAX принимает токен этого бота
 srv.private[7700] = ("Мой закрытый", "https://max.ru/join/abcXYZ"); srv.chat_admins[7700] = [5001]
 srv.private[7800] = ("Чужой", "https://max.ru/join/zzz"); srv.chat_admins[7800] = [99999]
-press(5001, 62000, "m:chpick")
-assert "a:chbind:7700" in shown() and "a:chbind:7800" not in shown(), shown()
+assert chpick_find(5001, 62000, "a:chbind:7700"), shown()
+assert not chpick_find(5001, 62000, "a:chbind:7800"), "чужой канал в списке не показываем"
 press(5001, 62000, "a:chbind:7800")                          # чужой канал подсунуть нельзя
 ct = bot.tenant_themes(ckey)[0]
 assert ct.chat_id != 7800, ct.chat_id
 press(5001, 62000, "a:chbind:7700")
 assert ct.chat_id == 7700 and "привязан" in shown(), (ct.chat_id, shown())
-press(5001, 62000, "m:chpick")                               # привязанный канал помечен «эта тема»
-assert "Мой закрытый (эта тема)" in shown(), shown()
+assert chpick_find(5001, 62000, "✅ Мой закрытый"), shown()       # привязанный к этой теме помечен ✅
 # закрытый канал по ссылке max.ru/join/… (раньше не находился вообще)
 srv.private[7900] = ("Хозяйский", "https://max.ru/join/hostXYZ")
 ht = bot.ensure_host_cabinet()
@@ -480,8 +490,9 @@ print("h27 ok: кабинет покупателя открывается пер
 srv.private[7950] = ("Закрытый хозяина", "https://max.ru/join/qqq")
 stray = bot.new_cabinet_theme(hk, "Мой канал")              # пустая тема, которой канал достался по ошибке
 stray.chat_id = 7950
-press(1, 61000, "m:home"); press(1, 61000, "m:chpick")
-assert "Закрытый хозяина (сейчас у «Мой канал»)" in shown(), shown()
+press(1, 61000, "m:home")
+assert chpick_find(1, 61000, "🔁 Закрытый хозяина"), shown()      # канал другой темы помечен 🔁 (на своей странице)
+press(1, 61000, "m:chpick")
 cur_t = bot.active_theme(1)
 press(1, 61000, "a:chbind:7950")
 assert cur_t.chat_id == 7950 and stray.chat_id is None, (cur_t.chat_id, stray.chat_id)
@@ -1349,30 +1360,28 @@ out53.clear()
 bot.publish_item = pub53
 with bot.theme_ctx(tb):
     saved_q = list(bot.QUEUE)
-    saved = {k: bot.CFG[k] for k in ("gap_min", "queue_on", "night_on", "smart_time", "urgent_on", "urgent_max_h")}
-    for k_, v_ in dict(gap_min=20, queue_on=True, night_on=False, smart_time=False, urgent_on=True, urgent_max_h=3).items():
+    saved = {k: bot.CFG[k] for k in ("gap_min", "queue_on", "night_on", "smart_time")}
+    for k_, v_ in dict(gap_min=20, queue_on=True, night_on=False, smart_time=False).items():
         bot.CFG[k_] = v_
     now = time.time()
-    bot.PUB["urgent_times"] = []
-    bot.QUEUE[:] = [mk(i, status="ok", grp=None, urgent=True) for i in range(3)] + [mk(9, status="ok", grp=None)]
-    bot.PUB["last_pub"] = now - 3600
+    bot.QUEUE[:] = [mk(i, status="ok", grp=None, text="официально: срочная новость") for i in range(3)]
+    bot.PUB["last_pub"] = now                                           # только что публиковали
     asyncio.run(bot.publish_due(None, tb.chat_id))
-    assert out53 == ["b:0"], out53                                      # один срочный, а не все разом
+    assert out53 == [], out53                                           # «официально» больше НЕ обходит паузу
+    bot.PUB["last_pub"] = now - 21 * 60                                 # прошла пауза расписания (20 мин)
     asyncio.run(bot.publish_due(None, tb.chat_id))
-    assert out53 == ["b:0"], out53                                      # минута не прошла
-    bot.PUB["last_pub"] -= bot.MIN_GAP_SEC + 1
+    assert out53 == ["b:0"], out53                                      # один пост за паузу — как любой обычный
+    bot.PUB["last_pub"] = now - 21 * 60
     asyncio.run(bot.publish_due(None, tb.chat_id))
-    assert out53 == ["b:0", "b:1"], out53
-    bot.PUB["last_pub"] -= bot.MIN_GAP_SEC + 1
-    asyncio.run(bot.publish_due(None, tb.chat_id))
-    bot.PUB["last_pub"] -= bot.MIN_GAP_SEC + 1
-    asyncio.run(bot.publish_due(None, tb.chat_id))
-    assert out53 == ["b:0", "b:1", "b:2"], out53                        # обычный b:9 ждёт паузу расписания (20 мин)
+    assert out53 == ["b:0", "b:1"], out53                               # по одному, не пачкой
     bot.QUEUE[:] = saved_q
     for k_, v_ in saved.items():
         bot.CFG[k_] = v_
 bot.publish_item = real_pub53
-print("h56 ok: ⚡ срочные посты — без паузы расписания, но по одному (минута между постами), не пачкой")
+qrows = json.dumps(bot.screen("q", 1)[1] + bot.screen("q:1", 1)[1], ensure_ascii=False)
+assert "a:urg" not in qrows and "a:ser" not in qrows and "m:ur" not in qrows and "m:pr" not in qrows, qrows
+assert not hasattr(bot, "is_urgent")
+print("h56 ok: «срочные»/«приоритет»/«авто-серии» убраны — «официально» идёт по общему расписанию, кнопок нет")
 
 # 58) бесплатный тариф: подписка (или пробный срок) кончилась — кабинет не закрывается, а работает бесплатно:
 #     1 канал MAX и 1 источник; остальное на паузе (не удаляется); оплатил — всё снова работает; выключенный — молчит.
@@ -2981,8 +2990,7 @@ press(9900, 99000, "m:thd"); press(9900, 99000, "a:thdel")
 assert not bot.tenant_themes(k99), "последняя тема удалена"
 srv.chats["buyer99c"] = 9903
 srv.chat_admins[9903] = [9900]
-press(9900, 99000, "m:chpick")
-assert "a:chbind:9903" in shown(), shown()
+assert chpick_find(9900, 99000, "a:chbind:9903"), shown()
 press(9900, 99000, "a:chbind:9903")
 ts99 = bot.tenant_themes(k99)
 assert len(ts99) == 1 and ts99[0].chat_id == 9903 and disk_theme(ts99[0].id)["chat_id"] == 9903, \
@@ -3206,11 +3214,9 @@ try:
     assert t102.chat_id == 10201 and told(n102, "Канал MAX привязан"), (t102.chat_id, [o[0][:80] for o in OUT[n102:]])
     assert "10201" in json.load(open("known_chats.json")), "канал запомнен на диске"
     # B) выбор канала (GET /chats нет): в списке — каналы, которые бот знает (хозяину — все; покупателю — свои)
-    press(1, 61000, "m:chpick")
-    assert "Роблокс мемы" in shown(), shown()
+    assert chpick_find(1, 61000, "Роблокс мемы"), shown()
     t102.chat_id = None
-    press(10200, 102000, "m:chpick")
-    assert "a:chbind:10201" in shown(), shown()                    # добавил бота сам — канал его
+    assert chpick_find(10200, 102000, "a:chbind:10201"), shown()   # добавил бота сам — канал его
     # C) ссылка на известный канал — привязан сразу (раньше: «не нашёл», потому что GET /chats пуст)
     bot.PENDING[10200] = "thlink"
     n102 = len(OUT)
