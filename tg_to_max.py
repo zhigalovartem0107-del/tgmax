@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026111329            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111330            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1328,6 +1328,310 @@ def is_ad_post(raw, ch="", buttons=0):
     return v != "ok", why
 
 
+# ===== 🗑 СПАМ-ФИЛЬТР: жёсткие локальные правила — до скачивания фото и до любого ИИ =====
+SPAM_BLOCK_FILE = "spam_blocklist.json"     # чему научили удаления админа и кнопка «🗑 Спам» (на все каналы)
+SPAM_LOG_FILE = "spam_eaten.json"           # что съедено — для сводки в панели
+SPAM_FLOOD_N = 10                           # столько спам-постов подряд из одного канала — канал на час в мут
+SPAM_MUTE_SEC = 3600
+SPAM_KEEP_DAYS = 30
+SPAM_KINDS = {"scam": "крипто/казино/«заработок»", "drop": "поиск дропов", "shout": "кричащий спам (КАПС/эмодзи)",
+              "link": "подозрительные ссылки", "bot": "приглашения в ботов", "xpromo": "кросс-промо",
+              "block": "чёрный список", "manual": "отмечен админом"}
+SPAM_SCAM = re.compile(
+    r"\busdt\b|\btrc-?20\b|\berc-?20\b|\bbep-?20\b|(?:p2p|п2п)[\s-]*арбитраж|арбитраж\w*\s+(?:крипт|трафик|usdt)|"
+    r"крипт\w*\s+(?:сигнал|арбитраж|схем)|казино|\bслот(?:ы|ах|ов)\b|букмекер|\b1x(?:bet|бет)\b|\b1win\b|pin-?up|"
+    r"\bставк(?:и|ам|ах|ами)\b|\bставк[аиу]\s+на\s+(?:спорт|матч|футбол)|"
+    r"заработ\w*\s+(?:в|из)\s+(?:интернет\w*|сет\w*|дома)|пасс?ивн\w*\s+доход|без\s+вложений|"
+    r"доход\w*\s+от\s+\d[\d\s]*(?:₽|р\b|руб|\$|usd)|л[её]гк\w*\s+деньг|быстр\w*\s+(?:деньг|заработ)|"
+    r"удво\w*\s+депозит|бонус\s+\d+\s*%\s+на\s+(?:первый\s+)?депозит", re.I)
+SPAM_DROP = re.compile(r"(?:ищ\w*|нужн\w*|набира\w*|набор|требу\w*)\s+дроп|работ\w*\s+дроп\w*|стань\s+дроп|"
+                       r"\bдроп(?:ов|ы|ам)\s+(?:под|для|на)\s+(?:карт|обнал|p2p|п2п|usdt|крипт)|дроппер|обнал\w*", re.I)
+SPAM_TRIGGER = re.compile(r"срочно|халяв\w*|забер(?:и|ите)\b|забира(?:й|йте)\b|бесплатн\w*|только\s+сегодня|"
+                          r"успе(?:й|йте)\b|розда(?:ю|ём|ем|ча)|последн\w+\s+шанс", re.I)
+SPAM_EMOJI = re.compile(r"[\U0001F300-\U0001FAFF☀-➿⭐⭕‼⁉]")
+SPAM_SHORT = re.compile(r"(?<![\w.])(?:bit\.ly|clck\.ru|vk\.cc|tinyurl\.com|cutt\.ly|goo\.su|is\.gd|shorturl\.at|"
+                        r"u\.to)/\S+|t\.me/joinchat/\S+|t\.me/\+\S+", re.I)
+SPAM_CTA = re.compile(r"переход\w*|жми\b|забира\w*|забери|заход\w*|вступа\w*|регистрир\w*|получ\w*", re.I)
+SPAM_BOTREF = re.compile(r"t\.me/[A-Za-z]\w*bot\?start=\S*", re.I)
+SPAM_BOTAT = re.compile(r"(?<![\w@])@[A-Za-z]\w{2,}bot\b|t\.me/[A-Za-z]\w*bot\b", re.I)
+SPAM_FREEBIE = re.compile(r"бесплатн\w*\s+(?:робукс|голд|гем|скин|кейс|подписк|звёзд|звезд|stars|v-?bucks|алмаз)|"
+                          r"(?:робукс|голд|гем|алмаз)\w*\s+бесплатно|халяв\w*|бонус\w*|подар\w*|деньг\w*", re.I)
+SPAM_XPROMO = re.compile(r"взаимн\w*\s+пиар|взаимопиар|пиар\s+за\s+пиар|#вп\b|\bвп\s+(?:с|за)\b|"
+                         r"обмен\s+(?:постами|аудитори\w*|подписчик\w*)|подборк\w*\s+каналов", re.I)
+SPAM_HANDLE = re.compile(r"(?<![\w@])@[A-Za-z]\w{3,31}")
+SPAM_WORD = re.compile(r"[a-zа-я]{5,}")
+SPAM_COMMON = set("""этого чтобы только сейчас сегодня теперь новые новый новая новое можно нужно который которые
+которая очень после через будет будут всего всех всему ваших наших своих каждый каждого ссылке ссылка канал канале
+каналы подписка подписывайся друзья просто время больше меньше здесь пишите пиши тебе твоей теперь кстати
+вообще сразу всегда никогда первый первая другой другие""".split())
+
+
+def _spam_block_load():
+    d = load_json_safe(SPAM_BLOCK_FILE, {})
+    d = d if isinstance(d, dict) else {}
+    return {k: [str(x).strip().lower() for x in (d.get(k) if isinstance(d.get(k), list) else []) if str(x).strip()]
+            for k in ("links", "words")}
+
+
+SPAM_BLOCK = _spam_block_load()
+_eaten = load_json_safe(SPAM_LOG_FILE, [])
+SPAM_EATEN = [e for e in _eaten if isinstance(e, dict) and "t" in e] if isinstance(_eaten, list) else []
+SPAM_RUN = {}            # (тема, канал) -> сколько спам-постов подряд
+SPAM_MUTED = {}          # (тема, канал) -> до какого времени канал не читаем (флуд спамом)
+
+
+def _spam_norm(text):
+    return (text or "").lower().replace("ё", "е")
+
+
+def spam_block_hit(text):
+    """Что из чёрного списка есть в посте: ссылка/@ник — хватит одной, слова — нужно два разных."""
+    low = _spam_norm(text)
+    for x in SPAM_BLOCK["links"]:
+        if x and x in low:
+            return x
+    words = set(SPAM_WORD.findall(low))
+    hits = [w for w in SPAM_BLOCK["words"] if w in words]
+    return ", ".join(hits[:3]) if len(hits) >= 2 else None
+
+
+def spam_verdict(raw, ch="", buttons=0):
+    """(спам?, причина, вид): жёсткие локальные правила, без ИИ. Срабатывают — пост съедаем сразу."""
+    text = raw or ""
+    if not text.strip():
+        return False, "", ""
+    hit = spam_block_hit(text)
+    if hit:
+        return True, f"чёрный список: {hit}", "block"
+    m = SPAM_SCAM.search(text)
+    if m:
+        return True, f"крипто/казино-скам «{m.group(0).strip()[:30]}»", "scam"
+    m = SPAM_DROP.search(text)
+    if m:
+        return True, f"поиск дропов «{m.group(0).strip()[:30]}»", "drop"
+    trig = SPAM_TRIGGER.search(text)
+    if trig:
+        letters = [c for c in text if c.isalpha()]
+        caps = sum(1 for c in letters if c.isupper()) / len(letters) if len(letters) >= 15 else 0
+        emojis = len(SPAM_EMOJI.findall(text))
+        if emojis >= 6 or caps >= 0.6:
+            what = "КАПС" if caps >= 0.6 else f"эмодзи ×{emojis}"
+            return True, f"кричащий спам ({what} + «{trig.group(0).strip()[:20]}»)", "shout"
+    m = SPAM_SHORT.search(text)
+    if m and (trig or SPAM_CTA.search(text) or SPAM_FREEBIE.search(text)):
+        return True, f"подозрительная ссылка {m.group(0)[:40]}", "link"
+    m = SPAM_BOTREF.search(text)
+    if m:
+        return True, f"реферальная ссылка на бота {m.group(0)[:40]}", "bot"
+    m = SPAM_BOTAT.search(text)
+    if m and (trig or SPAM_FREEBIE.search(text) or re.search(r"\bжми\b|запуска\w*|запусти", text, re.I)):
+        return True, f"приглашение в бота {m.group(0)[:40]}", "bot"
+    m = SPAM_XPROMO.search(text)
+    if m:
+        return True, f"кросс-промо «{m.group(0).strip()[:30]}»", "xpromo"
+    refs = ad_sub_refs(text, ch)
+    if len(refs) >= 3:
+        return True, f"кросс-промо: подписка на {len(refs)} чужих канала", "xpromo"
+    return False, "", ""
+
+
+def src_post_link(ch, mid):
+    """Ссылка на пост источника: у канала Telegram с именем — t.me/<канал>/<номер>, иначе «источник #номер»."""
+    return f"https://t.me/{ch}/{mid}" if re.fullmatch(r"[A-Za-z]\w{3,31}", ch or "") else f"{ch} #{mid}"
+
+
+def src_name(ch):
+    return f"@{ch}" if re.fullmatch(r"[A-Za-z]\w{3,31}", ch or "") else str(ch or "—")
+
+
+def spam_muted(ch, now=None):
+    """Канал флудит спамом — час его не читаем (потом снова, как обычно)."""
+    key = (getattr(cur(), "id", ""), (ch or "").lower())
+    until = SPAM_MUTED.get(key, 0)
+    if until and until <= (now or time.time()):
+        SPAM_MUTED.pop(key, None)
+        return False
+    return bool(until)
+
+
+def eat_spam(ch, mid, reason, kind, flood=True):
+    """🗑 Пост съеден спам-фильтром: в журнал «🗑 Съеден спам: причина (ссылка)», в spam_eaten.json (для сводки) и
+    в счёт «подряд» для анти-флуда. True — канал только что ушёл в мут на час."""
+    t = cur()
+    link = src_post_link(ch, mid)
+    journal(f"🗑 Съеден спам: {reason} ({link})")
+    bump("spam")
+    now = time.time()
+    SPAM_EATEN.append({"t": now, "ch": ch, "mid": mid, "why": str(reason)[:160], "kind": kind, "link": link,
+                       "owner": getattr(t, "owner", "") or "", "theme": getattr(t, "id", "")})
+    cut = now - SPAM_KEEP_DAYS * 86400
+    SPAM_EATEN[:] = [e for e in SPAM_EATEN if e.get("t", 0) >= cut][-3000:]
+    with contextlib.suppress(OSError):
+        save_json(SPAM_LOG_FILE, SPAM_EATEN)
+    if not flood:
+        return False
+    key = (getattr(t, "id", ""), (ch or "").lower())
+    SPAM_RUN[key] = SPAM_RUN.get(key, 0) + 1
+    if SPAM_RUN[key] < SPAM_FLOOD_N:
+        return False
+    SPAM_RUN.pop(key, None)
+    SPAM_MUTED[key] = now + SPAM_MUTE_SEC
+    msg = f"⚠️ Канал {src_name(ch)} заблокирован на 1 час из-за флуда спамом."
+    journal(msg)
+    owner_alert(msg)
+    return True
+
+
+def spam_summary(days=1, owner=None, now=None):
+    """Сколько съедено и почему: days=1 — с полуночи, иначе за последние N дней. owner — только этот кабинет."""
+    now = now or time.time()
+    lt = time.localtime(now)
+    since = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)) if days <= 1 else now - days * 86400
+    got = [e for e in SPAM_EATEN if e.get("t", 0) >= since and (owner is None or e.get("owner", "") == owner)]
+    return {"n": len(got), "by_kind": Counter(e.get("kind") or "?" for e in got),
+            "by_ch": Counter(e.get("ch") or "?" for e in got), "last": sorted(got, key=lambda e: -e["t"])[:5]}
+
+
+def _spam_corpus(exclude=""):
+    """Слова обычных постов темы (что вышло и что было в очереди) — их в чёрный список не берём."""
+    words, skip = set(), norm(exclude)
+    for p in PUB.get("day_posts", []):
+        raw = p.get("raw") or p.get("text") or ""
+        if raw and raw != exclude:
+            words |= set(SPAM_WORD.findall(_spam_norm(raw)))
+    for h in list(cur().history)[-300:]:
+        n = (h or {}).get("norm") or ""
+        if n and n != skip:
+            words |= set(SPAM_WORD.findall(_spam_norm(n)))
+    return words
+
+
+def spam_learn(text, ch=""):
+    """🧠 Учимся на посте, который админ удалил или отметил «🗑 Спам»: ссылки (домены), t.me-каналы и @ники, редкие
+    слова (которых нет в обычных постах) — в spam_blocklist.json. Возвращает, что добавили."""
+    text, own = text or "", (ch or "").lower()
+    links = []
+    for u in AD_LINK.findall(text) + SPAM_HANDLE.findall(text):
+        u = u.rstrip(".,!?:;)»").lower()
+        if u.startswith("@"):
+            key = u if u[1:] != own else ""
+        elif "t.me/" in u:
+            name = _tg_name(u)
+            key = f"t.me/{name}" if name and name != own and name not in ("s", "joinchat", "+") else ""
+        else:
+            host = re.sub(r"^https?://(www\.)?", "", u).split("/")[0]
+            key = host if host and not _trusted(u) and host not in ("max.ru", "web.max.ru", "t.me", "telegram.me") else ""
+        if key and key not in links:
+            links.append(key)
+    clean = SPAM_HANDLE.sub(" ", AD_LINK.sub(" ", text))
+    corpus = _spam_corpus(text)
+    words = []
+    for w in SPAM_WORD.findall(_spam_norm(clean)):
+        if w not in SPAM_COMMON and w not in corpus and w not in words:
+            words.append(w)
+    words = sorted(words, key=len, reverse=True)[:6]
+    added = []
+    for kind, new in (("links", links), ("words", words)):
+        for x in new:
+            if x not in SPAM_BLOCK[kind]:
+                SPAM_BLOCK[kind].append(x)
+                added.append(x)
+        SPAM_BLOCK[kind] = SPAM_BLOCK[kind][-500:]
+    if added:
+        with contextlib.suppress(OSError):
+            save_json(SPAM_BLOCK_FILE, SPAM_BLOCK, backup=True)
+    return added
+
+
+BOT_DELETED = deque(maxlen=3000)   # сообщения, которые удалил сам бот (автоудаление, карточки) — это не «админ удалил»
+
+
+def on_message_removed(u):
+    """Админ удалил в канале MAX пост, который выложил бот: запоминаем его как спам (чёрный список на все каналы)."""
+    mid = str(u.get("message_id") or (((u.get("message") or {}).get("body") or {}).get("mid")) or "")
+    if not mid or mid in BOT_DELETED:
+        return False
+    cid = _cid(u.get("chat_id"))
+    themes = [x for x in THEMES if cid is not None and x.chat_id == cid] or ([] if cid is not None else list(THEMES))
+    for t in themes:
+        with theme_ctx(t):
+            post = next((p for p in PUB.get("day_posts", []) if str(p.get("mid")) == mid), None)
+            if post is None or post.get("spam"):
+                continue
+            post["spam"] = True
+            save_pub()
+            added = spam_learn(post.get("raw") or post.get("text") or "", post.get("ch", ""))
+            journal(f"🧠 Пост из {src_name(post.get('ch', ''))} удалён вручную — запомнил как спам: "
+                    + (", ".join(added[:6]) or "новых ссылок и слов нет"))
+            return True
+    return False
+
+
+# ===== 🛡 ПЕРЕХВАТЧИК РЕКЛАМЫ РСЯ: MAX вставил рекламу в канал — сразу выкладываем следующий пост поверх =====
+RSYA_COOLDOWN = 120          # не чаще раза в 2 минуты на канал: не выкладываем всю очередь из-за повторов
+RSYA_LAST = {}               # канал MAX -> когда последний раз «закапывали» рекламу
+RSYA_MARKS = (re.compile(r"#\s?реклам[аы]\b", re.I),
+              re.compile(r"(?m)^[ \t]*о\s+рекламодателе[ \t]*$", re.I),
+              re.compile(r"(?m)^[ \t]*(?:https?://)?(?:www\.)?max\.ru/?[ \t]*$", re.I))
+
+
+def rsya_text(body):
+    """Текст сообщения + подписи его кнопок (у рекламы РСЯ «Купить» и «О рекламодателе» бывают кнопками)."""
+    body = body if isinstance(body, dict) else {}
+    parts = [str(body.get("text") or "")]
+    for a in body.get("attachments") or []:
+        if isinstance(a, dict) and a.get("type") == "inline_keyboard":
+            for row in (a.get("payload") or {}).get("buttons") or []:
+                parts += [str(b["text"]) for b in row or [] if isinstance(b, dict) and b.get("text")]
+    return "\n".join(parts)
+
+
+def is_rsya_ad(text):
+    """Реклама РСЯ: строка «О рекламодателе» — сразу; иначе два признака из трёх (#реклама, «О рекламодателе»,
+    отдельная строка max.ru). Ищем по всему тексту — у такой рекламы признаки обычно в самом низу.
+    Своя маркировка («Реклама. ООО … erid … #реклама») — один признак, её не трогаем."""
+    hits = [bool(rx.search(str(text or ""))) for rx in RSYA_MARKS]
+    return hits[1] or sum(hits) >= 2
+
+
+def rsya_intercept(t, mid=""):
+    """Сразу ставим следующий пост очереди «на сейчас»: планировщик (раз в 5 с) выложит его без паузы и ночи."""
+    now = time.time()
+    if now - RSYA_LAST.get(t.chat_id, 0) < RSYA_COOLDOWN:
+        return False
+    ready = [x for x in QUEUE if x.get("status", "ok") == "ok" and x.get("retry_at", 0) <= now and not x.get("manual")]
+    if not ready:
+        journal("🛡 Перехватчик РСЯ: в канале появилась реклама, но очередь пуста — опустить её нечем")
+        return False
+    nxt = min(ready, key=prio_key)
+    nxt.update(manual=True, at=now, rsya=True)
+    save_queue()
+    RSYA_LAST[t.chat_id] = now
+    journal(f"🛡 Перехватчик РСЯ: в канале появилась реклама — сразу выкладываю следующий пост ({nxt['id']}), "
+            "чтобы её опустить")
+    return True
+
+
+def rsya_check(msg):
+    """Сообщение в канале MAX: реклама РСЯ в канале темы (не наш пост) — запускаем перехватчик."""
+    msg = msg if isinstance(msg, dict) else {}
+    cid = _cid((msg.get("recipient") or {}).get("chat_id"))
+    t = next((x for x in THEMES if cid is not None and x.chat_id == cid), None)
+    if t is None:
+        return False
+    body = msg.get("body") or {}
+    sender, me = (msg.get("sender") or {}).get("user_id"), BOT_TITLE.get("user_id")
+    if sender is not None and me is not None and same_uid(sender, me):
+        return False                                     # наш собственный пост
+    if not is_rsya_ad(rsya_text(body)):
+        return False
+    mid = str(body.get("mid") or "")
+    with theme_ctx(t):
+        if mid and any(str(p.get("mid")) == mid for p in PUB.get("day_posts", [])):
+            return False                                 # это мы выложили пост с такими словами
+        return rsya_intercept(t, mid)
+
+
 # ===== 🧠 УМНОЕ ВРЕМЯ: публикуем в часы, когда у канала больше просмотров =====
 def hot_hours():
     """Часы (0-23) с просмотрами выше среднего, по постам за 7 дней. None — данных мало, не придерживаем."""
@@ -1750,26 +2054,98 @@ def max_chats():
 
 
 KNOWN_FILE = "known_chats.json"
-KNOWN_CHATS = load_json_safe(KNOWN_FILE, {})   # id канала (строкой) -> {"added_by", "t"}: MAX с июня 2026
-                                               # не отдаёт список чатов (GET /chats) — каналы бот помнит сам
-CHAT_INFO_CACHE = {}                           # id -> (сведения от MAX, когда спросили)
+GRACE_DAYS = 7           # бота убрали из канала или канал удалили — столько дней он ещё виден в списке (с пометкой)
 
 
-def remember_chat(cid, who=None):
-    """Запоминаем канал, где есть бот (из «бот добавлен», привязки, проверенного id)."""
-    if not isinstance(cid, int):
-        return
-    rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
-    if who is not None and not rec.get("added_by"):
-        rec["added_by"] = str(who)
+def _cid(x):
+    """id чата числом: MAX присылает его то числом, то строкой — для списка каналов это один и тот же канал."""
+    if isinstance(x, bool):
+        return None
+    try:
+        return int(str(x).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _known_load():
+    """known_chats.json без дублей: «-100», " -100" и -100 — один канал (сведения склеиваем)."""
+    raw = load_json_safe(KNOWN_FILE, {})
+    out = {}
+    for k, v in (raw.items() if isinstance(raw, dict) else ()):
+        cid = _cid(k)
+        if cid is None:
+            continue
+        rec = out.setdefault(str(cid), {})
+        for kk, vv in (v if isinstance(v, dict) else {}).items():
+            rec.setdefault(kk, vv)
+        rec.setdefault("t", time.time())
+    return out
+
+
+KNOWN_CHATS = _known_load()    # id канала (строкой) -> {"added_by", "t", "title", "link", "removed"}: MAX с июня
+                               # 2026 не отдаёт список чатов (GET /chats) — каналы бот помнит сам
+CHAT_INFO_CACHE = {}           # id -> (сведения от MAX, когда спросили)
+CHAT_GONE = {}                 # id -> когда MAX ответил «нет такого чата / нет доступа» (удалён или бота убрали)
+
+
+def _save_known():
     with contextlib.suppress(OSError):
         save_json(KNOWN_FILE, KNOWN_CHATS, backup=True)
 
 
+def remember_chat(cid, who=None):
+    """Запоминаем канал, где есть бот (из «бот добавлен», привязки, проверенного id). Бот снова в канале —
+    пометку «удалён» снимаем."""
+    cid = _cid(cid)
+    if cid is None:
+        return
+    rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
+    rec.pop("removed", None)
+    rec.pop("removed_by", None)
+    CHAT_GONE.pop(cid, None)
+    if who is not None and not rec.get("added_by"):
+        rec["added_by"] = str(who)
+    _save_known()
+
+
 def forget_chat(cid):
-    if KNOWN_CHATS.pop(str(cid), None) is not None:
-        with contextlib.suppress(OSError):
-            save_json(KNOWN_FILE, KNOWN_CHATS, backup=True)
+    """Бота убрали из канала: не стираем сразу — GRACE_DAYS дней канал виден в списке с пометкой «⚠️ удалён»,
+    потом purge_removed_chats уберёт его сам."""
+    cid = _cid(cid)
+    if cid is None:
+        return
+    rec = KNOWN_CHATS.get(str(cid))
+    if rec is None:
+        if not any(t.chat_id == cid for t in THEMES):
+            return
+        rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
+    info = (CHAT_INFO_CACHE.pop(cid, None) or ({}, 0))[0]
+    if info.get("title") and not rec.get("title"):
+        rec.update(title=info["title"], link=info.get("link") or "")
+    rec.setdefault("removed", time.time())
+    rec["removed_by"] = "bot_removed"
+    _save_known()
+
+
+def purge_removed_chats(now=None):
+    """Каналы с пометкой «удалён» старше GRACE_DAYS дней — из списка и из known_chats.json."""
+    now = now or time.time()
+    old = [k for k, r in KNOWN_CHATS.items() if isinstance(r, dict) and r.get("removed")
+           and now - float(r["removed"]) >= GRACE_DAYS * 86400]
+    for k in old:
+        KNOWN_CHATS.pop(k, None)
+    if old:
+        _save_known()
+    return len(old)
+
+
+def grace_days_left(removed, now=None):
+    return max(1, math.ceil((float(removed) + GRACE_DAYS * 86400 - (now or time.time())) / 86400))
+
+
+def ru_days(n):
+    n = abs(int(n))
+    return "день" if n % 10 == 1 and n % 100 != 11 else "дня" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "дней"
 
 
 def chat_info_cached(cid, ttl=600):
@@ -1781,28 +2157,77 @@ def chat_info_cached(cid, ttl=600):
     return got[0]
 
 
-def known_chats(types=("channel",)):
-    """Каналы, которые бот знает сам (MAX их больше не перечисляет): [{chat_id, title, link, type}]."""
-    ids = list(dict.fromkeys([int(k) for k in KNOWN_CHATS if re.fullmatch(r"-?\d+", k)]
+def known_chats(types=("channel",), include_removed=False):
+    """Каналы, которые бот знает сам (MAX их больше не перечисляет): [{chat_id, title, link, type}].
+    include_removed — и «удалённые» (бота убрали / канал удалён) в течение GRACE_DAYS дней, с ключом removed."""
+    purge_removed_chats()
+    ids = list(dict.fromkeys([c for c in (_cid(k) for k in KNOWN_CHATS) if c is not None]
                              + [t.chat_id for t in THEMES if isinstance(t.chat_id, int)]))
-    out = []
+    out, changed, now = [], False, time.time()
     for cid in ids:
+        rec = KNOWN_CHATS.get(str(cid))
         info = chat_info_cached(cid)
-        if not info or info.get("status") not in (None, "active") or info.get("type") not in (None,) + tuple(types):
+        if info and info.get("status") in (None, "active"):
+            if info.get("type") not in (None,) + tuple(types):
+                continue
+            if rec is not None:
+                if rec.get("removed") and rec.get("removed_by") != "bot_removed":
+                    rec.pop("removed", None)                 # MAX снова показывает канал — он живой
+                    rec.pop("removed_by", None)
+                    changed = True
+                for k, v in (("title", info.get("title") or ""), ("link", info.get("link") or ""),
+                             ("type", info.get("type") or "channel")):
+                    if v and rec.get(k) != v:
+                        rec[k] = v
+                        changed = True
+            if not (rec or {}).get("removed"):
+                out.append({"chat_id": cid, "title": info.get("title") or str(cid), "link": info.get("link") or "",
+                            "type": info.get("type")})
+                continue
+        if rec is None:
             continue
-        out.append({"chat_id": cid, "title": info.get("title") or str(cid), "link": info.get("link") or "",
-                    "type": info.get("type")})
+        if not rec.get("removed") and (cid in CHAT_GONE or (info and info.get("status") not in (None, "active"))):
+            rec.update(removed=now, removed_by="gone")      # MAX: «нет такого канала» — не прячем сразу
+            changed = True
+        if rec.get("removed") and include_removed and (rec.get("type") or "channel") in types:
+            out.append({"chat_id": cid, "title": rec.get("title") or str(cid), "link": rec.get("link") or "",
+                        "type": rec.get("type") or "channel", "removed": float(rec["removed"])})
+    if changed:
+        _save_known()
     return out
 
 
 def bot_channels():
-    """Каналы MAX, где состоит бот: [{chat_id, title, link}]. Что вернул GET /chats (если MAX ещё отдаёт) +
-    каналы, которые бот знает сам (из «бот добавлен», привязанных тем, проверенных id)."""
-    out = {c["chat_id"]: {"chat_id": c["chat_id"], "title": c.get("title") or str(c["chat_id"]), "link": c.get("link") or ""}
-           for c in max_chats() if c.get("type") == "channel" and c.get("status") in (None, "active")}
-    for c in known_chats():
-        out.setdefault(c["chat_id"], {k: c[k] for k in ("chat_id", "title", "link")})
-    return list(out.values())
+    """Каналы MAX, где состоит бот: [{chat_id, title, link}] БЕЗ дублей. Что вернул GET /chats (если MAX ещё
+    отдаёт) + каналы, которые бот знает сам (из «бот добавлен», привязанных тем, проверенных id). Один канал под
+    id-строкой и id-числом или под двумя id с одной ссылкой — одна строка (привязанный к теме / живой главнее).
+    Удалённые (GRACE_DAYS дней) — с ключом removed, в конце списка."""
+    rows = [c for c in max_chats() if c.get("type") == "channel" and c.get("status") in (None, "active")]
+    rows += known_chats(include_removed=True)
+    bound = {t.chat_id for t in THEMES if t.chat_id}
+    out, by_link = {}, {}
+    for c in rows:
+        cid = _cid(c.get("chat_id"))
+        if cid is None:
+            continue
+        item = {"chat_id": cid, "title": c.get("title") or str(cid), "link": c.get("link") or ""}
+        if c.get("removed"):
+            item["removed"] = c["removed"]
+        if cid in out:
+            if out[cid].get("removed") and not item.get("removed"):
+                out[cid] = item
+            continue
+        link = _norm_link(item["link"])
+        other = by_link.get(link) if link else None
+        if other is not None:
+            better = (cid in bound and other not in bound) or (out[other].get("removed") and not item.get("removed"))
+            if not better:
+                continue
+            out.pop(other)
+        out[cid] = item
+        if link:
+            by_link[link] = cid
+    return sorted(out.values(), key=lambda c: bool(c.get("removed")))
 
 
 def chat_admin_ids(chat_id):
@@ -2436,7 +2861,8 @@ def ask_ad(item):
     card = dict(item, text=f"🤔 Может быть рекламой ({item.get('why') or 'есть рекламные признаки'}).\n"
                            f"Это реклама?\n\n{item.get('text') or ''}")
     send_preview(card, [[B("✅ Не реклама — выложить", f"ap:adok:{item['id']}")],
-                        [B("🚫 Реклама — не выкладывать", f"ap:adad:{item['id']}")]])
+                        [B("🚫 Реклама — не выкладывать", f"ap:adad:{item['id']}")],
+                        [B("🗑 Спам — запомнить", f"ap:spam:{item['id']}")]])
 
 
 def hold_ad(item):
@@ -3206,6 +3632,8 @@ def drop_card(ref, chat):
 
 
 def delete_msg(mid):
+    if mid:
+        BOT_DELETED.append(str(mid))                   # это удалил сам бот — не «админ удалил спам»
     r = S.delete(f"{MAX_API}/messages", params={"message_id": mid}, headers=HEADERS, timeout=30)
     if r.status_code != 200:
         print("Карточки: не удалось убрать", r.status_code, r.text[:100])
@@ -3298,7 +3726,7 @@ def send_previews(items):
     if len(items) == 1:
         it = items[0]
         send_preview(it, [[B("✅ Сейчас", f"ap:now:{it['id']}"), B(later, f"ap:later:{it['id']}")],
-                          [B("❌ Пропустить", f"ap:no:{it['id']}")]])
+                          [B("❌ Пропустить", f"ap:no:{it['id']}"), B("🗑 Спам", f"ap:spam:{it['id']}")]])
         return
     gid = f"{cur().prefix}g{int(time.time() * 1000)}"
     for it in items:
@@ -3653,7 +4081,37 @@ def _screen(name, uid=None):
                 [B("✅ Надёжные сайты +", "p:addts"), B("✅ Надёжные сайты −", "p:delts")],
                 [B("➕ Реклама", "p:adda"), B("➖ Реклама", "p:dela")],
                 [B("➕ Подпись донора", "p:addo"), B("➖ Подпись донора", "p:delo")],
-                [B("🚫 Стоп-слова", "m:sw"), B("🔄 Автозамена", "m:rw")], back]
+                [B("🚫 Стоп-слова", "m:sw"), B("🔄 Автозамена", "m:rw")],
+                [B("🗑 Съеденный спам", "m:spam")], back]
+    elif name == "spam":                                 # 🗑 спам-фильтр: сводка «съеденного» за день и неделю
+        admin = not HOST_MODE or can_panel(uid)
+        own = None if admin else (tenant_key(uid) or "-")
+        d1, d7 = spam_summary(1, own), spam_summary(7, own)
+        on = CFG.get("spam_skip", True)
+        lines = [f"🗑 Спам-фильтр: {on_off(on)}", "",
+                 "Бот сам «съедает» спам до публикации: крипта, казино и «заработок», дропы, КАПС с «СРОЧНО/ХАЛЯВА», "
+                 "сокращённые ссылки, приглашения в ботов, кросс-промо. Ключи ИИ на это не тратятся.", "",
+                 f"Сегодня: {d1['n']} · за 7 дней: {d7['n']}"]
+        if d7["by_kind"]:
+            lines += ["", "Причины за 7 дней:"] + [f"• {SPAM_KINDS.get(k, k)} — {n}" for k, n in d7["by_kind"].most_common()]
+        if d7["by_ch"]:
+            lines += ["", "Чаще всего из каналов: " + ", ".join(f"{src_name(c)} ({n})"
+                                                             for c, n in d7["by_ch"].most_common(5))]
+        if d7["last"]:
+            lines += ["", "Последние:"] + [f"• {time.strftime('%d.%m %H:%M', time.localtime(e['t']))} "
+                                            f"{src_name(e.get('ch'))} — {str(e.get('why'))[:60]}" for e in d7["last"]]
+        lines += ["", f"🧠 Чёрный список (учится, когда ты удаляешь пост в канале или жмёшь «🗑 Спам»): "
+                      f"ссылок {len(SPAM_BLOCK['links'])}, слов {len(SPAM_BLOCK['words'])}"]
+        text = "\n".join(lines)
+        rows = [[B("🔄 Обновить", "m:spam")], [B(f"🗑 Фильтр спама: {on_off(on)}", "a:spamsk")]]
+        if admin:
+            rows.append([B("♻️ Очистить чёрный список", "m:spamclr")])
+        rows.append([B("◀️ Назад", "m:cl" if HOST_MODE and can_panel(uid) else "m:fl")])
+    elif name == "spamclr":
+        text = (f"♻️ Очистить чёрный список спама?\n\nСейчас в нём ссылок {len(SPAM_BLOCK['links'])}, слов "
+                f"{len(SPAM_BLOCK['words'])}. Бот забудет, чему научился на твоих удалениях; встроенные правила "
+                "останутся.")
+        rows = [[B("✅ Да, очистить", "a:spamclrok")], [B("Нет", "m:spam")]]
     elif name == "adl":
         m = ad_model()
         held = list(ADHELD)[-5:][::-1]
@@ -3880,6 +4338,8 @@ def _screen(name, uid=None):
             text += ("\n\nПока не вижу твоих каналов. Сделай так:\n1. Открой свой канал MAX → Админы → Добавить → "
                      "найди этого бота.\n2. Включи ему право «Публиковать сообщения».\n3. Вернись и нажми «🔄 Обновить».")
         def label(c):
+            if c.get("removed"):
+                return "⚠️ " + c["title"]
             if c["theme"] is t:
                 return "✅ " + c["title"]
             if c["theme"] is not None:
@@ -3888,6 +4348,11 @@ def _screen(name, uid=None):
         if any(c["theme"] is not None and c["theme"] is not t for c in chans):
             text += "\n🔁 — канал сейчас у другой темы: нажми, и он перейдёт в эту."
         shown = chans[page * per:(page + 1) * per]
+        gone = [c for c in shown if c.get("removed")]
+        if gone:
+            text += "\n" + "\n".join(f"⚠️ «{c['title']}» — удалён (будет скрыт через {grace_days_left(c['removed'])} "
+                                     f"{ru_days(grace_days_left(c['removed']))})" for c in gone)
+            text += "\nВерни бота админом в канал — пометка уйдёт."
         rows = [[B(label(c)[:30], f"a:chbind:{c['chat_id']}")] for c in shown]
         nav = []
         if page > 0:
@@ -4506,6 +4971,15 @@ def do_action(act, uid=None):
     elif p[0] == "adsk":
         CFG["ads_skip"] = not CFG["ads_skip"]
         scr = "fl"
+    elif p[0] == "spamsk":                                 # 🗑 спам-фильтр вкл/выкл (для этой темы)
+        CFG["spam_skip"] = not CFG.get("spam_skip", True)
+        scr = "spam"
+    elif p[0] == "spamclrok" and (not HOST_MODE or can_panel(uid)):
+        SPAM_BLOCK.update(links=[], words=[])
+        with contextlib.suppress(OSError):
+            save_json(SPAM_BLOCK_FILE, SPAM_BLOCK, backup=True)
+        FLASH[uid] = "♻️ Чёрный список спама очищен."
+        scr = "spam"
     elif p[0] == "dd":
         CFG["dedupe_on"] = not CFG["dedupe_on"]
         scr = "dd"
@@ -4828,6 +5302,27 @@ def _approve(rest, uid, chat=None):
     """Кнопки на карточках одобрения. Возвращает (текст, кнопки) на замену карточки.
     now/later/no — один пост, gnow/glater/gno — вся пачка, ok — просто в очередь по расписанию."""
     verdict, _, ref = rest.partition(":")
+    if verdict == "spam":                                 # 🗑 «Это спам»: не выкладываем и учим чёрный список
+        it = next((x for x in QUEUE if x["id"] == ref and x.get("status") == "pending"), None)
+        held = None if it is not None else next((x for x in ADHELD if x["id"] == ref), None)
+        it = it or held
+        if it is None:
+            return "Этот пост уже обработан.", None
+        if held is not None:
+            ADHELD.remove(held)
+            save_adheld()
+            drop_files(held)
+        else:
+            drop_item(it)
+            save_queue()
+        who = CFG["admin_names"].get(str(uid), "админ")
+        added = spam_learn(it.get("raw") or it.get("text") or "", it.get("ch", ""))
+        tail = str(it["id"]).rsplit(":", 1)[-1]
+        eat_spam(it.get("ch", ""), int(tail) if tail.isdigit() else tail, f"отмечен как спам ({who})", "manual",
+                 flood=False)
+        resolve_cards([ref], chat or CFG["admin_chats"].get(str(uid)))
+        return (f"🗑 {who}: спам — не выкладываю. В чёрный список: "
+                f"{', '.join(added[:6]) or 'новых ссылок и слов нет'}."), None
     if verdict in ("adok", "adad"):                       # ответ на «Это реклама?»
         it = next((x for x in ADHELD if x["id"] == ref), None)
         if it is None:
@@ -5291,7 +5786,7 @@ def resend_pending_cards(chat, force=False, uid=None):
                 if not force and any(c["ref"] == it["id"] and c["chat"] == chat for c in CARDS):
                     continue
                 send_preview(it, [[B("✅ Сейчас", f"ap:now:{it['id']}"), B(later, f"ap:later:{it['id']}")],
-                                  [B("❌ Пропустить", f"ap:no:{it['id']}")]], chats=[chat])
+                                  [B("❌ Пропустить", f"ap:no:{it['id']}"), B("🗑 Спам", f"ap:spam:{it['id']}")]], chats=[chat])
                 n += 1
     if n:
         api_send(chat, f"📬 Постов ждёт одобрения: {n}")
@@ -5770,12 +6265,21 @@ def _handle_update(u, kind):
         if rec.get("chat_type") != "dialog":
             if chan_hint_due(rec.get("chat_id"), "raw"):
                 print("MAX сообщение не из лички: " + json.dumps(msg, ensure_ascii=False)[:1500])
+            try:
+                rsya_check(msg)                        # 🛡 реклама РСЯ в канале темы — сразу «закапываем» её
+            except Exception:
+                log_exc("перехватчик РСЯ")
             on_channel_message(rec, (msg.get("sender") or {}).get("user_id"))   # привязка канала
             return
         sender = msg.get("sender") or {}
         name = sender.get("first_name") or sender.get("name") or ""
         handle_message(sender.get("user_id"), rec.get("chat_id"), name,
                        (msg.get("body") or {}).get("text") or "", msg)
+    elif kind == "message_removed":                    # 🧠 админ удалил наш пост в канале — учим чёрный список
+        try:
+            on_message_removed(u)
+        except Exception:
+            log_exc("удалённый пост")
     elif kind == "bot_removed":
         print("MAX bot_removed: " + json.dumps(u, ensure_ascii=False)[:1500])
         chan_event(u.get("chat_id"), (u.get("user") or {}).get("user_id"), "бота убрали (bot_removed)")
@@ -5846,7 +6350,8 @@ def update_label(u):
             return "сообщение текст"
         known = cmd in {n for n, _ in COMMAND_HELP} or cmd in PERF_COMMANDS
         return "сообщение /" + (cmd[:16] if known else "…")      # чужие «/абракадабра» — одной строкой
-    return {"bot_started": "старт", "bot_added": "бот добавлен", "bot_removed": "бот убран"}.get(kind, str(kind))
+    return {"bot_started": "старт", "bot_added": "бот добавлен", "bot_removed": "бот убран",
+            "message_removed": "пост удалён"}.get(kind, str(kind))
 
 
 def send_action(chat, action="typing_on"):
@@ -6014,7 +6519,7 @@ def menu_loop():
             drop_webhooks()
         try:
             params = {"timeout": 25, "limit": 100,
-                      "types": "message_created,message_callback,bot_started,bot_added,bot_removed"}
+                      "types": "message_created,message_callback,bot_started,bot_added,bot_removed,message_removed"}
             if marker:
                 params["marker"] = marker
             r = S.get(f"{MAX_API}/updates", headers=HEADERS, params=params, timeout=45)
@@ -6922,6 +7427,8 @@ RIGHTS_CHECK = {"next": 0}
 def check_rights_all(now=None):
     """Раз в час тихо спрашиваем MAX, админ ли бот в каналах тем. Ничего не публикуем."""
     now = now or time.time()
+    with contextlib.suppress(Exception):
+        purge_removed_chats(now)                         # каналы с пометкой «удалён» дольше 7 дней — из базы
     for t in list(THEMES):
         if not t.chat_id:
             continue
@@ -7037,6 +7544,8 @@ async def _process_channel(client, ch, fails, fresh):
     """Читает новые посты канала, чистит и ставит в очередь на публикацию."""
     t = cur()
     history = t.history
+    if spam_muted(ch):                                 # 🗑 канал флудит спамом — час его не читаем
+        return
     msgs = await client.get_messages(ch, min_id=LAST_IDS[ch], limit=30)
     msgs = sorted(msgs, key=lambda m: m.id)
     if len(msgs) >= 30 and msgs[0].grouped_id:         # самый старый альбом обрезан лимитом — без начала
@@ -7079,6 +7588,18 @@ async def _process_channel(client, ch, fails, fresh):
             return
         last = grp[-1].id
         raw = next((m.text for m in grp if m.text), "")
+        if CFG.get("spam_skip", True):
+            sp = spam_verdict(raw, ch, sum(url_buttons(m) for m in grp))
+            if sp[0]:                                  # 🗑 спам: съедаем сразу — без фото, без очереди и без ИИ
+                muted = await asyncio.to_thread(eat_spam, ch, grp[0].id, sp[1], sp[2])
+                SEEN.pop(skey, None)
+                if ch in LAST_IDS:
+                    LAST_IDS[ch] = max(LAST_IDS[ch], last)
+                    await save_last_ids_async()
+                if muted:
+                    return                             # канал ушёл в мут — остальное из пачки не берём
+                continue
+            SPAM_RUN.pop((t.id, ch.lower()), None)     # обычный пост — счёт «спам подряд» с нуля
         body = clean_text(raw, with_signature=False)
         img_paths, pids, hashes = [], [], []
         queued = False
@@ -11845,12 +12366,19 @@ def fsub_gate(u, kind, uid, chat):
 
 
 def chat_info(chat_id):
-    """Название и ссылка канала MAX. {} — не узнать."""
+    """Название и ссылка канала MAX. {} — не узнать. 403/404 запоминаем в CHAT_GONE: канал удалён или бота убрали."""
     try:
         r = S.get(f"{MAX_API}/chats/{chat_id}", headers=HEADERS, timeout=20)
-        return r.json() if r.status_code == 200 else {}
     except Exception:
         return {}
+    cid = _cid(chat_id)
+    if r.status_code == 200:
+        if cid is not None:
+            CHAT_GONE.pop(cid, None)
+        return r.json()
+    if r.status_code in (403, 404) and cid is not None:
+        CHAT_GONE[cid] = time.time()
+    return {}
 
 
 CHAN_LINKS = {}          # chat_id канала MAX -> (ссылка, когда спросили MAX): карточки не спрашивают MAX каждый раз
@@ -13931,6 +14459,7 @@ def host_screen(name, uid):
                  [B(f"👤 Telegram Аккаунты ({len(POOL.status())})", "m:cltgacc")],
                  [B("🔑 Ключи и доступы", "m:clkeys")],
                  [B(f"🧠 ИИ-расход: {AI_BUDGETS[ai_budget()]}"[:60], "m:clai")],
+                 [B("🗑 Спам-фильтр", "m:spam")],
                  [B("👥 Покупатели", "m:buyers"), B("🎟 Коды", "m:codes")],
                  [B("👀 Посмотреть меню покупателя", "m:bview")],
                  [B("🗑 Очистить старые каналы", "m:clwipe")]]
@@ -14639,7 +15168,7 @@ def locked_loop():
     told, marker = {}, None
     while True:
         try:
-            params = {"timeout": 25, "limit": 100, "types": "message_created,message_callback,bot_started"}
+            params = {"timeout": 25, "limit": 100, "types": "message_created,message_callback,bot_started,message_removed"}
             if marker:
                 params["marker"] = marker
             r = S.get(f"{MAX_API}/updates", headers=HEADERS, params=params, timeout=45)
