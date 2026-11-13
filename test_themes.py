@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 import asyncio, datetime, importlib.util, os, random, sys, tempfile, time, types
@@ -271,7 +272,7 @@ class FMsg:
         self.fwd_from = None
 
     async def download_media(self, file=None):
-        open(file, "wb").write(b"img" + str(self.id).encode())
+        tio.wfile(b"img" + str(self.id).encode(), file, "wb")
         return file
 
 

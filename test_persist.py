@@ -1,6 +1,7 @@
 """💾 Настройки переживают обновление и пересборку бота: контакт продавца и ключи ЮKassa — из панели (файл
 настроек) или из переменных хостинга; испорченный или пропавший файл настроек поднимается из резервной копии;
 папку данных можно вынести на постоянный диск (TG_MAX_DIR). Каждый «перезапуск» — отдельный процесс."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import json
 import os
 import shutil
@@ -19,7 +20,7 @@ save_json(p, {"seller_contact": "@one"}, private=True, backup=True)
 save_json(p, {"seller_contact": "@two"}, private=True, backup=True)
 assert load_json(p, {}) == {"seller_contact": "@two"} and load_json(p + ".bak", {}) == {"seller_contact": "@two"}
 assert oct(os.stat(p + ".bak").st_mode & 0o777) == "0o600", "в копии — ключи: только для бота"
-open(p, "w").write('{"seller_contact": "@tw')                       # оборвалась запись / испортился диск
+tio.wfile('{"seller_contact": "@tw', p, "w")                       # оборвалась запись / испортился диск
 assert load_json_safe(p, {}) == {"seller_contact": "@two"}
 assert os.path.exists(p + ".broken"), "испорченный файл сохранён для разбора"
 os.remove(p)                                                         # файл пропал
@@ -44,7 +45,7 @@ os.rmdir(p + ".bak")
 from reloader.services.codes.store import CodeStore  # noqa: E402
 cs_path = os.path.join(d, "codes.json")
 code = CodeStore(cs_path).generate(1, "Старт", 30)[0]
-open(cs_path, "w").write("{broken")                                 # коды — это оплаты покупателей
+tio.wfile("{broken", cs_path, "w")                                 # коды — это оплаты покупателей
 assert CodeStore(cs_path).get(code) is not None, "код активации поднят из резервной копии"
 print("p1 ok: 💾 запись с резервной копией; испорченный/пропавший файл — из копии; ключи в копии — только для бота")
 
@@ -71,7 +72,7 @@ print("RESULT " + json.dumps(out))
 os._exit(0)
 '''
 child = os.path.join(tempfile.mkdtemp(), "child.py")
-open(child, "w").write(CHILD)
+tio.wfile(CHILD, child, "w")
 BASE = {k: v for k, v in os.environ.items() if k not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy",
                                                         "SELLER_CONTACT", "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY",
                                                         "TG_MAX_DIR")}
@@ -107,7 +108,7 @@ print("p3 ok: 💾 контакт и ключи из панели пережив
 
 # 4) файлы настроек испортились (оборвалась запись, сбой диска) или пропали — бот поднимает их из копии
 for name in ("settings.json", "tenants.json", "themes.json"):
-    open(os.path.join(work, name), "w").write("{oops")
+    tio.wfile("{oops", os.path.join(work, name), "w")
 got, out = run(work)
 assert got["contact"] == "@panel_admin" and got["yk"] == ["777777", "test_panelkey"], got
 assert got["host_cab"] and got["host_themes"] == 1, got
@@ -121,7 +122,7 @@ print("p4 ok: 💾 испорченные или пропавшие settings/ten
 # 5) папку данных можно вынести на постоянный диск: TG_MAX_DIR (main.py запускает бота там)
 app = tempfile.mkdtemp()
 shutil.copy(os.path.join(ROOT, "main.py"), app)
-open(os.path.join(app, "stub_bot.py"), "w").write("BOT_VERSION = 99\nimport os\nprint('CWD ' + os.getcwd())\n")
+tio.wfile("BOT_VERSION = 99\nimport os\nprint('CWD ' + os.getcwd())\n", os.path.join(app, "stub_bot.py"), "w")
 disk = tempfile.mkdtemp()
 r = subprocess.run([sys.executable, "main.py"], cwd=app, env=dict(BASE, TG_MAX_DIR=disk), capture_output=True, text=True)
 assert f"CWD {os.path.realpath(disk)}" in r.stdout.replace(disk, os.path.realpath(disk)), r.stdout + r.stderr

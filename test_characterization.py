@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Характеризационные (golden) тесты: результаты фильтров и очереди записаны с кода ДО рефакторинга и должны
@@ -39,11 +40,11 @@ def filters():
 
 def check(name, got):
     got = json.loads(json.dumps(got, ensure_ascii=False))     # как в файле: кортежи -> списки
-    gold = json.load(open(GOLD, encoding="utf-8")) if os.path.exists(GOLD) else {}
+    gold = tio.rjson(GOLD, encoding="utf-8") if os.path.exists(GOLD) else {}
     if os.environ.get("GOLDEN_UPDATE") or name not in gold:
         gold[name] = got
         os.makedirs(os.path.dirname(GOLD), exist_ok=True)
-        json.dump(gold, open(GOLD, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        tio.wjson(gold, GOLD, "w", encoding="utf-8", _dump=dict(ensure_ascii=False, indent=1))
         print(f"{name}: эталон записан ({len(got)})")
         return
     bad = [(i, w, g) for i, (w, g) in enumerate(zip(gold[name], got)) if w != g]

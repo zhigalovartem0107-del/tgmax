@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 import asyncio, importlib.util, os, sys, tempfile, time, types
@@ -202,7 +203,7 @@ os.makedirs(bot2.MEDIA_DIR, exist_ok=True)
 class PhotoMsg:
     photo = object(); document = None; sticker = None; gif = None
     async def download_media(self, file=None):
-        open(file, "wb").write(b"jpgdata"); return file
+        tio.wfile(b"jpgdata", file, "wb"); return file
 class PClient:
     async def get_messages(self, ch, ids=None): return PhotoMsg()
 sent2.clear()
@@ -233,7 +234,7 @@ class Flaky(Msg):
         Flaky.n += 1
         if Flaky.n < 2:
             raise ConnectionError("обрыв")
-        open(file, "wb").write(b"vid")
+        tio.wfile(b"vid", file, "wb")
         return file
 os.makedirs(bot2.MEDIA_DIR, exist_ok=True)
 path, err = asyncio.run(bot2.download_video(Client(Flaky()), "a", 8))
@@ -247,14 +248,14 @@ class VidMsg(Msg):
     video, n = types.SimpleNamespace(size=3), 0
     async def download_media(self, file=None):
         VidMsg.n += 1
-        open(file, "wb").write(b"vid"); return file
+        tio.wfile(b"vid", file, "wb"); return file
 class DocMsg(Msg):
     ok, id = False, 10
     document = types.SimpleNamespace(mime_type="application/pdf", size=3)
     async def download_media(self, file=None):
         if not DocMsg.ok:
             raise ConnectionError("сеть моргнула")
-        open(file, "wb").write(b"pdf"); return file
+        tio.wfile(b"pdf", file, "wb"); return file
 class Two:
     async def get_messages(self, ch, ids=None):
         return VidMsg() if ids == 9 else DocMsg()

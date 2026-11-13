@@ -2,6 +2,7 @@
 (#0A0A0A, белый текст, #9B30FF и #FF1493); фон — случайное фото с picsum.photos (без ключей; адрес, тип, размер
 проверяем; одно на сутки), сильно размытое под вуалью, но видное; picsum недоступен — свой премиальный градиент
 (фиолетовый, розовый, чёрный) на весь холст; водяной знак «Reloader» — на КАЖДОЙ картинке."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import calendar
 import io
 import json
@@ -30,6 +31,11 @@ from reloader.services.analytics import predict as P  # noqa: E402
 
 PURPLE, PINK, WHITE, BLACK = (0x9B, 0x30, 0xFF), (0xFF, 0x14, 0x93), (0xFF, 0xFF, 0xFF), (0x0A, 0x0A, 0x0A)
 FAILS = []
+
+
+def pixels(img):
+    """Пиксели картинки списком: getdata() уходит из Pillow 14 — берём замену, если она есть."""
+    return list(img.get_flattened_data() if hasattr(img, "get_flattened_data") else img.getdata())
 
 
 def check(fn):
@@ -130,8 +136,8 @@ def landscape(w=1280, h=800, grain=False):
 
 
 def corr(a, b):
-    xa = list(a.convert("L").resize((48, 30)).getdata())
-    xb = list(b.convert("L").resize((48, 30)).getdata())
+    xa = pixels(a.convert("L").resize((48, 30)))
+    xb = pixels(b.convert("L").resize((48, 30)))
     ma, mb = sum(xa) / len(xa), sum(xb) / len(xb)
     num_ = sum((p - ma) * (q - mb) for p, q in zip(xa, xb))
     den = (sum((p - ma) ** 2 for p in xa) * sum((q - mb) ** 2 for q in xb)) ** 0.5
@@ -164,7 +170,7 @@ def d3():
         assert kept > 0.35, (theme, "чёткие контуры гор, леса и солнца сохранились", round(kept, 2))
         green = A.backdrop(A.SIZE, theme, Image.new("RGB", (1280, 800), (0, 200, 40))).convert("RGB")
         g_mid = green.crop((200, 250, 1080, 550)).resize((22, 15))
-        r_, g_, _ = [sum(px[i] for px in g_mid.getdata()) / 330 for i in range(3)]
+        r_, g_, _ = [sum(px[i] for px in pixels(g_mid)) / 330 for i in range(3)]
         assert g_ - r_ > 80, (theme, "вуаль лёгкая — цвет фото виден", round(r_), round(g_))
     white = A.backdrop(A.SIZE, "dark", Image.new("RGB", (1280, 800), (255, 255, 255))).convert("RGB")
     assert lum(white.crop((0, 0, 1280, 130))) < 125, ("ночью шапка темнее — белый текст читается",
@@ -238,7 +244,7 @@ def d4():
     assert BGS is not None, "нет модуля reloader.services.analytics.backgrounds"
     assert BGS.PICSUM_URL == "https://picsum.photos/1280/800"
     for path in ("reloader/services/analytics/backgrounds.py", "tg_to_max.py", "README.txt"):
-        src = open(os.path.join(ROOT, path), encoding="utf-8").read()
+        src = tio.rfile(os.path.join(ROOT, path), encoding="utf-8")
         assert "UNSPLASH_ACCESS_KEY" not in src and "api.unsplash.com" not in src, (path, "Unsplash убран полностью")
     d = tempfile.mkdtemp()
     cache = os.path.join(d, "bg_daily.json")
@@ -248,7 +254,7 @@ def d4():
     assert img is not None and img.size == (1280, 800), info
     url, params, headers = http.calls[0]
     assert url == BGS.PICSUM_URL and not params and "Authorization" not in headers, http.calls[0]
-    saved = json.load(open(cache))
+    saved = tio.rjson(cache)
     assert saved["url"] == FINAL and saved["day"] == BGS.msk_day(DAY_TS), saved
     n_calls = len(http.calls)
     img2, _ = BGS.daily_photo(http, cache, DAY_TS + 3600)                       # тот же день — из кэша

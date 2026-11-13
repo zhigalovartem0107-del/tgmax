@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Один бот для всех (HOST-режим): кабинеты, онбординг, оплата (30/90 дней), изоляция, лимиты, публикация только с подпиской."""
@@ -14,7 +15,7 @@ os.environ.update(MAX_API_URL=srv.url, YK_API_URL=srv.url, BOT_TOKEN="HOSTTOKEN"
 for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
     os.environ.pop(k, None)
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "HOSTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "HOSTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
 bot.S.trust_env = False
@@ -796,7 +797,7 @@ rkey = next(c for c in chs if c.startswith("rss~"))
 # чтение RSS-источника: старое не постим, новое — в очередь, фото по ссылке
 feed = {"x": rss}
 bot.soc_get = lambda url: feed["x"]
-bot._download_url = lambda url, dest: (open(dest, "wb").write(b"\xff\xd8img" + url.encode()), dest)[1]
+bot._download_url = lambda url, dest: (tio.wfile(b"\xff\xd8img" + url.encode(), dest, "wb"), dest)[1]
 bot.SOCIAL_CACHE.clear()
 with bot.theme_ctx(tb):
     bot.CFG["approval_on"] = False
@@ -929,7 +930,7 @@ with bot.theme_ctx(tb):
         bot.FRESH_SEC = old_fresh
     q = [x for x in bot.QUEUE if x["ch"] == rkey and "Пост с фото" in x["text"]]
     assert len(q) == 1 and len(q[0]["photos"]) == 1 and not os.path.exists(q[0]["photos"][0]), q
-    bot._download_url = lambda url, dest: (open(dest, "wb").write(b"\xff\xd8ok"), dest)[1]
+    bot._download_url = lambda url, dest: (tio.wfile(b"\xff\xd8ok", dest, "wb"), dest)[1]
     got = asyncio.run(bot.ensure_photos(bot.src_client(None, rkey), q[0]))
     assert len(got) == 1 and os.path.exists(got[0]), got
     bot.QUEUE.remove(q[0])
@@ -1089,7 +1090,12 @@ thumbs_asked, uploads = [], []
 real_thumb, real_upload = bot.fetch_thumb, bot.upload_image
 from PIL import Image as _Img
 bot.fetch_thumb = lambda url: thumbs_asked.append(url) or _Img.new("RGB", (40, 30), (200, 50, 120))
-bot.upload_image = lambda path: uploads.append(_Img.open(path).size) or "tok"
+def _img_size(path):
+    with _Img.open(path) as im:
+        return im.size
+
+
+bot.upload_image = lambda path: uploads.append(_img_size(path)) or "tok"
 OUT.clear()
 try:
     bot.analytics_send(62000, [("Канал А", 7710, []), ("Пустой", 7711, [])])
@@ -1274,7 +1280,7 @@ with bot.theme_ctx(tb):
     sync()
     sync()
     assert said() == 1, OUT[n0:]                                      # обновили бота дважды — не повторяет
-    assert json.load(open(bot.SETTINGS_FILE)).get("down_noted"), "помним на диске, а не только в памяти"
+    assert tio.rjson(bot.SETTINGS_FILE).get("down_noted"), "помним на диске, а не только в памяти"
     for k_ in bot.GCFG["down_noted"]:
         bot.GCFG["down_noted"][k_] -= 86400 + 1                       # прошли сутки, а он всё не открывается
     sync()
@@ -1346,12 +1352,12 @@ bot.ytdl_download = _ytdl_fail
 bot.S.get = lambda url, **kw: (_Page(200, json.dumps({"code": 0, "data": {"play": "/video/media/play/9.mp4"}}))
                                if "tikwm.com/api/" in url and kw.get("params", {}).get("url") == new[0].video.url
                                else _Page(404, ""))
-bot._download_url = lambda url, dest: (got57.append(url), open(dest, "wb").write(b"mp4"), dest)[2]
+bot._download_url = lambda url, dest: (got57.append(url), tio.wfile(b"mp4", dest, "wb"), dest)[2]
 try:
     path57 = asyncio.run(new[0].download_media(file=os.path.abspath("tt.mp4")))
 finally:
     bot.ytdl_download, bot.S.get, bot._download_url = real57
-assert got57 == ["https://www.tikwm.com/video/media/play/9.mp4"] and open(path57, "rb").read() == b"mp4", got57
+assert got57 == ["https://www.tikwm.com/video/media/play/9.mp4"] and tio.rfile(path57, "rb") == b"mp4", got57
 print("h57 ok: 🎵 TikTok — официальная страница-виджет TikTok (без входа), анти-бот задачка решается; tikwm/yt-dlp — запасные")
 
 # 56) «срочные» (слово «официально») идут без паузы расписания, но не пачкой: между постами минимум минута,
@@ -1559,7 +1565,7 @@ assert bot.resolve_chat_id("@Reloader_NEWS") == -7101 and bot.resolve_chat_id("m
 assert bot.resolve_chat_id("https://max.ru/Reloader_chat") == -7102                # группа — тоже
 assert bot.resolve_chat_id("https://max.ru/Bravlik_News") == -7103                 # ссылки нет — по названию
 assert bot.resolve_chat_id("https://max.ru/old_chan") is None                      # бота из канала убрали
-logged = open(bot.LOG_FILE, encoding="utf-8").read()
+logged = tio.rfile(bot.LOG_FILE, encoding="utf-8")
 assert "GET /chats" in logged and '"chat_id": -7101' in logged and "https://max.ru/Reloader_NEWS" in logged, logged[-600:]
 press(1, 61000, "p:clfsadd"); msg(1, 61000, "https://max.ru/no_such_one")
 told = OUT[-2][0] + OUT[-1][0]
@@ -1581,7 +1587,7 @@ buy(5001, 62000, "0:30")
 assert "не открылась" in shown() and "2200 0000 0000 0000" in shown() and "pd:0:30" in shown(), shown()
 assert not bot.TENANTS[ckey].get("payreq")                            # хозяина не дёргаем, пока покупатель не оплатил
 assert any("ЮKassa не дала ссылку" in o[0] and "401" in o[0] for o in OUT[n0:]), [o[0][:60] for o in OUT[n0:]]
-logged = open(bot.LOG_FILE, encoding="utf-8").read()
+logged = tio.rfile(bot.LOG_FILE, encoding="utf-8")
 assert "invalid_credentials" in logged and "Error in shopId or secret key" in logged, logged[-500:]
 press(5001, 62000, "pd:0:30")                                         # перевёл — «Я оплатил»
 assert bot.TENANTS[ckey]["payreq"]["plan"] == "Старт", bot.TENANTS[ckey].get("payreq")
@@ -1712,7 +1718,7 @@ for adv in ("m:pinset", "m:anl"):
 feed["x"] = rss.replace("</channel>", """<item><title>Пост с картинкой</title><link>https://site.ru/65</link>
 <description>&lt;img src="https://site.ru/65.jpg"&gt; Текст поста</description><pubDate>Thu, 08 Oct 2026 12:00:00 +0000</pubDate></item></channel>""")
 got65 = []
-bot._download_url = lambda url, dest: (got65.append(url), open(dest, "wb").write(b"img"), dest)[2]
+bot._download_url = lambda url, dest: (got65.append(url), tio.wfile(b"img", dest, "wb"), dest)[2]
 bot.SOCIAL_CACHE.clear()
 with bot.theme_ctx(t65):
     bot.CFG["approval_on"] = False
@@ -1881,7 +1887,7 @@ def telethon_session_bytes(key=None):
     con.execute("INSERT INTO sessions VALUES (2, '149.154.167.41', 443, ?, NULL)", (key or os.urandom(256),))
     con.commit()
     con.close()
-    data = open(tmp, "rb").read()
+    data = tio.rfile(tmp, "rb")
     os.remove(tmp)
     return data
 srv.blobs["acc1.session"] = telethon_session_bytes()
@@ -1899,7 +1905,7 @@ assert [x["name"] for x in bot.POOL.status()] == ["acc1", "acc2"]
 asyncio.run(bot.POOL.remove("acc2"))
 for fname, blob, why in (("bad.session", b"not a session", "не файл входа"),
                          ("broken.session", b"SQLite format 3\x00" + b"\x00" * 100, "повреждён"),
-                         ("copy.session", open("sessions/acc1.session", "rb").read(), "уже в пуле")):
+                         ("copy.session", tio.rfile("sessions/acc1.session", "rb"), "уже в пуле")):
     srv.blobs[fname] = blob
     press(1, 61000, "p:clsess")
     said = send_file68(fname)
@@ -2159,9 +2165,7 @@ assert "—" in t0 and "Пустой" in t0, t0
 print("h72 ok: 👤 профиль покупателя: тариф, лимиты, каналы MAX и источники, оплаты; пустые поля — «—», без падения")
 
 # ---------- коды активации: простым сообщением, без кнопок; связь лично — только через MAX ----------
-from reloader.services.codes.store import CodeStore, normalize_code, looks_like_code
-import re as _re
-from concurrent.futures import ThreadPoolExecutor
+from reloader.services.codes.store import normalize_code, looks_like_code
 
 def links_of(rows):
     return [b_["url"] for r in rows for b_ in r if b_.get("type") == "link"]
@@ -2187,7 +2191,7 @@ print("h73 ok: ✉️ связь лично: @username — ссылка MAX; б�
 
 # 74) 🎟 партия из меню: число → коды с файлом; коды — случайные, без префикса, 12 символов, буквы и цифры
 codes74, path74 = bot.codes_generate(3, "Старт", 30)
-assert open(path74, encoding="utf-8").read().strip().split("\n") == codes74 and len(codes74) == 3
+assert tio.rfile(path74, encoding="utf-8").strip().split("\n") == codes74 and len(codes74) == 3
 assert all(len(c) == 12 and not c.startswith("RL") and looks_like_code(c) for c in codes74), codes74
 SENT74 = []
 real_send74 = bot.send_max
@@ -2196,7 +2200,7 @@ try:
     press(1, 61000, "p:codegen:0"); msg(1, 61000, "4")
 finally:
     bot.send_max = real_send74
-assert SENT74 and len(open(SENT74[0][1], encoding="utf-8").read().strip().split("\n")) == 4, SENT74
+assert SENT74 and len(tio.rfile(SENT74[0][1], encoding="utf-8").strip().split("\n")) == 4, SENT74
 print("h74 ok: 🎟 партия из меню: число → 12-значные коды, файл одним списком по одному в строке")
 
 # 75) 🔑 погашение (хранилище): регистр, пробелы и дефисы не важны; код удаляется при погашении — второй раз нельзя;
@@ -2346,7 +2350,7 @@ try:
 finally:
     bot.send_max = real_send80
 active80 = [c for c, _, st in bot.CODES.listing() if st == "free"]
-assert SENT80 and open(SENT80[-1], encoding="utf-8").read().strip().split("\n") == active80, SENT80
+assert SENT80 and tio.rfile(SENT80[-1], encoding="utf-8").strip().split("\n") == active80, SENT80
 assert set(exp80) <= set(active80)
 print("h80 ok: 🎟 админ: своя партия и код (проверка), список с тарифом и датой, удаление, экспорт .txt, ссылка на бота")
 
@@ -2454,7 +2458,7 @@ SENT85 = []
 real_send85 = bot.send_max
 bot.send_max = lambda chat, text, imgs, video_path=None, file_path=None: (SENT85.append((chat, text, video_path)), "m")[1]
 vid85 = os.path.join(tempfile.mkdtemp(), "welcome.mp4")
-open(vid85, "wb").write(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64)
+tio.wfile(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64, vid85, "wb")
 APP_CONFIG.WELCOME_VIDEO_PATH = vid85
 try:
     n85 = len(OUT)
@@ -2964,7 +2968,7 @@ print("h98 ok: 💾 контакт и ключи ЮKassa из панели — �
 #     с «ожиданием ввода» с прошлого раза — не «в пустоту»; права админа канала проверяются при привязке по
 #     ссылке; всё ложится в themes.json; новая тема не получает id (и файлы) удалённой
 def disk_theme(tid):
-    return next((d for d in json.load(open(bot.THEMES_FILE, encoding="utf-8"))["themes"] if d["id"] == tid), None)
+    return next((d for d in tio.rjson(bot.THEMES_FILE, encoding="utf-8")["themes"] if d["id"] == tid), None)
 # A) хозяин очистил старые каналы и добавил бота админом нового канала — канал привязался к новой теме
 bot.PENDING[1] = "chadd"                                          # ждал ввода для старой темы
 press(1, 61000, "a:clwipeok")
@@ -3005,7 +3009,7 @@ press(9900, 99000, "a:thdel")
 press(9900, 99000, "m:th")
 assert bot.tenant_themes(k99) and bot.tenant_themes(k99)[0].id != gone99, [t.id for t in bot.tenant_themes(k99)]
 nxt99 = f"t{int(bot.GCFG['theme_seq']) + 1}"
-json.dump([{"id": f"{nxt99}|zombie:1", "ch": "zombie", "status": "ok"}], open(f"queue_{nxt99}.json", "w"))
+tio.wjson([{"id": f"{nxt99}|zombie:1", "ch": "zombie", "status": "ok"}], f"queue_{nxt99}.json", "w")
 t_new99 = bot.create_theme("Новая")
 assert t_new99.id != nxt99 and not t_new99.queue, (t_new99.id, t_new99.queue)
 bot.delete_theme(t_new99)
@@ -3213,7 +3217,7 @@ try:
     bot.handle_update({"update_type": "bot_added", "chat_id": 10201,
                        "user": {"user_id": 10200, "first_name": "U10200"}})
     assert t102.chat_id == 10201 and told(n102, "Канал MAX привязан"), (t102.chat_id, [o[0][:80] for o in OUT[n102:]])
-    assert "10201" in json.load(open("known_chats.json")), "канал запомнен на диске"
+    assert "10201" in tio.rjson("known_chats.json"), "канал запомнен на диске"
     # B) выбор канала (GET /chats нет): в списке — каналы, которые бот знает (хозяину — все; покупателю — свои)
     assert chpick_find(1, 61000, "Роблокс мемы"), shown()
     t102.chat_id = None
@@ -3303,7 +3307,7 @@ try:
     assert [c for c, _ in got103] == [chat_a, chat_b], got103               # каждому — в его чат, хозяину — нет
     assert "«Канал 10301»" in got103[0][1] and "«Канал 10302»" in got103[1][1], got103
     assert bot.trend_run(ta.id)["verdict"] == "nothing-new" and bot.trend_run(tb.id)["verdict"] == "nothing-new"
-    saved103 = json.load(open("sent_alerts_103.json"))
+    saved103 = tio.rjson("sent_alerts_103.json")
     assert set(saved103["sent"]) == {f"cab:{ka}", f"cab:{kb}"}, saved103["sent"].keys()
     press(ua, chat_a, f"a:trendoff:{tb.id}")                               # чужие тренды не выключить
     assert bot.trend_enabled(tb) and "не твоя" in " ".join(o[0] for o in OUT[-3:]), OUT[-3:]

@@ -1,6 +1,7 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
-import asyncio, builtins, importlib.util, os, sys, tempfile, time, types
+import asyncio, importlib.util, os, sys, tempfile, time, types
 tele = types.ModuleType("telethon"); tele.TelegramClient = object
 tele.errors = types.SimpleNamespace(SessionPasswordNeededError=Exception)
 sys.modules["telethon"] = tele; sys.modules["telethon.errors"] = tele.errors
@@ -76,7 +77,7 @@ bot.upload_image = bot.upload_video = bot.upload_file = lambda path: "tok"     #
 bot.api_send = lambda chat, t, rows=None, token=None: API.append((t, rows)) or "m"
 bot.notify = lambda t, tag=True, rows=None: NOTES.append(t)
 def _dl(url, dest):
-    open(dest, "wb").write(b"data")
+    tio.wfile(b"data", dest, "wb")
     return dest
 bot._download_url = _dl
 bot.GCFG["admin_chats"] = {"1": 111}

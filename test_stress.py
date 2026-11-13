@@ -8,6 +8,7 @@
 • меню отвечает быстро всем, посты публикуются, тренды проверяются, одна новость — один сигнал;
 • утечек нет: потоки и файловые дескрипторы возвращаются к исходному числу, новых HTTP-сессий не создаётся
   (одна на всех), клиент DuckDuckGo один, кэши ограничены, память кода бота не растёт от круга к кругу."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import ast
 import asyncio
 import atexit
@@ -15,7 +16,6 @@ import collections
 import datetime
 import gc
 import importlib.util
-import json
 import os
 import random
 import re
@@ -34,7 +34,7 @@ from fake_max import FakeMax  # noqa: E402
 
 # ---------- 0) статически: ни одна корутина не зовёт синхронную функцию, которая (через другие) ходит в сеть ----------
 def loop_violations(path):
-    src = open(path, encoding="utf-8").read()
+    src = tio.rfile(path, encoding="utf-8")
     tree = ast.parse(src)
     funcs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     net_attr = re.compile(r"^((S|WS)\.(get|post|put|patch|delete|request)|requests\.(get|post|put|delete|request))$")
@@ -98,11 +98,11 @@ for i in range(10):
     srv.chats[f"ch{i}"] = 7000 + i
 work = tempfile.mkdtemp()
 os.chdir(work)
-json.dump({"api_id": 1, "api_hash": "h", "phone": "+79990000000", "max_token": "TESTTOKEN",
-           "max_channel_link": "https://max.ru/ch0", "max_api": srv.url, "verify_ssl": False}, open("config.json", "w"))
-json.dump({"channels": ["src0"], "approval_on": False, "interval": 1, "night_on": False, "report_on": False,
+tio.wjson({"api_id": 1, "api_hash": "h", "phone": "+79990000000", "max_token": "TESTTOKEN",
+           "max_channel_link": "https://max.ru/ch0", "max_api": srv.url, "verify_ssl": False}, "config.json", "w")
+tio.wjson({"channels": ["src0"], "approval_on": False, "interval": 1, "night_on": False, "report_on": False,
            "empty_warn_on": False, "gap_min": 0, "admins": [1, 2, 3, 4, 5],
-           "admin_chats": {str(u): 1000 + u for u in range(1, 6)}}, open("settings.json", "w"))
+           "admin_chats": {str(u): 1000 + u for u in range(1, 6)}}, "settings.json", "w")
 UTC = datetime.timezone.utc
 NEXT_ID = collections.defaultdict(lambda: 100)
 DATA = collections.defaultdict(list)
@@ -119,7 +119,7 @@ class FMsg:
         self.fwd_from = None
 
     async def download_media(self, file=None):
-        open(file, "wb").write(b"\xff\xd8binary" * 50)
+        tio.wfile(b"\xff\xd8binary" * 50, file, "wb")
         return file
 
 
@@ -434,6 +434,171 @@ assert len(bot.PERF["upd"]) < 40 and len(bot.PERF["http"]) < 60, (list(bot.PERF[
 assert not sessions_made and len(DDGS_INITS) == 1
 print("s2 ok: утечек нет — потоки и файловые дескрипторы вернулись к исходным, память кода бота не растёт от круга "
       "к кругу, кэши ограничены, новых сессий нет")
+
+# ---------- 4) спам, реклама РСЯ и ИИ без ключей (все ответы 429) — под той же нагрузкой ----------
+SPAM_TEXTS = ("Заработок в интернете от 5000₽ в день! Пассивный доход без вложений",
+              "Обменяю USDT TRC20 по лучшему курсу, пишите в лс",
+              "🔥🔥🔥 СРОЧНО ЗАБЕРИ ХАЛЯВУ 🔥🔥🔥 🎁🎁🎁",
+              "Ищем дропов под карты, оплата сразу")
+AD = ("2 x iPhone 18 Pro 256 ГБ - 19900₽...\nApple Max - проверенный магазин в MAX...\nКупить\n#реклама\nmax.ru\n"
+      "О рекламодателе")
+S4 = {"spam": 0, "ads": 0, "n": 10 ** 6}
+SPAM_IDS = []                                            # (канал, номер) каждого спам-поста
+
+
+def producer4():
+    """Обычные посты (у каждого свой «Выпуск N» — так видно двойную публикацию) и спам вперемешку, в 9 каналов."""
+    while not STOP.is_set():
+        S4["n"] += 1
+        i = random.randrange(9)
+        if S4["n"] % 3 == 0:
+            DATA[f"src{i}"].append(FMsg(NEXT_ID[i], f"{random.choice(SPAM_TEXTS)} №{S4['n']}"))
+            S4["spam"] += 1
+            SPAM_IDS.append((f"src{i}", NEXT_ID[i]))
+        else:
+            DATA[f"src{i}"].append(FMsg(NEXT_ID[i], fresh_text(S4["n"]), photo=(S4["n"] % 5 == 0)))
+        NEXT_ID[i] += 1
+        STOP.wait(0.12)
+
+
+def flood4():
+    """Десятый канал вдруг шлёт 12 спам-постов подряд — его должно «замутить» на час."""
+    for k in range(12):
+        DATA["src9"].append(FMsg(NEXT_ID[9], f"Казино бонус {k} 🎰 забирай депозит"))
+        NEXT_ID[9] += 1
+        STOP.wait(0.05)
+
+
+def advertiser4():
+    """Раз в секунду MAX вставляет рекламу РСЯ в канал темы — по кругу (каждый канал, без случайных «пропусков»)."""
+    while not STOP.is_set():
+        S4["ads"] += 1
+        srv.updates.append({"update_type": "message_created", "message": {
+            "recipient": {"chat_id": 7000 + S4["ads"] % 10, "chat_type": "channel"},
+            "sender": {"user_id": 990000}, "body": {"text": AD, "mid": f"rsya-{S4['ads']}"}}})
+        STOP.wait(1.0)
+
+
+def run_load4(seconds):
+    trends_pause(False)
+    STOP.clear()
+    ths = [threading.Thread(target=f, daemon=True) for f in (producer4, flood4, advertiser4)] + \
+          [threading.Thread(target=clicker, args=(u,), daemon=True) for u in range(1, 6)]
+    for t in ths:
+        t.start()
+    time.sleep(seconds)
+    STOP.set()
+    for t in ths:
+        t.join(5)
+
+
+def chan_posts(since):
+    return [m for m in list(srv.messages)[since:] if 7000 <= m["chat_id"] < 7010]
+
+
+srv.ai_rule = lambda key, ask: (429, "")                 # все ключи ИИ упёрлись в лимит
+for r in bot.AI_ROTATORS.values():
+    r.reset()
+for t in bot.THEMES:
+    t.own["ai_edit"] = True                              # ИИ-редактор включён везде — пересказ падает в оригинал
+for t in bot.THEMES[1:3]:
+    t.own["gap_min"] = 1                                 # у двух тем пауза минута: в очереди есть что «закопать»
+gc.collect()
+threads0, fds0 = threading.active_count(), fds()
+msg0, ai0, eaten0 = len(srv.messages), len(srv.ai_calls), len(bot.SPAM_EATEN)
+J4, J4_LOCK, _real_journal = collections.Counter(), threading.Lock(), bot.journal
+J4_MARKS = (("rsya", "Перехватчик РСЯ: в канале появилась реклама — сразу"), ("rsya_any", "🛡 Перехватчик РСЯ"),
+            ("ai", bot.AI_EXHAUSTED_LOG), ("backlog", "накопилось много новых постов"))
+
+
+def counting_journal(text):
+    """Журнал в памяти — кольцо на 300 строк (под нагрузкой переполняется): события считаем на входе."""
+    with J4_LOCK:
+        for key, mark in J4_MARKS:
+            if mark in str(text):
+                J4[key] += 1
+    return _real_journal(text)
+
+
+bot.journal = counting_journal
+LAGS.clear()
+STALLS.clear()
+MEASURE[0] = True
+run_load4(20)
+MEASURE[0] = False
+assert settle(), [t.name for t in threading.enumerate()]
+theme_of = {ch: t for t in bot.THEMES for ch in t.own.get("channels", [])}
+
+
+def caught_up():
+    """Бот дочитал все 9 обычных каналов (десятый «замучен» за флуд): каждый пост увиден и решён."""
+    return all(theme_of[f"src{i}"].last_ids.get(f"src{i}", 0) >= NEXT_ID[i] - 1 for i in range(9))
+
+
+end = time.time() + 90                                   # медленный MAX: дочитываем, а не мерим «на бегу»
+while time.time() < end and not caught_up():
+    time.sleep(0.5)
+assert caught_up(), {f"src{i}": (theme_of[f"src{i}"].last_ids.get(f"src{i}"), NEXT_ID[i] - 1) for i in range(9)}
+assert settle(), [t.name for t in threading.enumerate()]
+time.sleep(1.5)                                          # последние «Сейчас» от перехватчика (тик планировщика)
+lags = sorted(LAGS)
+p99, lag_max = lags[int(len(lags) * 0.99)], lags[-1]
+posts = chan_posts(msg0)
+texts = [m["body"].get("text") or "" for m in posts]
+issues = collections.Counter(n for tx in texts for n in re.findall(r"Выпуск (\d+)\.", tx) if int(n) >= 10 ** 6)
+spam_out = [tx[:60] for tx in texts if any(s[:25] in tx for s in SPAM_TEXTS) or "Казино бонус" in tx]
+eaten = len(bot.SPAM_EATEN) - eaten0
+all_spam = set(SPAM_IDS)
+eaten_ids = {(e["ch"], e["mid"]) for e in bot.SPAM_EATEN}
+rsya_n, exhausted = J4["rsya"], J4["ai"]
+flood_alerts = [m for m in list(srv.messages)[msg0:]
+                if "Канал @src9 заблокирован на 1 час из-за флуда спамом." in (m["body"].get("text") or "")]
+print(f"   цикл: пульсов {len(lags)}, p99 {p99 * 1000:.0f} мс, макс {lag_max * 1000:.0f} мс; в каналы ушло {len(posts)}, "
+      f"спама отправили {S4['spam'] + 12}, съедено {eaten}; рекламы РСЯ {S4['ads']}, перехватов {rsya_n}; "
+      f"ИИ: запросов {len(srv.ai_calls) - ai0}, «AI skipped» {exhausted}")
+for where, n in STALLS.most_common(5):
+    print(f"   цикл занят >100 мс ×{n * 10} мс: {where}")
+assert not ON_LOOP_HTTP, f"HTTP из потока asyncio-цикла: {dict(ON_LOOP_HTTP)}"
+assert len(lags) > 300 and p99 < 0.3 and lag_max < 1.0, (len(lags), p99, lag_max)   # самая тяжёлая смесь
+assert len(posts) >= 25, f"под спамом, рекламой и без ИИ посты должны выходить: {len(posts)}"
+assert not spam_out, f"спам ушёл в каналы: {spam_out[:3]}"
+assert all(n == 1 for n in issues.values()), f"пост вышел дважды: {[k for k, v in issues.items() if v > 1][:5]}"
+assert len(all_spam) == S4["spam"] and all_spam <= eaten_ids, (len(all_spam), sorted(all_spam - eaten_ids)[:6])
+assert not J4["backlog"], f"при обычной работе посты не режутся «как после простоя»: {J4['backlog']}"
+assert flood_alerts and any(k[1] == "src9" and v > time.time() for k, v in bot.SPAM_MUTED.items()), \
+    "флуд-канал «замучен» на час и админу сказали"
+assert rsya_n >= 1 and J4["rsya_any"] >= 8, f"перехватчик РСЯ под нагрузкой: {rsya_n} / {J4['rsya_any']}"
+assert exhausted >= 10 and all(tx.startswith("Roblox:") for tx in texts if "Выпуск" in tx), exhausted
+assert len(srv.ai_calls) - ai0 <= 10, f"при 429 ключи «отдыхают» — ИИ не долбим: {len(srv.ai_calls) - ai0}"
+assert bot.TREND_WORKER is None or bot.TREND_WORKER.thread is None or bot.TREND_WORKER.thread.is_alive(), \
+    "поток трендов не умер от 429"
+print("s4 ok: спам (и флуд одного канала), реклама РСЯ и ИИ без ключей (все 429) под нагрузкой 10 тем + 5 админов: "
+      "цикл не блокируется, спам не выходит и мутится, РСЯ «закапывается», посты выходят оригиналом и по одному разу")
+
+sizes = []
+tracemalloc.start(1)
+for rnd in range(3):
+    run_load4(8)
+    assert settle(), [t.name for t in threading.enumerate()]
+    sizes.append(bot_bytes())
+tracemalloc.stop()
+grow1, grow2 = sizes[1] - sizes[0], sizes[2] - sizes[1]
+assert settle() and bot.bg_wait(15), [t.name for t in threading.enumerate()]
+threads1, fds1 = threading.active_count(), fds()
+print(f"   память кода бота по кругам (спам/РСЯ/429): {[round(s / 1e6, 2) for s in sizes]} МБ (прирост "
+      f"{grow1 / 1e3:.0f} → {grow2 / 1e3:.0f} КБ); потоков {threads0} → {threads1}; дескрипторов {fds0} → {fds1}")
+assert grow2 < max(1.5 * grow1, 1_500_000) and grow2 < 4_000_000, (grow1, grow2)
+assert threads1 <= threads0 + 3 and fds1 <= fds0 + 12, (threads0, threads1, fds0, fds1)
+assert len(bot.SPAM_EATEN) <= bot.SPAM_LOG_MAX and len(bot.BOT_DELETED) <= 3000
+assert len(bot.PUBLISHING) <= len(bot.THEMES), bot.PUBLISHING          # в полёте — не больше поста на тему, без «застрявших»
+assert len(bot.SPAM_BLOCK["links"]) <= bot.SPAM_BLOCK_MAX_LINKS and len(bot.CHAT_GONE) <= bot.CHAT_GONE_MAX
+srv.ai_rule = None
+bot.journal = _real_journal
+for t in bot.THEMES:
+    t.own["ai_edit"] = False
+    t.own["gap_min"] = 0
+print("s4b ok: под спамом/РСЯ/429 утечек нет — память кода бота не растёт от круга к кругу, потоки и дескрипторы на "
+      "месте, журналы и списки спама ограничены")
 
 # ---------- 3) остановка: сессии и клиенты поиска закрываются ----------
 closed, adapters = set(), {id(ad): ad for sess in (bot.S, bot.WS) for ad in sess.adapters.values()}

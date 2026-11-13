@@ -8,10 +8,10 @@
 4) Анти-флуд: 10 спам-постов подряд из канала — канал на час не читаем, админу «⚠️ Канал … заблокирован …».
 5) Каналы без дублей; бота убрали или канал удалён — 7 дней в списке с пометкой «⚠️ удалён», потом исчезает.
 6) Реклама РСЯ в канале темы (#реклама, «О рекламодателе», строка max.ru) — сразу выкладываем следующий пост."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio
 import datetime
 import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -192,7 +192,7 @@ def s3():
     eaten = [e for e in bot.SPAM_EATEN if e["ch"] == "deals"]
     assert sorted(e["kind"] for e in eaten) == ["scam", "shout"], eaten
     assert all(e["link"].startswith("https://t.me/deals/") and e["why"] for e in eaten), eaten
-    assert [e["mid"] for e in json.load(open("spam_eaten.json")) if e["ch"] == "deals"] == [21, 22]
+    assert [e["mid"] for e in tio.rjson("spam_eaten.json") if e["ch"] == "deals"] == [21, 22]
     d1 = bot.spam_summary(1)
     assert d1["n"] >= 3 and d1["by_kind"]["scam"] >= 2 and d1["by_ch"]["deals"] == 2, d1
     bot.SPAM_EATEN.append(dict(eaten[0], t=time.time() - 3 * 86400, mid=999))     # три дня назад: неделя, не сегодня
@@ -212,7 +212,7 @@ def s4():
     bot.THEMES[0].chat_id = CH
     bot.record_pub("mid-spam-1", "news", "Купи курс https://scamcourse.ru/x у @ScamSeller — гарантированный заработок")
     bot.handle_update({"update_type": "message_removed", "message_id": "mid-spam-1", "chat_id": CH, "user_id": 1})
-    bl = json.load(open("spam_blocklist.json"))
+    bl = tio.rjson("spam_blocklist.json")
     assert "scamcourse.ru" in bl["links"] and "@scamseller" in bl["links"], bl
     assert "заработок" in bl["words"] and "гарантированный" in bl["words"], bl
     assert not any(w in bl["words"] for w in ("обновление", "roblox", "скины")), "слова обычных постов не учим"
@@ -224,7 +224,7 @@ def s4():
     bot.record_pub("mid-own-2", "news", "Пиши @OwnDeletedChan про новости")
     bot.delete_msg("mid-own-2")                                                      # бот удалил сам (автоудаление)
     bot.handle_update({"update_type": "message_removed", "message_id": "mid-own-2", "chat_id": CH, "user_id": 0})
-    assert "@owndeletedchan" not in json.load(open("spam_blocklist.json"))["links"]
+    assert "@owndeletedchan" not in tio.rjson("spam_blocklist.json")["links"]
     bot.handle_update({"update_type": "message_removed", "message_id": "nope", "chat_id": CH})   # не наш пост — тихо
     b2 = load_bot("bot_restart")
     assert b2.spam_verdict("Курсы на scamcourse.ru", "x")[0], "чёрный список пережил перезапуск"
@@ -243,7 +243,7 @@ def s5():
     assert any("ap:spam:shop:31" in payloads(rows) for _, _, rows in SENT), "на карточке есть «🗑 Спам»"
     text, _ = bot._approve("spam:shop:31", 1)
     assert "спам" in text.lower() and it not in bot.QUEUE, text
-    assert "@dealshunterx" in json.load(open("spam_blocklist.json"))["links"]
+    assert "@dealshunterx" in tio.rjson("spam_blocklist.json")["links"]
     assert any(e["mid"] == 31 and e["kind"] == "manual" for e in bot.SPAM_EATEN)
     assert bot._approve("spam:shop:31", 1)[0] == "Этот пост уже обработан."
 
@@ -288,7 +288,7 @@ def s7():
     bot.remember_chat(-100500, 1)
     bot.remember_chat("-100500", 1)
     bot.remember_chat(-100501, 1)
-    assert [k for k in json.load(open("known_chats.json")) if k.strip() == "-100500"] == ["-100500"]
+    assert [k for k in tio.rjson("known_chats.json") if k.strip() == "-100500"] == ["-100500"]
     chans = bot.pick_channels(1)
     ids = [c["chat_id"] for c in chans]
     assert len(ids) == len(set(ids)) and all(isinstance(i, int) for i in ids), ids
@@ -328,7 +328,7 @@ def s8():
     assert "будет скрыт через 1 день" in chpick_text(-100700)[0]
     bot.KNOWN_CHATS["-100700"]["removed"] = time.time() - 7 * 86400 - 60
     assert all(c["chat_id"] != -100700 for c in bot.pick_channels(1))
-    assert "-100700" not in json.load(open("known_chats.json")), "через 7 дней — и из базы"
+    assert "-100700" not in tio.rjson("known_chats.json"), "через 7 дней — и из базы"
     srv.private[-100800] = ("Удалю сам", "https://max.ru/join/del800")              # канал удалили в MAX (404)
     bot.remember_chat(-100800, 1)
     bot.CHAT_INFO_CACHE.clear()
@@ -419,7 +419,8 @@ def s11():
     text, rows = bot.screen("spamclr", 1)
     assert "a:spamclrok" in payloads(rows), rows
     bot.do_action("spamclrok", 1)
-    assert json.load(open("spam_blocklist.json")) == {"links": [], "words": []}
+    bl = tio.rjson("spam_blocklist.json")
+    assert bl["links"] == [] and bl["words"] == [] and not bl.get("seen"), bl
 
 
 if FAILS:

@@ -1,5 +1,6 @@
 """Строгое правило: медиа больше 250 МБ, не скачалось или не ушло в MAX — пост ПРОПУСКАЕТСЯ целиком.
 Не выходит текст без вложения, не создаётся ссылка, нет кнопок «Повторить», в журнале — причина, без сообщений."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio, datetime, importlib.util, os, sys, tempfile, types
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
@@ -67,7 +68,7 @@ print("strict 1 ok: не скачалось — пост пропущен, в ж
 
 # 2) отправка в MAX не удалась и после 3 повторов: пост с медиа пропущен — без отправки текстом без видео
 async def _ok_download(client, ch, vid):
-    path = os.path.join(tempfile.mkdtemp(), "v.mp4"); open(path, "wb").write(b"v" * 10)
+    path = os.path.join(tempfile.mkdtemp(), "v.mp4"); tio.wfile(b"v" * 10, path, "wb")
     return path, None
 bot.download_video = _ok_download
 FAIL["send"] = True

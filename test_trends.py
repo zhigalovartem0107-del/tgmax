@@ -1,6 +1,7 @@
 """🔥 Тренды по событию: бот раз в 2–3 часа ищет свежие новости по словам из постов канала, ИИ строго отвечает
 NO / YES [n], сигнал админу — только про вирусное, одна новость — один раз (sent_alerts.json), всё в фоне.
 Поиск, ИИ и время — подделки; MAX — поддельный сервер (настоящие HTTP-запросы), ИИ — через настоящий KeyRotator."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import importlib.util
 import json
 import os
@@ -398,7 +399,7 @@ real = ST.AlertStore(path, save=save_json, load=load_json_safe)
 real.mark_sent("admin", [a], "Сигнал", "t1")
 real.save()
 real.save()
-open(path, "w").write('{"sent": {"adm')
+tio.wfile('{"sent": {"adm', path, "w")
 assert ST.AlertStore(path, save=save_json, load=load_json_safe).known("admin", a) == "sent", "испорченный файл — из .bak"
 os.remove(path)
 assert ST.AlertStore(path, save=save_json, load=load_json_safe).known("admin", a) == "sent", "пропавший файл — из .bak"
@@ -615,11 +616,11 @@ good = ST.AlertStore(path, save=save_json, load=load_json_safe)
 good.mark_sent("admin", [news("Roblox заблокировали в России", "https://ria.ru/x")], "s", "t1")
 good.save()
 good.save()                                                        # теперь и в копии есть
-open(path, "w").write('{"sent": [1, 2], "seen": "x"}')            # читается, но не того вида — из копии
+tio.wfile('{"sent": [1, 2], "seen": "x"}', path, "w")            # читается, но не того вида — из копии
 shaped = ST.AlertStore(path, save=save_json, load=load_json_safe, log=lambda m: None)
 assert shaped.known("admin", news("Совсем другое", "https://ria.ru/x")) == "sent" and not shaped.needs_warmup("admin")
-open(path, "w").write('{"sent": {"adm')                           # оборвалась запись…
-open(path + ".bak", "w").write("\x00\x00garbage")                  # …и копия тоже испорчена
+tio.wfile('{"sent": {"adm', path, "w")                           # оборвалась запись…
+tio.wfile("\x00\x00garbage", path + ".bak", "w")                  # …и копия тоже испорчена
 logs = []
 clock = [NOW]
 lost = ST.AlertStore(path, save=save_json, load=load_json_safe, clock=lambda: clock[0], log=logs.append)
@@ -642,15 +643,15 @@ assert "Roblox заблокировали" not in ASKED[0].split("<news>")[1], "
 clock[0] += 3 * 86400 + 1
 assert not reborn.needs_warmup("cab:5"), "через 3 дня тихая проверка уже не нужна (старое не найдётся)"
 reborn.save()
-assert "warmup" not in json.load(open(path))
+assert "warmup" not in tio.rjson(path)
 for broken in ('{"themes": [1, 2], "ai": "x"}', '{"themes": {"t1": "мусор", "t2": {"next": 5}}}', "[]", "{сломано",
                '[1, 2]', '{"themes": {"t1": {"next": "завтра"}}, "ai": {"day": 5, "n": "много"}}', '"строка"'):
-    open(os.path.join(d, "ts.json"), "w").write(broken)
+    tio.wfile(broken, os.path.join(d, "ts.json"), "w")
     ts = WK.TrendState(os.path.join(d, "ts.json"))                  # load_json: испорчено — пустое состояние
     assert ts.next("t1") is None and ts.ai_take(5, "2026-11-07"), broken
 assert WK.TrendState(os.path.join(d, "ts.json")).last("t1") == {}
 ts = WK.TrendState(os.path.join(d, "ts2.json"))
-open(os.path.join(d, "ts2.json"), "w").write('{"themes": {"t2": {"next": 5}}}')
+tio.wfile('{"themes": {"t2": {"next": 5}}}', os.path.join(d, "ts2.json"), "w")
 assert WK.TrendState(os.path.join(d, "ts2.json")).next("t2") == 5
 first = ST.AlertStore(os.path.join(d, "fresh.json"), save=save_json, load=load_json_safe, log=logs.append)
 assert not first.needs_warmup("admin"), "первый запуск (файла не было) — не потеря памяти"
@@ -714,11 +715,11 @@ print(f"t7б ok: 💾 файл и копия испорчены — первая
 # 7в) все файлы новых функций испорчены разом — бот всё равно запускается (отдельный процесс, как на хостинге)
 import subprocess  # noqa: E402
 boot = tempfile.mkdtemp()
-json.dump({"max_token": "T", "max_channel_link": ""}, open(os.path.join(boot, "config.json"), "w"))
+tio.wjson({"max_token": "T", "max_channel_link": ""}, os.path.join(boot, "config.json"), "w")
 for name, junk_txt in (("sent_alerts.json", '{"sent": [1, 2], "seen": "x", "warmup": [1]}'),
                        ("sent_alerts.json.bak", "\x00\x01"), ("trends_state.json", '[1, {"themes": 2}]'),
                        ("subs_history.json", '{"5000": {"2026-11-01": NaN, "x": "y"}, "6000": 7}')):
-    open(os.path.join(boot, name), "w").write(junk_txt)
+    tio.wfile(junk_txt, os.path.join(boot, name), "w")
 child = ("import importlib.util, os, sys, types\n"
          "tele = types.ModuleType('telethon'); tele.TelegramClient = object\n"
          "tele.errors = types.SimpleNamespace(SessionPasswordNeededError=Exception)\n"
@@ -746,7 +747,7 @@ for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "TGMAX_HOST"
 os.environ.update(MAX_API_URL=srv.url, OPENROUTER_API_URL=srv.url)
 DATA = tempfile.mkdtemp()
 os.chdir(DATA)
-json.dump({"max_token": "TESTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
@@ -825,7 +826,7 @@ assert {"type": "link", "text": "📰 Открыть новость", "url": "ht
 assert any(b.get("payload") == f"a:trendoff:{th1.id}" for b in btns), btns
 mid = alerts[0]["mid"]
 assert not any(x.get("mid") == mid for x in bot.AUTODEL["temp"]), "сигнал не исчезает из чата через час"
-saved = json.load(open("sent_alerts.json"))
+saved = tio.rjson("sent_alerts.json")
 assert any(r["canon"] == "ria.ru/roblox-ban" for r in saved["sent"]["admin"]) and os.path.exists("sent_alerts.json.bak")
 assert any("🔥 Тренд: Roblox заблокировали" in str(j) for j in bot.JOURNAL), list(bot.JOURNAL)[-3:]
 assert bot.PERF["ai"]["тренды"][0] == 1, bot.PERF["ai"]
@@ -883,7 +884,7 @@ assert pl == ["a:trendtg", "a:trendnow", "p:trendwords", "m:anl"], pl
 assert "Статус: ✅ слежу" in text and "Сигналов отправлено: 1" in text and "Roblox заблокировали в России" in text, text
 assert "Последняя проверка" in text and "Канал: «mychannel»" in text, text
 assert bot.do_action("trendtg", 1) == "trends" and th1.own["trend_on"] is False and "выключены" in bot.FLASH.pop(1)
-assert json.load(open("themes.json"))["themes"][0]["own"]["trend_on"] is False, "выбор сохраняется"
+assert tio.rjson("themes.json")["themes"][0]["own"]["trend_on"] is False, "выбор сохраняется"
 assert "Статус: ⏸ выключено" in bot.screen("trends", 1)[0]
 bot.do_action("trendtg", 1)
 assert th1.own["trend_on"] is True and "включены" in bot.FLASH.pop(1)

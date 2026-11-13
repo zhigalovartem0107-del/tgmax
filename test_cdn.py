@@ -1,8 +1,9 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Файлы с CDN Telegram (их отдают популярные каналы): у Telethon 1.45 своя CDN-ветка сломана — бот качает сам.
 Нужен настоящий telethon (pip install telethon) — без него тест пропускается."""
-import asyncio, importlib.util, json, os, sys, tempfile, types
+import asyncio, importlib.util, os, sys, tempfile, types
 
 try:
     import telethon
@@ -14,7 +15,7 @@ except ImportError:
 import pyaes                                              # эталон: «голый» блочный AES, независимый от кода бота
 
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "x", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "x", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
 
@@ -122,7 +123,7 @@ try:
     path = asyncio.run(bot.tg_cdn_download(msg, os.path.abspath("cdn.bin")))
 finally:
     telethon.network.MTProtoSender = real_sender
-assert open(path, "rb").read() == PLAIN, "файл с CDN собрался неверно"
+assert tio.rfile(path, "rb") == PLAIN, "файл с CDN собрался неверно"
 cdn = FakeCdnSender.made[-1]
 assert cdn.dc == ("conn", "1.2.3.4", 203) and cdn.closed, "к CDN — отдельное подключение, после скачивания закрыто"
 assert ("DC4", "GetFileRequest") in client.calls and ("DC4", "ReuploadCdnFileRequest") in client.calls, client.calls
@@ -216,7 +217,7 @@ try:
     dc = DocClient()
     for i, (name, mime, data) in DOCS.items():
         path, err = asyncio.run(bot.download_doc(dc, "knit", {"id": i, "name": name, "size": len(data)}))
-        assert err is None and os.path.basename(path) == name and open(path, "rb").read() == data, (name, err)
+        assert err is None and os.path.basename(path) == name and tio.rfile(path, "rb") == data, (name, err)
         assert bot.file_mime(path) == mime, (name, bot.file_mime(path))
     DocCdnSender.cut = True
     import shutil
@@ -417,7 +418,7 @@ print("c8 ok: самопроверка CDN с сервера бота: отве�
 # 9) с НАСТОЯЩИМ Telethon: каждый импорт из telethon в боте находится, и всё внутреннее Telethon, на что опирается
 #    скачивание с CDN, на месте (обновили Telethon и что-то пропало — тест красный, а не «молча не качает»)
 import re as _re, importlib as _il
-src = open(ROOT + "/tg_to_max.py", encoding="utf-8").read()
+src = tio.rfile(ROOT + "/tg_to_max.py", encoding="utf-8")
 for mod, names in _re.findall(r"^\s*from (telethon[\w.]*) import ([\w, ]+?)(?:\s+as \w+)?\s*(?:#.*)?$", src, _re.M):
     m_ = _il.import_module(mod)
     for n_ in (x.strip() for x in names.split(",")):
@@ -458,7 +459,7 @@ try:
     vc = VidClient()
     assert bot.video_doc(asyncio.run(vc.get_messages("knit", ids=300))) is not None, "Telethon видит в посте видео"
     path, err = asyncio.run(bot.download_video(vc, "knit", 300))
-    assert err is None and open(path, "rb").read() == VIDEO, err
+    assert err is None and tio.rfile(path, "rb") == VIDEO, err
     n_conn = len(DocCdnSender.made)
     path2, err2 = asyncio.run(bot.download_video(vc, "knit", 300))
     assert path2 == path and err2 is None and len(DocCdnSender.made) == n_conn, "скачанное целиком — не качаем заново"
@@ -485,7 +486,7 @@ telethon.network.MTProtoSender = FakeCdnSender
 try:
     msg._client = StaleClient()
     path = asyncio.run(bot.tg_cdn_download(msg, os.path.abspath("stale.bin")))
-    assert open(path, "rb").read() == PLAIN and StaleClient._config == "свежий"
+    assert tio.rfile(path, "rb") == PLAIN and StaleClient._config == "свежий"
     msg._client = NeverClient()
     try:
         asyncio.run(bot.tg_cdn_download(msg, os.path.abspath("never.bin")))

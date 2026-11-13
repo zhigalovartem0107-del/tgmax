@@ -6,6 +6,7 @@
 правда закрытый (приглашение, в котором аккаунт бота не состоит); открытый канал так не называем никогда: MAX не
 показал число подписчиков или не показывает канал боту, t.me не открылся — это не «закрытый»; аккаунт Telegram бота
 (если он подписан) читает канал сам. Канал попадает в «🕘 Недавние проверки»."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import importlib.util
 import json
 import os
@@ -107,8 +108,8 @@ def w4():
     assert W is not None
     d = tempfile.mkdtemp()
     path = os.path.join(d, "channel_checks.json")
-    save = lambda p, data, **k: json.dump(data, open(p, "w"), ensure_ascii=False)
-    load = lambda p, default: json.load(open(p)) if os.path.exists(p) else default
+    save = lambda p, data, **k: tio.wjson(data, p, "w", _dump=dict(ensure_ascii=False))
+    load = lambda p, default: tio.rjson(p) if os.path.exists(p) else default
     clock = [1000.0]
     w = W.Watch(path, save=save, load=load, clock=lambda: clock[0])
     for i in range(12):
@@ -126,7 +127,7 @@ def w4():
     w2_ = W.Watch(path, save=save, load=load, clock=lambda: clock[0])
     assert w2_.deltas("tg:robloxtg") == (10, 5, 5) and w2_.recent("8")[0]["title"] == "TG"
     assert "tg:robloxtg" in w2_.watched(), "в «Недавних» — значит, бот сам обновляет число подписчиков"
-    open(path, "w").write('{"channels": [1, 2], "recent": "x"')                   # испорченный файл
+    tio.wfile('{"channels": [1, 2], "recent": "x"', path, "w")                   # испорченный файл
     assert W.Watch(path, save=save, load=load).recent("7") == []
 
 
@@ -141,7 +142,7 @@ os.environ.update(MAX_API_URL=srv.url, BOT_TOKEN="TESTTOKEN", TGMAX_HOST="1", OW
 for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ADMIN_IDS"):
     os.environ.pop(k, None)
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "TESTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
@@ -560,6 +561,8 @@ def f10():
     finally:
         bot.TG_CLIENT, bot.MAIN_LOOP = real_client, real_loop
         loop.call_soon_threadsafe(loop.stop)
+        th.join(5)
+        loop.close()
 
 
 @check

@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Файлы: PDF, архивы, музыка, голосовые — из Telegram (со входом и без) уходят в MAX файлом."""
@@ -35,7 +36,7 @@ def last_msg():
 
 # 1) загрузка файла в MAX: токен из ответа на загрузку, имя и содержимое доходят
 p = os.path.join(tempfile.mkdtemp(), "Пуловер.pdf")
-open(p, "wb").write(PDF)
+tio.wfile(PDF, p, "wb")
 bot.send_max(5, "Пуловер", [], None, p)
 b = last_msg()
 assert b["text"] == "Пуловер" and b["attachments"][0]["type"] == "file", b
@@ -51,16 +52,16 @@ for name, mime in (("Шапка FJODOR.pdf", "application/pdf"), ("update_0.32.z
                    ("Pack (addon).mcpack", "application/octet-stream")):
     assert bot.file_mime(name) == mime, (name, bot.file_mime(name))
     fp = os.path.join(tempfile.mkdtemp(), name)
-    open(fp, "wb").write(b"PK\x03\x04" + name.encode() * 20)
+    tio.wfile(b"PK\x03\x04" + name.encode() * 20, fp, "wb")
     tok = bot.upload_file(fp)
-    assert srv.files[tok] == (name, open(fp, "rb").read()) and srv.file_mimes[tok] == mime, (name, srv.file_mimes[tok])
+    assert srv.files[tok] == (name, tio.rfile(fp, "rb")) and srv.file_mimes[tok] == mime, (name, srv.file_mimes[tok])
 cd = bot.content_disposition("Обновление 0.32.apk")
 cd.encode("latin-1")                                          # заголовок HTTP — только латиница, иначе загрузка падает
 assert "filename*=UTF-8''" in cd and "%D0%9E" in cd, cd
 bot.STREAM_FROM, old_stream = 0, bot.STREAM_FROM               # «большой» файл — уходит потоком
 try:
     fp = os.path.join(tempfile.mkdtemp(), "Обновление 0.32.apk")
-    open(fp, "wb").write(b"APKDATA" * 100)
+    tio.wfile(b"APKDATA" * 100, fp, "wb")
     tok = bot.upload_file(fp)
 finally:
     bot.STREAM_FROM = old_stream
@@ -85,7 +86,7 @@ class Msg:
         self.data = data
 
     async def download_media(self, file=None):
-        open(file, "wb").write(self.data)
+        tio.wfile(self.data, file, "wb")
         return file
 
 
@@ -165,7 +166,7 @@ assert msgs[21].document.name == "Пуловер.pdf" and msgs[21].text == "Сх
 assert msgs[23].document.url.endswith("voice23.oga")
 assert msgs[24].document.name == "Mob Food (addon).mcaddon" and msgs[24].document.url.endswith("mob.mcaddon"), msgs[24].document.url
 bot.web_fetch = lambda url: PAGE
-bot._download_url = lambda url, dest: open(dest, "wb").write(b"OggS") and dest
+bot._download_url = lambda url, dest: tio.wfile(b"OggS", dest, "wb") and dest
 web = bot.WebClient()
 bot.QUEUE.clear(); bot.LAST_IDS["v"] = 20; NOTES.clear()
 asyncio.run(bot.process_channel(web, "v", {})); MONO[0] += 10
@@ -192,7 +193,6 @@ assert text == "Схема" and atts == [{"kind": "file", "url": "https://x/f", 
 print("f4 ok: из пересланного боту сообщения достаются текст и файл (имя, токен, ссылка)")
 
 # 5) отчёт за день картинкой: посты, просмотры из MAX, лучший пост, источники
-import json as _json
 t0 = bot.THEMES[0]; t0.chat_id = 5; t0.link = "https://max.ru/knit"
 bot.PUB["day_posts"] = []; bot.QUEUE.clear()
 mids = []

@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Продажа: продавец заводит клиента по токену его бота, клиент привязывается кодом, лимиты, выкл/вкл, удаление."""
@@ -7,14 +8,14 @@ from fake_max import FakeMax
 
 pk = tempfile.mkdtemp()
 os.makedirs(f"{pk}/telethon")
-open(f"{pk}/telethon/__init__.py", "w").write(textwrap.dedent('''
+tio.wfile(textwrap.dedent('''
     import types
     from . import errors
     events = types.SimpleNamespace(NewMessage=lambda *a, **k: None)
     class TelegramClient:
         def __init__(self, *a, **k): pass
-'''))
-open(f"{pk}/telethon/errors.py", "w").write("class SessionPasswordNeededError(Exception): pass\n")
+'''), f"{pk}/telethon/__init__.py", "w")
+tio.wfile("class SessionPasswordNeededError(Exception): pass\n", f"{pk}/telethon/errors.py", "w")
 
 srv = FakeMax()
 srv.add_bot("CLIENTTOKEN1", "КотоБот")
@@ -31,7 +32,8 @@ env.pop("PYTHONUNBUFFERED", None)
 out = []
 p = subprocess.Popen([sys.executable, "main.py"], cwd=w, env=env, stdin=subprocess.DEVNULL,
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
-threading.Thread(target=lambda: [out.append(l) for l in p.stdout], daemon=True).start()
+p.reader = threading.Thread(target=lambda: [out.append(l) for l in p.stdout], daemon=True)
+p.reader.start()
 
 
 def answers_since(n):
@@ -127,7 +129,7 @@ try:
     assert "Условия использования" in text and "1253.1" in text and "@seller_test" in text, text
     text, rows = client_press("rk:ok")
     assert "сохранено" in text and "Пришли каналы" in text, text
-    cons = json.load(open(os.path.join(w, "data", "clients", cid, "consent.json")))
+    cons = tio.rjson(os.path.join(w, "data", "clients", cid, "consent.json"))
     assert cons["500"]["ver"] == 1 and cons["500"]["date"], cons
     srv.client_message("CLIENTTOKEN1", 500, 5000, " ".join(f"chan{i:02d}" for i in range(12)))
     srv.wait(lambda: any("до 10 каналов" in t for t in client_texts(5000)), what="лимит источников")
@@ -148,7 +150,7 @@ try:
     time.sleep(4)
     srv.client_message("CLIENTTOKEN1", 500, 5000, "/menu")
     srv.wait(lambda: sum("Меню бота" in t for t in client_texts(5000)) >= 2, what="бот снова работает")
-    st = json.load(open(os.path.join(w, "data", "clients", cid, "themes.json")))
+    st = tio.rjson(os.path.join(w, "data", "clients", cid, "themes.json"))
     assert len(st["themes"]) == 3, "настройки клиента пропали после выключения"
     print("s4 ok: продавец выключил — бот клиента только «напиши +79017710012»; включил — всё вернулось, настройки целы")
 
@@ -194,7 +196,7 @@ try:
         press(f"p:cllg:{field}")
         srv.user_message(1, 100, value)
         srv.wait(lambda: any(ok in t for t in srv.texts(100)), what=f"реквизиты: {field}")
-    srv.wait(lambda: (json.load(open(os.path.join(w, "data", "clients", cid, "subscription.json"))).get("legal")
+    srv.wait(lambda: (tio.rjson(os.path.join(w, "data", "clients", cid, "subscription.json")).get("legal")
                       or {}).get("inn") == "771234567859", what="реквизиты у бота клиента")
     text, rows = press("m:deldata")                     # у продавца — подсказка, где удалить клиента
     assert "Клиенты" in text and "lg:del" not in rows, text
@@ -214,12 +216,12 @@ try:
     assert not os.path.exists(os.path.join(w, "data", "clients", cid, "pay_request.json"))
     text, rows = client_press("lg:tick:2:90")
     assert "✅ Я согласен с условиями Оферты и Политикой конфиденциальности" in rows, rows
-    cons = json.load(open(os.path.join(w, "data", "clients", cid, "legal_consents.json")))
+    cons = tio.rjson(os.path.join(w, "data", "clients", cid, "legal_consents.json"))
     assert cons["500"]["docs"]["offer"] == "https://seller.example/oferta" and "name" not in cons["500"], cons
     text, rows = client_press("lg:go:2:90")
     assert "«Про» на 90 дней — 3750 ₽" in text and "Сбер по номеру" in text and "pd:2:90" in rows, text
     print("s8а ok: ⚖️ в боте клиента — реквизиты продавца; без отметки «Я согласен…» оплатить нельзя")
-    until0 = json.load(open(os.path.join(w, "data", "clients.json")))[cid]["until"]
+    until0 = tio.rjson(os.path.join(w, "data", "clients.json"))[cid]["until"]
     text, rows = client_press("pd:2:90")
     assert "Заявка отправлена" in text, text
     srv.wait(lambda: f"a:clpayok:{cid}" in json.dumps([m["body"] for m in srv.to_chat(100)]),
@@ -229,7 +231,7 @@ try:
     text, rows = press(f"a:clpayok:{cid}")
     assert "Тариф: «Про»" in text, text
     srv.wait(lambda: any("Оплата получена" in t and "«Про»" in t for t in client_texts(5000)), what="клиенту: оплата получена")
-    c = json.load(open(os.path.join(w, "data", "clients.json")))[cid]
+    c = tio.rjson(os.path.join(w, "data", "clients.json"))[cid]
     assert c["plan"] == "Про" and c["lim_themes"] == 10 and abs(c["until"] - until0 - 90 * 86400) < 120, c
     client_press("p:themenew")                          # лимит вырос сразу, без перезапуска
     srv.client_message("CLIENTTOKEN1", 500, 5000, "Четвёртая")
@@ -237,7 +239,7 @@ try:
     # 9) онлайн-оплата ЮKassa: ссылка клиенту, оплата прошла — бот продлился сам, без нажатий продавца
     text, rows = client_press("py:1:30")
     assert "Оплатить онлайн" in text and "pk:1:30" in rows, text
-    until1 = json.load(open(os.path.join(w, "data", "clients.json")))[cid]["until"]
+    until1 = tio.rjson(os.path.join(w, "data", "clients.json"))[cid]["until"]
     text, rows = client_press("pk:1:30")
     assert "Готовлю ссылку" in text, text
     def pay_link():
@@ -254,14 +256,13 @@ try:
     srv.payments[pid]["status"] = "succeeded"
     srv.wait(lambda: any("Оплата прошла (ЮKassa)" in t for t in srv.texts(100)), what="продавцу: оплата прошла", timeout=60)
     srv.wait(lambda: sum("Оплата получена" in t for t in client_texts(5000)) >= 2, what="клиенту: оплата получена")
-    c = json.load(open(os.path.join(w, "data", "clients.json")))[cid]
+    c = tio.rjson(os.path.join(w, "data", "clients.json"))[cid]
     assert c["plan"] == "Стандарт" and abs(c["until"] - until1 - 30 * 86400) < 120, c
     assert not os.path.exists(os.path.join(w, "data", "clients", cid, "pay_request.json"))
     print("s9 ok: ЮKassa — клиенту ссылка на оплату, после оплаты бот продлился и сменил тариф сам")
     # 10) 💳 цена в заявке не совпала с тарифом продавца (подделали или тариф подорожал) — платежа нет
     n_pay = len(srv.payment_bodies)
-    json.dump({"status": "new", "mode": "online", "t": time.time(), "plan": "Стандарт", "days": 30, "price": 1},
-              open(os.path.join(w, "data", "clients", cid, "pay_request.json"), "w"))
+    tio.wjson({"status": "new", "mode": "online", "t": time.time(), "plan": "Стандарт", "days": 30, "price": 1}, os.path.join(w, "data", "clients", cid, "pay_request.json"), "w")
     srv.wait(lambda: any("Цена тарифа изменилась" in t for t in client_texts(5000)), what="клиенту: цена изменилась",
              timeout=40)
     assert len(srv.payment_bodies) == n_pay, srv.payment_bodies[n_pay:]
@@ -287,11 +288,11 @@ try:
     press(f"a:cldelok:{cid}")
     srv.wait(lambda: not os.path.isdir(os.path.join(w, "data", "clients", cid)), what="клиент удалён")
     assert any("данные удалены" in t for t in client_texts(5000)), client_texts(5000)[-2:]
-    assert json.load(open(os.path.join(w, "data", "clients.json"))) == {}
+    assert tio.rjson(os.path.join(w, "data", "clients.json")) == {}
     arch = sorted(os.listdir(os.path.join(w, "data", "consent_archive")))
     assert len(arch) == 2 and all(a.startswith(cid) for a in arch), arch
     for a in arch:                                      # права на контент и согласие с офертой — доказательства
-        assert "500" in json.load(open(os.path.join(w, "data", "consent_archive", a))), a
+        assert "500" in tio.rjson(os.path.join(w, "data", "consent_archive", a)), a
     print("s5а ok: 🗑 запрос на удаление данных из бота клиента — продавцу один раз; удалил — клиенту подтверждение")
     print("s5 ok: журнал клиента виден продавцу; удаление останавливает бота и стирает его данные")
 
@@ -304,18 +305,19 @@ try:
     press(f"a:clsub:{cid2}:0:30")
     pidf = os.path.join(w, "data", "clients", cid2, "bot.pid")
     srv.wait(lambda: os.path.exists(pidf), what="pid бота клиента")
-    old = int(open(pidf).read())
+    old = int(tio.rfile(pidf))
     time.sleep(3)
-    p.kill()                                          # SIGKILL: основной бот не успевает ничего сделать сам
-    srv.wait(lambda: not os.path.exists(f"/proc/{old}") or open(f"/proc/{old}/stat").read().split()[2] == "Z",
+    tio.reap(p)                                          # SIGKILL: основной бот не успевает ничего сделать сам
+    srv.wait(lambda: not os.path.exists(f"/proc/{old}") or tio.rfile(f"/proc/{old}/stat").split()[2] == "Z",
              what="бот клиента вышел вслед за основным", timeout=15)
     p = subprocess.Popen([sys.executable, "main.py"], cwd=w, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
-    threading.Thread(target=lambda: [out.append(l) for l in p.stdout], daemon=True).start()
-    srv.wait(lambda: os.path.exists(pidf) and int(open(pidf).read()) != old, what="бот клиента запущен заново", timeout=60)
+    p.reader = threading.Thread(target=lambda: [out.append(l) for l in p.stdout], daemon=True)
+    p.reader.start()
+    srv.wait(lambda: os.path.exists(pidf) and int(tio.rfile(pidf)) != old, what="бот клиента запущен заново", timeout=60)
     print("s7 ok: основной бот перезапустили — старая копия бота клиента вышла, запущена новая")
 finally:
-    p.kill()
+    tio.reap(p)
 
 # 6) сроки (без ожидания реальных дней): напоминания за 3 дня, за 1 день и в день окончания
 tele = types.ModuleType("telethon"); tele.TelegramClient = object; sys.modules["telethon"] = tele
@@ -353,7 +355,7 @@ assert bot.CONSENT_ON in json.dumps(rows, ensure_ascii=False), rows
 t, rows = bot.locked_answer({"payload": "lg:go:1:30", "user": {"user_id": 77}})
 assert "pd:1:30" in json.dumps(rows), (t, rows)
 t, rows = bot.locked_answer({"payload": "pd:1:30", "user": {"user_id": 77}})
-assert "Заявка отправлена" in t and json.load(open("pay_request.json"))["plan"] == "Стандарт"
+assert "Заявка отправлена" in t and tio.rjson("pay_request.json")["plan"] == "Стандарт"
 t, rows = bot.locked_answer({"payload": "m:terms", "user": {"user_id": 77}})
 assert "Документы" in t, t                                # документы видно и без подписки
 t, rows = bot.locked_answer({"payload": "m:deldata", "user": {"user_id": 77}})

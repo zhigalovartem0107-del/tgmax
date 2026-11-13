@@ -2,6 +2,7 @@
 SHA-256 секрета, не сам секрет: даже со всеми файлами бота, но без секрета, его не запустить. main.py без (или с
 неверным) BOT_SECRET пишет «Unauthorized copy detected» и сразу выходит, не запуская бота; с верным — запускается.
 Плюс build_obfuscated.sh (PyArmor) — для защищённой выкладки на хостинг."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import hashlib
 import os
 import shutil
@@ -44,9 +45,9 @@ def t1():
     for bad in ("", "wrong", " " + TEST_SECRET, None, 123, TEST_HASH):
         assert L.secret_ok(bad, TEST_HASH) is False, bad
     assert len(L.EXPECTED_SHA256) == 64 and all(c in "0123456789abcdef" for c in L.EXPECTED_SHA256.lower())
-    src = open(os.path.join(ROOT, "reloader/services/license.py"), encoding="utf-8").read()
+    src = tio.rfile(os.path.join(ROOT, "reloader/services/license.py"), encoding="utf-8")
     assert "BOT_SECRET" in src and L.EXPECTED_SHA256 in src
-    main_src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()   # замок в main.py — тот же хеш
+    main_src = tio.rfile(os.path.join(ROOT, "main.py"), encoding="utf-8")   # замок в main.py — тот же хеш
     assert L.EXPECTED_SHA256 in main_src and "BOT_SECRET" in main_src and "Unauthorized copy detected" in main_src
 
 
@@ -89,8 +90,7 @@ def sandbox():
     shutil.copy(os.path.join(ROOT, "main.py"), w)
     shutil.copytree(os.path.join(ROOT, "reloader"), os.path.join(w, "reloader"),
                     ignore=shutil.ignore_patterns("__pycache__"))
-    open(os.path.join(w, "tg_to_max.py"), "w", encoding="utf-8").write(
-        "BOT_VERSION = 2026110625\nprint('BOT STARTED', flush=True)\n")
+    tio.wfile("BOT_VERSION = 2026110625\nprint('BOT STARTED', flush=True)\n", os.path.join(w, "tg_to_max.py"), "w", encoding="utf-8")
     return w
 
 
@@ -132,7 +132,7 @@ def t7():
                            timeout=60)
         out = (p.stdout or "") + (p.stderr or "")
         assert p.returncode != 0 and "Unauthorized copy detected" in out, (args, p.returncode, out[-500:])
-    src = open(os.path.join(ROOT, "tg_to_max.py"), encoding="utf-8").read()
+    src = tio.rfile(os.path.join(ROOT, "tg_to_max.py"), encoding="utf-8")
     assert "from reloader.services import license" in src, "замок в tg_to_max.py использует общий модуль лицензии"
 
 
@@ -142,10 +142,10 @@ def t6():
     (set -e); README рассказывает, как выложить защищённую версию и про BOT_SECRET"""
     script = os.path.join(ROOT, "build_obfuscated.sh")
     assert os.path.exists(script), "нет build_obfuscated.sh"
-    body = open(script, encoding="utf-8").read().lower()
+    body = tio.rfile(script, encoding="utf-8").lower()
     assert "pyarmor" in body and ("set -e" in body or "set -eu" in body), "PyArmor и остановка при ошибке"
     assert subprocess.run(["sh", "-n", script]).returncode == 0, "sh -n: синтаксис скрипта"
-    readme = open(os.path.join(ROOT, "README.txt"), encoding="utf-8").read()
+    readme = tio.rfile(os.path.join(ROOT, "README.txt"), encoding="utf-8")
     assert "BOT_SECRET" in readme and ("pyarmor" in readme.lower() or "build_obfuscated" in readme.lower())
 
 

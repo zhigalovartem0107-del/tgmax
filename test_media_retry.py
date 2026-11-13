@@ -2,9 +2,9 @@
 потерял вложение») — бот молча повторяет и пост выходит ЦЕЛИКОМ, с файлом. Не вышло после повторов — пост не выходит
 вовсе (никакого «огрызка» без файла), точная причина — только в журнале админа и в bot.log. Покупателю — ни слова:
 ни в чат, ни в его «📜 Журнал». Бот в host-режиме, настоящие запросы к поддельному MAX."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio
 import importlib.util
-import json
 import os
 import re
 import sys
@@ -49,7 +49,7 @@ os.environ.update(MAX_API_URL=srv.url, BOT_TOKEN="TESTTOKEN", TGMAX_HOST="1", OW
 for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ADMIN_IDS"):
     os.environ.pop(k, None)
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "TESTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)

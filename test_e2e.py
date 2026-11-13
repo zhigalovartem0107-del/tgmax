@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Сквозная проверка: настоящий бот + поддельный Telegram + поддельный сервер MAX (по HTTP)."""
@@ -7,12 +8,11 @@ from fake_max import FakeMax
 
 srv = FakeMax()
 work = tempfile.mkdtemp(); os.chdir(work)
-json.dump({"api_id": 1, "api_hash": "h", "phone": "+79990000000", "max_token": "TESTTOKEN",
-           "max_channel_link": "https://max.ru/mychannel", "max_api": srv.url, "verify_ssl": False},
-          open("config.json", "w"))
-json.dump({"channels": ["src1", "src2"], "approval_on": True, "interval": 1, "night_on": False,
-           "report_on": False, "empty_warn_on": False, "gap_min": 60}, open("settings.json", "w"))
-json.dump({"src1": 10, "src2": 20}, open("last_posts.json", "w"))
+tio.wjson({"api_id": 1, "api_hash": "h", "phone": "+79990000000", "max_token": "TESTTOKEN",
+           "max_channel_link": "https://max.ru/mychannel", "max_api": srv.url, "verify_ssl": False}, "config.json", "w")
+tio.wjson({"channels": ["src1", "src2"], "approval_on": True, "interval": 1, "night_on": False,
+           "report_on": False, "empty_warn_on": False, "gap_min": 60}, "settings.json", "w")
+tio.wjson({"src1": 10, "src2": 20}, "last_posts.json", "w")
 
 # ---------- поддельный Telegram ----------
 UTC = datetime.timezone.utc
@@ -25,7 +25,7 @@ class FMsg:
         self.video = types.SimpleNamespace(size=2000, attributes=[types.SimpleNamespace(duration=7)]) if video else None
         self.fwd_from = None
     async def download_media(self, file=None):
-        open(file, "wb").write(b"\xff\xd8binary" * 50); return file
+        tio.wfile(b"\xff\xd8binary" * 50, file, "wb"); return file
 
 DATA = {"src1": [], "src2": [], "src3": []}
 FAIL = set()

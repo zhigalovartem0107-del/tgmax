@@ -13,12 +13,19 @@ LOG_FILE = "bot.log"
 JOURNAL = deque(maxlen=300)          # что бот делал с постами — для команды /log и кнопки «Журнал»
 
 
+_LOG_LOCK = threading.Lock()   # пишут многие потоки: строки не перемешиваются, ротацию делает один
+
+
 def _log_line(line):
+    """Строка в bot.log. Без лишних обращений к диску (размер — по самому открытому файлу): журнал пишется и из
+    цикла asyncio. Больше 1 МБ — старое в bot.log.1 (один поток; раньше двое разом затирали архив)."""
     try:
-        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
-            os.replace(LOG_FILE, LOG_FILE + ".1")
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with _LOG_LOCK:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+                big = f.tell() > 1_000_000
+            if big:
+                os.replace(LOG_FILE, LOG_FILE + ".1")
     except OSError:
         pass
 

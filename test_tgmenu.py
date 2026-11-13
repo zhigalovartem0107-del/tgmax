@@ -1,7 +1,8 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 """Подключение аккаунта Telegram из меню MAX: ключи, номер, код, пароль — без консоли и без перезапуска."""
-import asyncio, importlib.util, json, os, sys, tempfile, threading, types
+import asyncio, importlib.util, os, sys, tempfile, threading, types
 
 # --- поддельный telethon: код 12345, у второго аккаунта облачный пароль ---
 class E:
@@ -16,7 +17,7 @@ class FakeTG:
     def __init__(self, session, api_id, api_hash):
         self.session, self.api_id, self.api_hash = session, api_id, api_hash
         self.authorized = session == "session" and os.path.exists("session.session") \
-            and open("session.session").read() == "AUTH"
+            and tio.rfile("session.session") == "AUTH"
         self.handlers, self.codes = [], 0
         CLIENTS.append(self)
     async def connect(self): open(self.session + ".session", "a").close()
@@ -33,7 +34,7 @@ class FakeTG:
         elif PASSWORD["value"]:
             raise E.SessionPasswordNeededError()
         self.authorized = True
-        open(self.session + ".session", "w").write("AUTH")
+        tio.wfile("AUTH", self.session + ".session", "w")
     def add_event_handler(self, f, ev): self.handlers.append(f)
     async def get_messages(self, ch, min_id=0, limit=30, ids=None): return []
 
@@ -42,7 +43,7 @@ tele.events = types.SimpleNamespace(NewMessage=lambda *a, **k: None)
 sys.modules["telethon"] = tele; sys.modules["telethon.errors"] = E
 os.chdir(tempfile.mkdtemp())
 os.environ["TGMAX_NO_DESKTOP_KEYS"] = "1"          # старый путь — со своими ключами; ключи Desktop — тест g13
-json.dump({"max_token": "T", "max_channel_link": "https://max.ru/x"}, open("config.json", "w"))
+tio.wjson({"max_token": "T", "max_channel_link": "https://max.ru/x"}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
 assert not bot.TG_READY
@@ -103,9 +104,9 @@ assert "Отправил повторно" in text and bot.TG_LOGIN["client"].co
 text, rows = say("1 2 3 4 5")
 assert "Telegram подключён" in text, text
 assert {"m5", "m6"} <= set(DELETED)                                    # коды из чата удалены
-cfg = json.load(open("config.json"))
+cfg = tio.rjson("config.json")
 assert cfg["api_id"] == 1234567 and cfg["phone"] == "+79990001122" and cfg["max_token"] == "T", cfg
-assert open("session.session").read() == "AUTH" and not os.path.exists("login_tmp.session")
+assert tio.rfile("session.session") == "AUTH" and not os.path.exists("login_tmp.session")
 cur = bot.TG_CLIENT.cur
 assert isinstance(cur, FakeTG) and cur.session == "session" and cur.authorized and cur.handlers
 assert bot.TG_READY and bot.PHONE == "+79990001122" and 1 not in bot.PENDING
@@ -192,7 +193,7 @@ finally:
     builtins.print, _time.sleep = _p, _sleep
 txt = "\n".join(out)
 assert "сбой связи" not in txt and txt.count("нет связи с MAX") == 1 and "восстановлена" in txt, txt
-assert "Remote end closed" in open("bot.log", encoding="utf-8").read()       # подробности — в bot.log
+assert "Remote end closed" in tio.rfile("bot.log", encoding="utf-8")       # подробности — в bot.log
 print("g8 ok: разовые обрывы связи с MAX не засоряют консоль, долгий обрыв — одна строка и «восстановлена»")
 # 9) t.me заблокирован (сервер в РФ): запасной адрес telegram.me, пауза растёт, одна строка в лог, одно сообщение админам
 calls = []
@@ -254,19 +255,19 @@ class FakeQR:
         if PASSWORD["value"]:
             raise E.SessionPasswordNeededError()
         self.c.authorized = True
-        open(self.c.session + ".session", "w").write("AUTH")
+        tio.wfile("AUTH", self.c.session + ".session", "w")
     async def recreate(self): self.url = "tg://login?token=BBB"
 async def qr_login(self): return FakeQR(self)
 async def get_me(self): return types.SimpleNamespace(phone="79990005566")
 FakeTG.qr_login, FakeTG.get_me = qr_login, get_me
 UPLOADS = []
-bot.upload_image = lambda path: (UPLOADS.append(open(path, "rb").read()[:8]), "imgtok")[1]
+bot.upload_image = lambda path: (UPLOADS.append(tio.rfile(path, "rb")[:8]), "imgtok")[1]
 TOKS = []
 bot.api_send = lambda chat, text, rows=None, token=None: (API.append((text, rows)), TOKS.append(token))
 PASSWORD["value"] = None
 for f in ("session.session", "config.json"):
     if os.path.exists(f): os.remove(f)
-json.dump({"max_token": "T", "max_channel_link": "https://max.ru/x"}, open("config.json", "w"))
+tio.wjson({"max_token": "T", "max_channel_link": "https://max.ru/x"}, "config.json", "w")
 bot.CONFIG.update(api_id=0, api_hash="", phone="")
 bot.TG_LOGIN.clear(); bot.PENDING.clear(); API.clear()
 text, rows = press("tg:menu")
@@ -283,7 +284,7 @@ assert any("Telegram подключён" in (m[0] or "") for m in API), [m[0][:4
 assert QRS == ["tg://login?token=AAA", "tg://login?token=BBB"] and len(UPLOADS) == 2, (QRS, UPLOADS)
 assert all(u == b"\x89PNG\r\n\x1a\n" for u in UPLOADS)                          # настоящая картинка PNG
 assert TOKS.count("imgtok") == 2
-cfg = json.load(open("config.json"))
+cfg = tio.rjson("config.json")
 assert cfg["api_id"] == 1234567 and cfg["phone"] == "+79990005566" and cfg["max_token"] == "T", cfg
 assert isinstance(bot.TG_CLIENT.cur, FakeTG) and bot.TG_CLIENT.cur.authorized and not os.path.exists("tg_login_qr.png")
 print("g11 ok: вход по QR — картинка в MAX, новый QR вместо просроченного, вход без кода, номер взят из аккаунта")
@@ -334,7 +335,6 @@ press("tg:cancel")
 print("g13 ok: без my.telegram.org — встроенные ключи Telegram Desktop, только номер и код; свои ключи — по кнопке")
 
 # 14) бот покупателя читает каналы через бота продавца (вход только у продавца — Telegram не рвёт связь)
-import datetime as _datetime
 class Doc:
     def __init__(self, size, mime, dur=0):
         self.size, self.mime_type = size, mime
@@ -350,7 +350,7 @@ class TMsg:
         self.file = types.SimpleNamespace(name=name, ext=".pdf" if name else ".jpg")
     async def download_media(self, file=None):
         p = file + f"m{self.id}.bin" if file.endswith("/") else file
-        open(p, "wb").write(b"DATA%d" % self.id)
+        tio.wfile(b"DATA%d" % self.id, p, "wb")
         return p
 class HubTG(FakeTG):
     MSGS = [TMsg(5, "альбом", photo=True, gid=77), TMsg(6, "", photo=True, gid=77),
@@ -376,7 +376,7 @@ assert bot.doc_info(by[7]) == {"id": 7, "name": "Схема.pdf", "size": 9} and
 assert bot.video_info(by[8]) == (50, 12) and not bot.doc_info(by[8])
 one = asyncio.run_coroutine_threadsafe(rc.get_messages("chan", ids=7), loop).result(10)
 p = asyncio.run_coroutine_threadsafe(one.download_media(file=os.path.abspath("dl_test.pdf")), loop).result(10)
-assert open(p, "rb").read() == b"DATA7"
+assert tio.rfile(p, "rb") == b"DATA7"
 left_tmp = lambda: [d for d in os.listdir(".") if d.startswith("tmp")]
 deadline = _time.time() + 5         # продавец убирает свою временную папку сразу после отправки файла — ждём её
 while left_tmp() and _time.time() < deadline:
@@ -399,7 +399,7 @@ print("g14 ok: бот покупателя читает каналы и кача
 LOGOUTS = []
 class OutTG(FakeTG):
     async def log_out(self): LOGOUTS.append(self.session)
-open("session.session", "w").write("AUTH")
+tio.wfile("AUTH", "session.session", "w")
 bot.TelegramClient = OutTG
 bot.TG_CLIENT = bot.ClientBox(OutTG("session", 2040, "x"))
 bot.SHARED["on"] = False
@@ -473,7 +473,7 @@ print("g18 ok: «🚨 Убрать всех админов» — только у
 class AuthKeyUnregisteredError(Exception): pass
 class DeadTG(FakeTG):
     async def get_messages(self, *a, **k): raise AuthKeyUnregisteredError("The key is not registered in the system")
-open("session.session", "w").write("AUTH")
+tio.wfile("AUTH", "session.session", "w")
 bot.TG_CLIENT = bot.ClientBox(DeadTG("session", 2040, "x"))
 SENT_TO.clear(); bot.LAST_IDS["deadch"] = 5
 bot.CFG["channels"] = ["deadch"]

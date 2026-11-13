@@ -1,5 +1,6 @@
 """🤖 Ключи ИИ (Gemini, OpenRouter, DeepSeek): несколько ключей на провайдера, ввод в панели, ротация при 429.
 Ключи из панели главнее переменных окружения, подхватываются сразу и переживают перезапуск."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio, importlib.util, json, os, sys, tempfile, time, types
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
@@ -16,7 +17,7 @@ for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "GEMINI_API_
     os.environ.pop(k, None)
 DATA = tempfile.mkdtemp()
 os.chdir(DATA)
-json.dump({"max_token": "HOSTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "HOSTTOKEN", "max_channel_link": ""}, "config.json", "w")
 
 
 def load_bot(name):
@@ -50,7 +51,7 @@ def payloads(rows):
     return [b.get("payload") for r in rows for b in r if b.get("type") == "callback"]
 
 
-from reloader.services.ai.keys import parse_keys, mask_keys, KeyRotator, AllKeysExhausted  # noqa: E402
+from reloader.services.ai.keys import parse_keys, mask_keys  # noqa: E402
 
 # 1) разбор и маскировка: запятые, переносы строк, лишние пробелы и повторы
 assert parse_keys(" k1, k2\nk3 ,, k2 \n") == ["k1", "k2", "k3"]
@@ -216,7 +217,7 @@ assert any(b.get("payload") == "m:clai" for r in OUT[-1][1] for b in r), payload
 press(1, 61000, "m:clai")
 assert "ИИ-расход" in OUT[-1][0] and all(f"a:claibud:{k}" in payloads(OUT[-1][1]) for k in ("save", "std", "max")), OUT[-1]
 press(1, 61000, "a:claibud:save")
-assert bot.GCFG["ai_budget"] == "save" and json.load(open(os.path.join(DATA, "settings.json")))["ai_budget"] == "save"
+assert bot.GCFG["ai_budget"] == "save" and tio.rjson(os.path.join(DATA, "settings.json"))["ai_budget"] == "save"
 assert "✅ Максимально экономить" in str(OUT[-1][1]), OUT[-1][1]
 press(1, 61000, "a:claibud:std")
 assert bot.GCFG["ai_budget"] == "std"

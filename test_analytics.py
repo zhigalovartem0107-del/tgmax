@@ -1,6 +1,7 @@
 """📊 Премиум-аналитика: карточки канала и всей сети (Pillow), 🔮 прогноз поста, фоны (фото picsum / свой градиент /
 ИИ), после каждой картинки — сообщение ровно в формате 📈/👥/👁,
 ⏱ скорость меню (учёт времени, «печатает…», нажатия разных людей не ждут друг друга)."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import base64
 import importlib.util
 import io
@@ -71,7 +72,7 @@ for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "TGMAX_HOST"
 os.environ.update(MAX_API_URL=srv.url, YK_API_URL=srv.url)
 DATA = tempfile.mkdtemp()
 os.chdir(DATA)
-json.dump({"max_token": "TESTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
@@ -201,10 +202,10 @@ caps = [c["body"]["text"] for c in cards[1::2]]
 assert caps[0].startswith("📈 «") and "5 008 подписчиков · сегодня" in caps[0] and "📊 Средний охват:" in caps[0], caps
 assert caps[1].startswith("📈 «") and "\n👥 1 200 подписчиков · сегодня" in caps[1] and "📊 Средний охват:" in caps[1], caps
 today = A.day_key(time.time())
-assert bot.SUBS_HIST["5000"][today] == 5008 and json.load(open("subs_history.json"))["6000"][today] == 1200
+assert bot.SUBS_HIST["5000"][today] == 5008 and tio.rjson("subs_history.json")["6000"][today] == 1200
 srv.subs[5000] = 5020
 bot.subs_snapshot_all()                                                   # раз в час (в фоне) — последнее за день
-assert json.load(open("subs_history.json"))["5000"][today] == 5020
+assert tio.rjson("subs_history.json")["5000"][today] == 5020
 bot.subs_snapshot(5000, 4990, time.time() - 3 * DAY)
 bot.subs_snapshot(5000, 1, time.time() - 100 * DAY)                       # старше 2 месяцев — не храним
 assert len(bot.SUBS_HIST["5000"]) == 2, bot.SUBS_HIST["5000"]
@@ -277,7 +278,7 @@ for want, label in (("off", "🎨 градиент"), ("ai", "🤖 рисует 
     bot.do_action("anlbg", 1)
     assert bot.anl_bg_mode(1) == want and bot.GCFG["anl_bg"]["1"] == want
     assert label in bot.FLASH.pop(1, ""), label
-assert json.load(open("settings.json"))["anl_bg"]["1"] == "pattern"       # выбор фона переживает перезапуск
+assert tio.rjson("settings.json")["anl_bg"]["1"] == "pattern"       # выбор фона переживает перезапуск
 calls = []
 real_gen, real_keys = bot.ai_image.generate, bot.ai_keys
 bot.ai_image.generate = lambda topic, key, http, url, model: (calls.append((topic, key, model)), png)[1]
@@ -469,13 +470,13 @@ print("a12 ok: 🛡 NaN/бесконечность/строки/мусор в ч
       "сжаты в карточку; любые размеры фона и режимы картинок; прогноз на мусорной истории — «нет истории»")
 
 # 13) испорченный subs_history.json и пустые каналы: карточка и прогноз всё равно приходят
-json.dump({"5000": {A.day_key(time.time() - DAY): float("nan"), "кривая дата": 5, A.day_key(time.time() - 2 * DAY): 4000},
-           "6000": "не словарь", "7000": [1, 2]}, open("subs_bad.json", "w"))
+tio.wjson({"5000": {A.day_key(time.time() - DAY): float("nan"), "кривая дата": 5, A.day_key(time.time() - 2 * DAY): 4000},
+           "6000": "не словарь", "7000": [1, 2]}, "subs_bad.json", "w")
 clean = bot._load_subs("subs_bad.json")
 assert clean == {"5000": {A.day_key(time.time() - 2 * DAY): 4000}}, clean
-open("subs_bad.json", "w").write("{сломано")
+tio.wfile("{сломано", "subs_bad.json", "w")
 assert bot._load_subs("subs_bad.json") == {}
-open("subs_bad.json", "w").write("[1, 2, 3]")
+tio.wfile("[1, 2, 3]", "subs_bad.json", "w")
 assert bot._load_subs("subs_bad.json") == {}
 srv.chats["empty"] = 9100
 srv.history[9100] = []

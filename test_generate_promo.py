@@ -53,7 +53,7 @@ print("generate_promo: формат, сцены, курсор, тексты, к�
 # 7) рендер: если есть moviepy и ffmpeg — вертикальный mp4 10 с
 have = shutil.which("ffmpeg") and shutil.which("ffprobe")
 try:
-    import moviepy  # noqa: F401
+    importlib.import_module("moviepy")
     have_moviepy = True
 except ImportError:
     have_moviepy = False

@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 import asyncio, datetime, importlib.util, os, sys, tempfile, time, types
@@ -11,7 +12,7 @@ class FMsg:
         self.document = self.gif = self.video_note = self.sticker = self.video = None
         self.fwd_from = None
     async def download_media(self, file=None):
-        open(file, "wb").write(b"img"); return file
+        tio.wfile(b"img", file, "wb"); return file
 
 DATA = {"robl": [FMsg(11, "Новый ивент в игре, подробности внутри", photo=True)],
         "cats": [FMsg(5, "Котик спит в коробке и это очень мило")]}

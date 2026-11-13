@@ -3,7 +3,6 @@ import importlib.util
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -40,7 +39,7 @@ print("generate_video: кадры и тайминг — ok")
 # 4) рендер короткого ролика: длительность ~10 с (если есть moviepy и ffmpeg)
 have_ffmpeg = shutil.which("ffmpeg") and shutil.which("ffprobe")
 try:
-    import moviepy  # noqa: F401
+    importlib.import_module("moviepy")
     have_moviepy = True
 except ImportError:
     have_moviepy = False

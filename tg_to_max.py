@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026111330            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111331            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -108,7 +108,7 @@ from reloader.core import timeutil as _timeutil
 from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
 from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
-from reloader.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402,F401 (LOG_FILE — для проверок)
+from reloader.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402
 from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
 from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
@@ -1333,49 +1333,82 @@ SPAM_BLOCK_FILE = "spam_blocklist.json"     # чему научили удале
 SPAM_LOG_FILE = "spam_eaten.json"           # что съедено — для сводки в панели
 SPAM_FLOOD_N = 10                           # столько спам-постов подряд из одного канала — канал на час в мут
 SPAM_MUTE_SEC = 3600
-SPAM_KEEP_DAYS = 30
+SPAM_KEEP_DAYS = 30                         # «съеденное» для сводки храним месяц, но не больше SPAM_LOG_MAX записей
+SPAM_LOG_MAX = 3000
+SPAM_FLUSH_SEC = 5                          # «съеденное» пишем на диск не чаще раза в 5 с: флуд — не сотни записей файла
+SPAM_RULE_TTL_DAYS = 90                     # правило чёрного списка не срабатывало 90 дней — удаляем
+SPAM_BLOCK_MAX_LINKS = 500                  # потолки чёрного списка: сверх них уходят самые давно не срабатывавшие
+SPAM_BLOCK_MAX_WORDS = 300
 SPAM_KINDS = {"scam": "крипто/казино/«заработок»", "drop": "поиск дропов", "shout": "кричащий спам (КАПС/эмодзи)",
               "link": "подозрительные ссылки", "bot": "приглашения в ботов", "xpromo": "кросс-промо",
               "block": "чёрный список", "manual": "отмечен админом"}
+# «Точно скам» — хватает одного признака. Слова, которые бывают и в обычных новостях («ставки высоки», «казино в GTA»,
+# «курс USDT»), сюда не входят: для них — SPAM_SCAM_WEAK, и только вместе с денежным контекстом (SPAM_SCAM_CTX).
 SPAM_SCAM = re.compile(
-    r"\busdt\b|\btrc-?20\b|\berc-?20\b|\bbep-?20\b|(?:p2p|п2п)[\s-]*арбитраж|арбитраж\w*\s+(?:крипт|трафик|usdt)|"
-    r"крипт\w*\s+(?:сигнал|арбитраж|схем)|казино|\bслот(?:ы|ах|ов)\b|букмекер|\b1x(?:bet|бет)\b|\b1win\b|pin-?up|"
-    r"\bставк(?:и|ам|ах|ами)\b|\bставк[аиу]\s+на\s+(?:спорт|матч|футбол)|"
+    r"(?:p2p|п2п)[\s-]*арбитраж|арбитраж\w*\s+(?:крипт|трафик|usdt)|крипт\w*\s+(?:сигнал|арбитраж|схем)|"
+    r"онлайн[\s-]*казино|казино[\s-]*онлайн|букмекер|\b1x(?:bet|бет)\b|\b1win\b|pin-?up|"
+    r"ставк\w*\s+на\s+(?:спорт|матч|футбол|хоккей|теннис|киберспорт|исход)|ставк\w*\s+с\s+(?:гарант|коэф|кэф)|"
+    r"прогноз\w*\s+на\s+(?:матч|спорт|ставк)|коэф\w*\s+(?:от|до)\s+\d|"
     r"заработ\w*\s+(?:в|из)\s+(?:интернет\w*|сет\w*|дома)|пасс?ивн\w*\s+доход|без\s+вложений|"
     r"доход\w*\s+от\s+\d[\d\s]*(?:₽|р\b|руб|\$|usd)|л[её]гк\w*\s+деньг|быстр\w*\s+(?:деньг|заработ)|"
     r"удво\w*\s+депозит|бонус\s+\d+\s*%\s+на\s+(?:первый\s+)?депозит", re.I)
+SPAM_SCAM_WEAK = re.compile(r"казино|\busdt\b|\btrc-?20\b|\berc-?20\b|\bbep-?20\b|\bслот(?:ы|ах|ов)\b", re.I)
+SPAM_SCAM_CTX = re.compile(r"бонус|депозит|фриспин|вывод\w*|выплат\w*|выигр\w*|регистрац\w*|регистрир\w*|обмен\w*|"
+                           r"куплю|продам|пиши(?:те)?\b|\bв\s+лс\b|в\s+личк|доход|заработ|арбитраж|p2p|п2п|промокод",
+                           re.I)
+SPAM_ROBUX = re.compile(r"бесплатн\w*\s+(?:робукс|robux|v-?bucks|в-?баксы?)|(?:робукс\w*|robux)\s+бесплатно|"
+                        r"free\s+robux|генератор\s+(?:робукс|robux)|робукс\w*\s+даром", re.I)
 SPAM_DROP = re.compile(r"(?:ищ\w*|нужн\w*|набира\w*|набор|требу\w*)\s+дроп|работ\w*\s+дроп\w*|стань\s+дроп|"
                        r"\bдроп(?:ов|ы|ам)\s+(?:под|для|на)\s+(?:карт|обнал|p2p|п2п|usdt|крипт)|дроппер|обнал\w*", re.I)
-SPAM_TRIGGER = re.compile(r"срочно|халяв\w*|забер(?:и|ите)\b|забира(?:й|йте)\b|бесплатн\w*|только\s+сегодня|"
-                          r"успе(?:й|йте)\b|розда(?:ю|ём|ем|ча)|последн\w+\s+шанс", re.I)
+SPAM_TRIGGER = re.compile(r"срочно|халяв\w*|забер(?:и|ите)\b|забира(?:й|йте)\b|только\s+сегодня|успе(?:й|йте)\b|"
+                          r"розда(?:ю|ём|ем|ча)|последн\w+\s+шанс", re.I)
 SPAM_EMOJI = re.compile(r"[\U0001F300-\U0001FAFF☀-➿⭐⭕‼⁉]")
+SPAM_LETTERS = re.compile(r"[^\W\d_]+")
 SPAM_SHORT = re.compile(r"(?<![\w.])(?:bit\.ly|clck\.ru|vk\.cc|tinyurl\.com|cutt\.ly|goo\.su|is\.gd|shorturl\.at|"
                         r"u\.to)/\S+|t\.me/joinchat/\S+|t\.me/\+\S+", re.I)
-SPAM_CTA = re.compile(r"переход\w*|жми\b|забира\w*|забери|заход\w*|вступа\w*|регистрир\w*|получ\w*", re.I)
 SPAM_BOTREF = re.compile(r"t\.me/[A-Za-z]\w*bot\?start=\S*", re.I)
 SPAM_BOTAT = re.compile(r"(?<![\w@])@[A-Za-z]\w{2,}bot\b|t\.me/[A-Za-z]\w*bot\b", re.I)
+SPAM_BOTCALL = re.compile(r"\bжми\b|запуска\w*|запусти", re.I)
 SPAM_FREEBIE = re.compile(r"бесплатн\w*\s+(?:робукс|голд|гем|скин|кейс|подписк|звёзд|звезд|stars|v-?bucks|алмаз)|"
                           r"(?:робукс|голд|гем|алмаз)\w*\s+бесплатно|халяв\w*|бонус\w*|подар\w*|деньг\w*", re.I)
 SPAM_XPROMO = re.compile(r"взаимн\w*\s+пиар|взаимопиар|пиар\s+за\s+пиар|#вп\b|\bвп\s+(?:с|за)\b|"
                          r"обмен\s+(?:постами|аудитори\w*|подписчик\w*)|подборк\w*\s+каналов", re.I)
 SPAM_HANDLE = re.compile(r"(?<![\w@])@[A-Za-z]\w{3,31}")
+SPAM_DOMAIN = re.compile(r"(?<![\w@./-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:ru|su|com|net|org|info|biz|"
+                         r"io|me|cc|xyz|top|site|online|club|pro|shop|store|link|click|bet|casino|app|win|vip|рф))\b",
+                         re.I)
 SPAM_WORD = re.compile(r"[a-zа-я]{5,}")
 SPAM_COMMON = set("""этого чтобы только сейчас сегодня теперь новые новый новая новое можно нужно который которые
 которая очень после через будет будут всего всех всему ваших наших своих каждый каждого ссылке ссылка канал канале
 каналы подписка подписывайся друзья просто время больше меньше здесь пишите пиши тебе твоей теперь кстати
 вообще сразу всегда никогда первый первая другой другие""".split())
+SPAM_LOCK = threading.RLock()     # «съеденное», чёрный список и счёт флуда меняют потоки чтения каналов и меню разом
+SPAM_STATE = {"log_dirty": False, "log_saved": 0.0, "block_dirty": False}
 
 
 def _spam_block_load():
+    """spam_blocklist.json: {"links": [...], "words": [...], "seen": {правило: когда последний раз срабатывало}}.
+    Старый формат (только списки) и мусор в файле — без падений: берём только строки; у правил без даты — «сейчас»."""
     d = load_json_safe(SPAM_BLOCK_FILE, {})
     d = d if isinstance(d, dict) else {}
-    return {k: [str(x).strip().lower() for x in (d.get(k) if isinstance(d.get(k), list) else []) if str(x).strip()]
-            for k in ("links", "words")}
+    out, now = {}, time.time()
+    for k in ("links", "words"):
+        raw = d.get(k) if isinstance(d.get(k), list) else []
+        out[k] = list(dict.fromkeys(x.strip().lower() for x in raw if isinstance(x, str) and x.strip()))
+    seen = d.get("seen") if isinstance(d.get("seen"), dict) else {}
+    out["seen"] = {r: float(seen[r]) if isinstance(seen.get(r), (int, float)) and not isinstance(seen.get(r), bool)
+                   else now for r in out["links"] + out["words"]}
+    return out
+
+
+def _spam_eaten_load():
+    data = load_json_safe(SPAM_LOG_FILE, [])
+    return [e for e in data if isinstance(e, dict) and isinstance(e.get("t"), (int, float))] \
+        if isinstance(data, list) else []
 
 
 SPAM_BLOCK = _spam_block_load()
-_eaten = load_json_safe(SPAM_LOG_FILE, [])
-SPAM_EATEN = [e for e in _eaten if isinstance(e, dict) and "t" in e] if isinstance(_eaten, list) else []
+SPAM_EATEN = _spam_eaten_load()
 SPAM_RUN = {}            # (тема, канал) -> сколько спам-постов подряд
 SPAM_MUTED = {}          # (тема, канал) -> до какого времени канал не читаем (флуд спамом)
 
@@ -1384,28 +1417,35 @@ def _spam_norm(text):
     return (text or "").lower().replace("ё", "е")
 
 
-def spam_block_hit(text):
-    """Что из чёрного списка есть в посте: ссылка/@ник — хватит одной, слова — нужно два разных."""
+def spam_block_hit(text, now=None):
+    """Что из чёрного списка есть в посте: ссылка/@ник — хватит одной, слова — нужно два разных. Сработавшее
+    правило «живёт» дальше: срок (SPAM_RULE_TTL_DAYS) считаем от последнего срабатывания."""
     low = _spam_norm(text)
-    for x in SPAM_BLOCK["links"]:
-        if x and x in low:
-            return x
-    words = set(SPAM_WORD.findall(low))
-    hits = [w for w in SPAM_BLOCK["words"] if w in words]
-    return ", ".join(hits[:3]) if len(hits) >= 2 else None
+    hits = [next((x for x in list(SPAM_BLOCK["links"]) if x and x in low), None)]
+    if hits[0] is None:
+        have = set(SPAM_WORD.findall(low))
+        hits = [w for w in list(SPAM_BLOCK["words"]) if w in have][:3]
+        if len(hits) < 2:
+            return None
+    seen, now = SPAM_BLOCK["seen"], now or time.time()
+    for h in hits:
+        seen[h] = now
+    SPAM_STATE["block_dirty"] = True
+    return ", ".join(hits)
 
 
 def spam_verdict(raw, ch="", buttons=0):
     """(спам?, причина, вид): жёсткие локальные правила, без ИИ. Срабатывают — пост съедаем сразу."""
-    text = raw or ""
+    text = raw if isinstance(raw, str) else ""
     if not text.strip():
         return False, "", ""
     hit = spam_block_hit(text)
     if hit:
         return True, f"чёрный список: {hit}", "block"
     m = SPAM_SCAM.search(text)
-    if m:
-        return True, f"крипто/казино-скам «{m.group(0).strip()[:30]}»", "scam"
+    weak = SPAM_SCAM_WEAK.search(text)
+    if m or (weak and SPAM_SCAM_CTX.search(text)):
+        return True, f"крипто/казино-скам «{(m or weak).group(0).strip()[:30]}»", "scam"
     m = SPAM_DROP.search(text)
     if m:
         return True, f"поиск дропов «{m.group(0).strip()[:30]}»", "drop"
@@ -1414,17 +1454,17 @@ def spam_verdict(raw, ch="", buttons=0):
         letters = [c for c in text if c.isalpha()]
         caps = sum(1 for c in letters if c.isupper()) / len(letters) if len(letters) >= 15 else 0
         emojis = len(SPAM_EMOJI.findall(text))
-        if emojis >= 6 or caps >= 0.6:
+        if caps >= 0.6 or (emojis >= 5 and emojis >= 0.5 * len(SPAM_LETTERS.findall(text))):
             what = "КАПС" if caps >= 0.6 else f"эмодзи ×{emojis}"
             return True, f"кричащий спам ({what} + «{trig.group(0).strip()[:20]}»)", "shout"
     m = SPAM_SHORT.search(text)
-    if m and (trig or SPAM_CTA.search(text) or SPAM_FREEBIE.search(text)):
+    if m and (trig or weak or SPAM_FREEBIE.search(text)):
         return True, f"подозрительная ссылка {m.group(0)[:40]}", "link"
     m = SPAM_BOTREF.search(text)
     if m:
         return True, f"реферальная ссылка на бота {m.group(0)[:40]}", "bot"
     m = SPAM_BOTAT.search(text)
-    if m and (trig or SPAM_FREEBIE.search(text) or re.search(r"\bжми\b|запуска\w*|запусти", text, re.I)):
+    if m and (trig or SPAM_FREEBIE.search(text) or SPAM_BOTCALL.search(text)):
         return True, f"приглашение в бота {m.group(0)[:40]}", "bot"
     m = SPAM_XPROMO.search(text)
     if m:
@@ -1432,6 +1472,9 @@ def spam_verdict(raw, ch="", buttons=0):
     refs = ad_sub_refs(text, ch)
     if len(refs) >= 3:
         return True, f"кросс-промо: подписка на {len(refs)} чужих канала", "xpromo"
+    m = SPAM_ROBUX.search(text)
+    if m:
+        return True, f"крипто/казино-скам «{m.group(0).strip()[:30]}»", "scam"
     return False, "", ""
 
 
@@ -1454,32 +1497,50 @@ def spam_muted(ch, now=None):
     return bool(until)
 
 
+def spam_log_flush(force=False):
+    """«Съеденное» — на диск: не чаще раза в SPAM_FLUSH_SEC (флуд — не сотни перезаписей файла); force — сейчас же.
+    Пишем под замком: файл всегда совпадает с памятью и не перезаписывается старым снимком."""
+    with SPAM_LOCK:
+        if not force and (not SPAM_STATE["log_dirty"] or time.time() - SPAM_STATE["log_saved"] < SPAM_FLUSH_SEC):
+            return False
+        SPAM_STATE.update(log_dirty=False, log_saved=time.time())
+        try:
+            save_json(SPAM_LOG_FILE, list(SPAM_EATEN))
+        except OSError:
+            SPAM_STATE["log_dirty"] = True
+            return False
+    return True
+
+
 def eat_spam(ch, mid, reason, kind, flood=True):
     """🗑 Пост съеден спам-фильтром: в журнал «🗑 Съеден спам: причина (ссылка)», в spam_eaten.json (для сводки) и
-    в счёт «подряд» для анти-флуда. True — канал только что ушёл в мут на час."""
+    в счёт «подряд» для анти-флуда. True — канал только что ушёл в мут на час. Безопасно из многих потоков."""
     t = cur()
     link = src_post_link(ch, mid)
     journal(f"🗑 Съеден спам: {reason} ({link})")
     bump("spam")
     now = time.time()
-    SPAM_EATEN.append({"t": now, "ch": ch, "mid": mid, "why": str(reason)[:160], "kind": kind, "link": link,
-                       "owner": getattr(t, "owner", "") or "", "theme": getattr(t, "id", "")})
-    cut = now - SPAM_KEEP_DAYS * 86400
-    SPAM_EATEN[:] = [e for e in SPAM_EATEN if e.get("t", 0) >= cut][-3000:]
-    with contextlib.suppress(OSError):
-        save_json(SPAM_LOG_FILE, SPAM_EATEN)
-    if not flood:
-        return False
     key = (getattr(t, "id", ""), (ch or "").lower())
-    SPAM_RUN[key] = SPAM_RUN.get(key, 0) + 1
-    if SPAM_RUN[key] < SPAM_FLOOD_N:
-        return False
-    SPAM_RUN.pop(key, None)
-    SPAM_MUTED[key] = now + SPAM_MUTE_SEC
-    msg = f"⚠️ Канал {src_name(ch)} заблокирован на 1 час из-за флуда спамом."
-    journal(msg)
-    owner_alert(msg)
-    return True
+    muted = False
+    with SPAM_LOCK:
+        SPAM_EATEN.append({"t": now, "ch": ch, "mid": mid, "why": str(reason)[:160], "kind": kind, "link": link,
+                           "owner": getattr(t, "owner", "") or "", "theme": getattr(t, "id", "")})
+        cut = now - SPAM_KEEP_DAYS * 86400
+        if len(SPAM_EATEN) > SPAM_LOG_MAX or SPAM_EATEN[0].get("t", 0) < cut:
+            SPAM_EATEN[:] = [e for e in SPAM_EATEN if e.get("t", 0) >= cut][-SPAM_LOG_MAX:]
+        SPAM_STATE["log_dirty"] = True
+        if flood:
+            SPAM_RUN[key] = SPAM_RUN.get(key, 0) + 1
+            if SPAM_RUN[key] >= SPAM_FLOOD_N:
+                SPAM_RUN.pop(key, None)
+                SPAM_MUTED[key] = now + SPAM_MUTE_SEC
+                muted = True
+    spam_log_flush()
+    if muted:
+        msg = f"⚠️ Канал {src_name(ch)} заблокирован на 1 час из-за флуда спамом."
+        journal(msg)
+        owner_alert(msg)
+    return muted
 
 
 def spam_summary(days=1, owner=None, now=None):
@@ -1487,7 +1548,8 @@ def spam_summary(days=1, owner=None, now=None):
     now = now or time.time()
     lt = time.localtime(now)
     since = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)) if days <= 1 else now - days * 86400
-    got = [e for e in SPAM_EATEN if e.get("t", 0) >= since and (owner is None or e.get("owner", "") == owner)]
+    with SPAM_LOCK:
+        got = [e for e in SPAM_EATEN if e.get("t", 0) >= since and (owner is None or e.get("owner", "") == owner)]
     return {"n": len(got), "by_kind": Counter(e.get("kind") or "?" for e in got),
             "by_ch": Counter(e.get("ch") or "?" for e in got), "last": sorted(got, key=lambda e: -e["t"])[:5]}
 
@@ -1495,7 +1557,7 @@ def spam_summary(days=1, owner=None, now=None):
 def _spam_corpus(exclude=""):
     """Слова обычных постов темы (что вышло и что было в очереди) — их в чёрный список не берём."""
     words, skip = set(), norm(exclude)
-    for p in PUB.get("day_posts", []):
+    for p in list(PUB.get("day_posts", [])):
         raw = p.get("raw") or p.get("text") or ""
         if raw and raw != exclude:
             words |= set(SPAM_WORD.findall(_spam_norm(raw)))
@@ -1506,12 +1568,54 @@ def _spam_corpus(exclude=""):
     return words
 
 
+def _spam_prune_locked(now):
+    """Правила, что не срабатывали SPAM_RULE_TTL_DAYS дней, — прочь; сверх потолков — самые давно не срабатывавшие.
+    Вызывать под SPAM_LOCK. True — что-то убрали."""
+    seen, ttl, changed = SPAM_BLOCK["seen"], now - SPAM_RULE_TTL_DAYS * 86400, False
+    for kind, cap in (("links", SPAM_BLOCK_MAX_LINKS), ("words", SPAM_BLOCK_MAX_WORDS)):
+        rules = [r for r in SPAM_BLOCK[kind] if seen.get(r, now) >= ttl]
+        if len(rules) > cap:
+            keep = set(sorted(rules, key=lambda r: seen.get(r, now))[-cap:])
+            rules = [r for r in rules if r in keep]
+        if rules != SPAM_BLOCK[kind]:
+            SPAM_BLOCK[kind] = rules
+            changed = True
+    alive = set(SPAM_BLOCK["links"]) | set(SPAM_BLOCK["words"])
+    if set(seen) - alive or alive - set(seen):
+        SPAM_BLOCK["seen"] = {r: seen.get(r, now) for r in alive}
+        changed = True
+    return changed
+
+
+def _spam_block_save_locked():
+    SPAM_STATE["block_dirty"] = False
+    with contextlib.suppress(OSError):
+        save_json(SPAM_BLOCK_FILE, {"links": list(SPAM_BLOCK["links"]), "words": list(SPAM_BLOCK["words"]),
+                                    "seen": dict(SPAM_BLOCK["seen"])}, backup=True)
+
+
+def prune_spam_rules(now=None):
+    """Чистка чёрного списка (раз в час и при обучении): старые правила и сверх потолков — прочь, на диск."""
+    with SPAM_LOCK:
+        changed = _spam_prune_locked(now or time.time())
+        if changed or SPAM_STATE["block_dirty"]:
+            _spam_block_save_locked()
+    return changed
+
+
+def spam_maintenance(now=None):
+    """Раз в час: чёрный список — без старья и с отметками «сработало» на диске; «съеденное» — на диске."""
+    prune_spam_rules(now)
+    if SPAM_STATE["log_dirty"]:
+        spam_log_flush(force=True)
+
+
 def spam_learn(text, ch=""):
-    """🧠 Учимся на посте, который админ удалил или отметил «🗑 Спам»: ссылки (домены), t.me-каналы и @ники, редкие
-    слова (которых нет в обычных постах) — в spam_blocklist.json. Возвращает, что добавили."""
-    text, own = text or "", (ch or "").lower()
+    """🧠 Учимся на посте, который админ удалил или отметил «🗑 Спам»: домены (и без https://), t.me-каналы и @ники,
+    редкие слова (которых нет в обычных постах) — в spam_blocklist.json. Возвращает, что добавили."""
+    text, own = (text if isinstance(text, str) else ""), (ch or "").lower()
     links = []
-    for u in AD_LINK.findall(text) + SPAM_HANDLE.findall(text):
+    for u in AD_LINK.findall(text) + SPAM_HANDLE.findall(text) + SPAM_DOMAIN.findall(text):
         u = u.rstrip(".,!?:;)»").lower()
         if u.startswith("@"):
             key = u if u[1:] != own else ""
@@ -1519,28 +1623,34 @@ def spam_learn(text, ch=""):
             name = _tg_name(u)
             key = f"t.me/{name}" if name and name != own and name not in ("s", "joinchat", "+") else ""
         else:
-            host = re.sub(r"^https?://(www\.)?", "", u).split("/")[0]
+            host = re.sub(r"^(?:https?://)?(?:www\.)?", "", u).split("/")[0]
             key = host if host and not _trusted(u) and host not in ("max.ru", "web.max.ru", "t.me", "telegram.me") else ""
         if key and key not in links:
             links.append(key)
-    clean = SPAM_HANDLE.sub(" ", AD_LINK.sub(" ", text))
+    clean = SPAM_DOMAIN.sub(" ", SPAM_HANDLE.sub(" ", AD_LINK.sub(" ", text)))
     corpus = _spam_corpus(text)
     words = []
     for w in SPAM_WORD.findall(_spam_norm(clean)):
         if w not in SPAM_COMMON and w not in corpus and w not in words:
             words.append(w)
     words = sorted(words, key=len, reverse=True)[:6]
-    added = []
-    for kind, new in (("links", links), ("words", words)):
-        for x in new:
-            if x not in SPAM_BLOCK[kind]:
-                SPAM_BLOCK[kind].append(x)
-                added.append(x)
-        SPAM_BLOCK[kind] = SPAM_BLOCK[kind][-500:]
-    if added:
-        with contextlib.suppress(OSError):
-            save_json(SPAM_BLOCK_FILE, SPAM_BLOCK, backup=True)
+    added, now = [], time.time()
+    with SPAM_LOCK:
+        for kind, new in (("links", links), ("words", words)):
+            for x in new:
+                if x not in SPAM_BLOCK[kind]:
+                    SPAM_BLOCK[kind].append(x)
+                    added.append(x)
+                SPAM_BLOCK["seen"][x] = now
+        _spam_prune_locked(now)
+        _spam_block_save_locked()
     return added
+
+
+def spam_block_clear():
+    with SPAM_LOCK:
+        SPAM_BLOCK.update(links=[], words=[], seen={})
+        _spam_block_save_locked()
 
 
 BOT_DELETED = deque(maxlen=3000)   # сообщения, которые удалил сам бот (автоудаление, карточки) — это не «админ удалил»
@@ -1555,7 +1665,7 @@ def on_message_removed(u):
     themes = [x for x in THEMES if cid is not None and x.chat_id == cid] or ([] if cid is not None else list(THEMES))
     for t in themes:
         with theme_ctx(t):
-            post = next((p for p in PUB.get("day_posts", []) if str(p.get("mid")) == mid), None)
+            post = next((p for p in list(PUB.get("day_posts", [])) if str(p.get("mid")) == mid), None)
             if post is None or post.get("spam"):
                 continue
             post["spam"] = True
@@ -1573,6 +1683,7 @@ RSYA_LAST = {}               # канал MAX -> когда последний �
 RSYA_MARKS = (re.compile(r"#\s?реклам[аы]\b", re.I),
               re.compile(r"(?m)^[ \t]*о\s+рекламодателе[ \t]*$", re.I),
               re.compile(r"(?m)^[ \t]*(?:https?://)?(?:www\.)?max\.ru/?[ \t]*$", re.I))
+PUBLISHING = set()           # id постов, которые прямо сейчас уходят в MAX: их не трогают ни меню, ни перехватчик
 
 
 def rsya_text(body):
@@ -1594,22 +1705,57 @@ def is_rsya_ad(text):
     return hits[1] or sum(hits) >= 2
 
 
-def rsya_intercept(t, mid=""):
-    """Сразу ставим следующий пост очереди «на сейчас»: планировщик (раз в 5 с) выложит его без паузы и ночи."""
+def _rsya_pick(t, mid=""):
+    """Решение перехватчика (в контексте темы t). True — следующий пост поставлен «на сейчас» (очередь сохранить)."""
     now = time.time()
     if now - RSYA_LAST.get(t.chat_id, 0) < RSYA_COOLDOWN:
         return False
-    ready = [x for x in QUEUE if x.get("status", "ok") == "ok" and x.get("retry_at", 0) <= now and not x.get("manual")]
+    if CFG["paused"] or not theme_live(t) or DENIED.get(t.chat_id, 0) > now:
+        journal("🛡 Перехватчик РСЯ: в канале реклама, но публиковать сейчас нельзя (пауза или нет прав) — пропускаю")
+        return False
+    soon = next((x for x in QUEUE if x.get("manual") and x.get("status", "ok") == "ok"
+                 and x.get("at", 0) <= now + TICK and x.get("retry_at", 0) <= now), None)
+    if soon is not None:                                   # пост «Сейчас» и так выйдет в ближайшие секунды
+        RSYA_LAST[t.chat_id] = now
+        journal(f"🛡 Перехватчик РСЯ: в канале реклама — пост {soon['id']} уже выходит, он её и опустит")
+        return False
+    ready = [x for x in QUEUE if x.get("status", "ok") == "ok" and x.get("retry_at", 0) <= now
+             and not x.get("manual") and x["id"] not in PUBLISHING]
     if not ready:
         journal("🛡 Перехватчик РСЯ: в канале появилась реклама, но очередь пуста — опустить её нечем")
         return False
     nxt = min(ready, key=prio_key)
     nxt.update(manual=True, at=now, rsya=True)
-    save_queue()
     RSYA_LAST[t.chat_id] = now
     journal(f"🛡 Перехватчик РСЯ: в канале появилась реклама — сразу выкладываю следующий пост ({nxt['id']}), "
             "чтобы её опустить")
     return True
+
+
+async def _rsya_locked(t, mid):
+    """Перехватчик на цикле asyncio под замком темы — тем же, под которым планировщик выкладывает посты. Пока пост
+    уходит в канал, ждём: «следующий» выбираем уже после него (уходящий пост мог выйти раньше рекламы и её не опустит),
+    и ни один пост не выйдет дважды."""
+    if t.lock is None:
+        t.lock = asyncio.Lock()
+    async with t.lock:
+        with theme_ctx(t):
+            if _rsya_pick(t, mid):
+                await asyncio.to_thread(save_queue)
+
+
+def rsya_intercept(t, mid=""):
+    """Запустить перехватчик. Из потока меню при живом цикле — на цикл, под замок темы (True — запущен);
+    без цикла (проверки, до старта) — сразу."""
+    loop = MAIN_LOOP
+    if loop is not None and loop.is_running() and not on_loop_thread():
+        asyncio.run_coroutine_threadsafe(_rsya_locked(t, mid), loop)
+        return True
+    with theme_ctx(t):
+        got = _rsya_pick(t, mid)
+        if got:
+            save_queue()
+        return got
 
 
 def rsya_check(msg):
@@ -1627,9 +1773,9 @@ def rsya_check(msg):
         return False
     mid = str(body.get("mid") or "")
     with theme_ctx(t):
-        if mid and any(str(p.get("mid")) == mid for p in PUB.get("day_posts", [])):
+        if mid and any(str(p.get("mid")) == mid for p in list(PUB.get("day_posts", []))):
             return False                                 # это мы выложили пост с такими словами
-        return rsya_intercept(t, mid)
+    return rsya_intercept(t, mid)
 
 
 # ===== 🧠 УМНОЕ ВРЕМЯ: публикуем в часы, когда у канала больше просмотров =====
@@ -2086,10 +2232,17 @@ KNOWN_CHATS = _known_load()    # id канала (строкой) -> {"added_by"
                                # 2026 не отдаёт список чатов (GET /chats) — каналы бот помнит сам
 CHAT_INFO_CACHE = {}           # id -> (сведения от MAX, когда спросили)
 CHAT_GONE = {}                 # id -> когда MAX ответил «нет такого чата / нет доступа» (удалён или бота убрали)
+CHAT_GONE_MAX = 5000
+KNOWN_LOCK = threading.RLock() # known_chats.json меняют потоки меню, событий MAX и почасовой проверки разом
+
+
+def _ts(v):
+    """Время из файла: число — да, мусор (строка, True, None) — None, без падений."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
 def _save_known():
-    with contextlib.suppress(OSError):
+    with KNOWN_LOCK, contextlib.suppress(OSError):
         save_json(KNOWN_FILE, KNOWN_CHATS, backup=True)
 
 
@@ -2099,13 +2252,14 @@ def remember_chat(cid, who=None):
     cid = _cid(cid)
     if cid is None:
         return
-    rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
-    rec.pop("removed", None)
-    rec.pop("removed_by", None)
     CHAT_GONE.pop(cid, None)
-    if who is not None and not rec.get("added_by"):
-        rec["added_by"] = str(who)
-    _save_known()
+    with KNOWN_LOCK:
+        rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
+        rec.pop("removed", None)
+        rec.pop("removed_by", None)
+        if who is not None and not rec.get("added_by"):
+            rec["added_by"] = str(who)
+        _save_known()
 
 
 def forget_chat(cid):
@@ -2114,28 +2268,31 @@ def forget_chat(cid):
     cid = _cid(cid)
     if cid is None:
         return
-    rec = KNOWN_CHATS.get(str(cid))
-    if rec is None:
-        if not any(t.chat_id == cid for t in THEMES):
-            return
-        rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
     info = (CHAT_INFO_CACHE.pop(cid, None) or ({}, 0))[0]
-    if info.get("title") and not rec.get("title"):
-        rec.update(title=info["title"], link=info.get("link") or "")
-    rec.setdefault("removed", time.time())
-    rec["removed_by"] = "bot_removed"
-    _save_known()
+    with KNOWN_LOCK:
+        rec = KNOWN_CHATS.get(str(cid))
+        if rec is None:
+            if not any(t.chat_id == cid for t in list(THEMES)):
+                return
+            rec = KNOWN_CHATS.setdefault(str(cid), {"t": time.time()})
+        if info.get("title") and not rec.get("title"):
+            rec.update(title=info["title"], link=info.get("link") or "")
+        if _ts(rec.get("removed")) is None:
+            rec["removed"] = time.time()
+        rec["removed_by"] = "bot_removed"
+        _save_known()
 
 
 def purge_removed_chats(now=None):
     """Каналы с пометкой «удалён» старше GRACE_DAYS дней — из списка и из known_chats.json."""
     now = now or time.time()
-    old = [k for k, r in KNOWN_CHATS.items() if isinstance(r, dict) and r.get("removed")
-           and now - float(r["removed"]) >= GRACE_DAYS * 86400]
-    for k in old:
-        KNOWN_CHATS.pop(k, None)
-    if old:
-        _save_known()
+    with KNOWN_LOCK:
+        old = [k for k, r in list(KNOWN_CHATS.items()) if isinstance(r, dict) and _ts(r.get("removed")) is not None
+               and now - _ts(r.get("removed")) >= GRACE_DAYS * 86400]
+        for k in old:
+            KNOWN_CHATS.pop(k, None)
+        if old:
+            _save_known()
     return len(old)
 
 
@@ -2161,12 +2318,20 @@ def known_chats(types=("channel",), include_removed=False):
     """Каналы, которые бот знает сам (MAX их больше не перечисляет): [{chat_id, title, link, type}].
     include_removed — и «удалённые» (бота убрали / канал удалён) в течение GRACE_DAYS дней, с ключом removed."""
     purge_removed_chats()
-    ids = list(dict.fromkeys([c for c in (_cid(k) for k in KNOWN_CHATS) if c is not None]
-                             + [t.chat_id for t in THEMES if isinstance(t.chat_id, int)]))
+    with KNOWN_LOCK:
+        ids = list(dict.fromkeys([c for c in (_cid(k) for k in list(KNOWN_CHATS)) if c is not None]
+                                 + [t.chat_id for t in list(THEMES) if isinstance(t.chat_id, int)]))
+    infos = {cid: chat_info_cached(cid) for cid in ids}      # сеть — без замка: меню других не ждёт
+    with KNOWN_LOCK:
+        return _known_apply(ids, infos, types, include_removed)
+
+
+def _known_apply(ids, infos, types, include_removed):
+    """Сведения MAX -> записи known_chats (название, ссылка, «удалён»). Под KNOWN_LOCK."""
     out, changed, now = [], False, time.time()
     for cid in ids:
         rec = KNOWN_CHATS.get(str(cid))
-        info = chat_info_cached(cid)
+        info = infos.get(cid) or {}
         if info and info.get("status") in (None, "active"):
             if info.get("type") not in (None,) + tuple(types):
                 continue
@@ -2189,9 +2354,12 @@ def known_chats(types=("channel",), include_removed=False):
         if not rec.get("removed") and (cid in CHAT_GONE or (info and info.get("status") not in (None, "active"))):
             rec.update(removed=now, removed_by="gone")      # MAX: «нет такого канала» — не прячем сразу
             changed = True
+        if _ts(rec.get("removed")) is None and rec.get("removed") is not None:
+            rec["removed"] = now                             # испорченная дата — считаем с сейчас
+            changed = True
         if rec.get("removed") and include_removed and (rec.get("type") or "channel") in types:
-            out.append({"chat_id": cid, "title": rec.get("title") or str(cid), "link": rec.get("link") or "",
-                        "type": rec.get("type") or "channel", "removed": float(rec["removed"])})
+            out.append({"chat_id": cid, "title": str(rec.get("title") or cid), "link": str(rec.get("link") or ""),
+                        "type": rec.get("type") or "channel", "removed": _ts(rec["removed"])})
     if changed:
         _save_known()
     return out
@@ -4975,9 +5143,7 @@ def do_action(act, uid=None):
         CFG["spam_skip"] = not CFG.get("spam_skip", True)
         scr = "spam"
     elif p[0] == "spamclrok" and (not HOST_MODE or can_panel(uid)):
-        SPAM_BLOCK.update(links=[], words=[])
-        with contextlib.suppress(OSError):
-            save_json(SPAM_BLOCK_FILE, SPAM_BLOCK, backup=True)
+        spam_block_clear()
         FLASH[uid] = "♻️ Чёрный список спама очищен."
         scr = "spam"
     elif p[0] == "dd":
@@ -5019,10 +5185,14 @@ def do_action(act, uid=None):
         resend_pending_cards(CFG["admin_chats"].get(str(uid)), force=True, uid=uid)
         scr = "ql"
     elif p[0] == "qclr":
-        resolve_cards(item_refs(QUEUE), CFG["admin_chats"].get(str(uid)))
-        for it in list(QUEUE):
+        rest = [x for x in QUEUE if x["id"] not in PUBLISHING]
+        busy = len(QUEUE) - len(rest)                     # считаем ДО очистки: потом в очереди останутся только они
+        resolve_cards(item_refs(rest), CFG["admin_chats"].get(str(uid)))
+        for it in rest:
             drop_item(it)
         save_queue()
+        if busy:
+            FLASH[uid] = "⏳ Пост, который уже уходит в канал, оставил — остальное очистил."
         scr = "ql"
     elif p[0] == "night":
         CFG["night_on"] = not CFG["night_on"]
@@ -5103,7 +5273,9 @@ def do_action(act, uid=None):
     elif p[0] == "qdel":
         ref = ":".join(p[1:])
         it = next((x for x in QUEUE if x["id"] == ref), None)
-        if it is not None:
+        if it is not None and it["id"] in PUBLISHING:      # пост прямо сейчас уходит в канал — не рвём его
+            FLASH[uid] = "⏳ Этот пост уже уходит в канал — убрать его нельзя."
+        elif it is not None:
             resolve_cards(item_refs([it]), CFG["admin_chats"].get(str(uid)))
             drop_item(it)
             bump("rejected")
@@ -5320,6 +5492,7 @@ def _approve(rest, uid, chat=None):
         tail = str(it["id"]).rsplit(":", 1)[-1]
         eat_spam(it.get("ch", ""), int(tail) if tail.isdigit() else tail, f"отмечен как спам ({who})", "manual",
                  flood=False)
+        spam_log_flush(force=True)
         resolve_cards([ref], chat or CFG["admin_chats"].get(str(uid)))
         return (f"🗑 {who}: спам — не выкладываю. В чёрный список: "
                 f"{', '.join(added[:6]) or 'новых ссылок и слов нет'}."), None
@@ -7155,8 +7328,10 @@ def media_cap_mb():
 
 
 async def publish_item(client, chat_id, it):
-    """Публикация поста с ограничением по времени: зависший пост (файл, сеть) не держит очередь канала."""
+    """Публикация поста с ограничением по времени: зависший пост (файл, сеть) не держит очередь канала.
+    Пока пост уходит, он в PUBLISHING: меню («❌», «Очистить») и перехватчик РСЯ его не трогают."""
     t0 = time.monotonic()
+    PUBLISHING.add(it["id"])
     try:
         return await asyncio.wait_for(_publish_item(client, chat_id, it), PUBLISH_TIMEOUT)
     except asyncio.TimeoutError:
@@ -7168,6 +7343,7 @@ async def publish_item(client, chat_id, it):
                   "прервал, повторю через 10 мин; остальные посты выходят")
         return "retry"
     finally:
+        PUBLISHING.discard(it["id"])
         perf_add("tg", "публикация поста в MAX (с файлами)", time.monotonic() - t0)
 
 
@@ -7182,16 +7358,20 @@ async def _publish_item(client, chat_id, it):
             it.setdefault("mids", []).append(mid)      # все части поста — чтобы автоудаление убрало его целиком
         return mid
     try:
-        body = it["text"]
-        if ai_on() and ai_rewrite_allowed() and ai_llm_ready() and (body or "").strip():
-            if not it.get("ai_text"):                  # пересказ — один раз: повтор отправки его не повторяет
-                try:
+        if it.get("sent") and isinstance(it.get("final"), str):
+            full = it["final"]                         # часть поста уже вышла — продолжаем ТЕМ ЖЕ текстом
+        else:
+            body = it["text"]
+            if (not it.get("sent") and not it.get("ai_text") and ai_on() and ai_rewrite_allowed()
+                    and ai_llm_ready() and (body or "").strip()):
+                try:                                   # пересказ — один раз: повтор отправки его не повторяет
                     it["ai_text"] = await asyncio.to_thread(ai_rewrite, body)
                     save_queue()
                 except AiUnavailable:                  # все ключи ИИ 429 — выкладываем оригинал, пост не теряем
                     journal(AI_EXHAUSTED_LOG)
             body = it.get("ai_text") or body
-        chunks = split_text(compose_text(body, it.get("ch", ""), rewritten=bool(it.get("ai_text"))))
+            full = compose_text(body, it.get("ch", ""), rewritten=bool(it.get("ai_text")))
+        chunks = split_text(full)
         text, extra = chunks[0], chunks[1:]
         photos = await ensure_photos(client, it)
         parts = []
@@ -7244,6 +7424,7 @@ async def _publish_item(client, chat_id, it):
             if kind in ("doc", "vid"):
                 drop_file(files.get(i))
             it["sent"] = i + 1
+            it.setdefault("final", full)               # часть ушла: текст поста больше не меняется (ИИ ожил — не важно)
             save_queue()
         if it.get("waits"):
             resolve_cards([it["id"]])                  # дождались файла — карточка «Что делать?» больше не нужна
@@ -7429,6 +7610,10 @@ def check_rights_all(now=None):
     now = now or time.time()
     with contextlib.suppress(Exception):
         purge_removed_chats(now)                         # каналы с пометкой «удалён» дольше 7 дней — из базы
+    with contextlib.suppress(Exception):
+        known_chats(include_removed=True)                # канал удалили в MAX — замечаем сами, 7 дней идут отсюда
+    with contextlib.suppress(Exception):
+        spam_maintenance(now)                            # чёрный список без старья, «съеденное» — на диске
     for t in list(THEMES):
         if not t.chat_id:
             continue
@@ -7484,7 +7669,9 @@ async def background_loop():
 
 # ---------- ЧТЕНИЕ КАНАЛОВ ----------
 FRESH_SEC = 8          # пост берём в работу, когда он не меняется N секунд (альбом долетел целиком)
-BACKLOG_MAX = 10       # не больше стольких накопившихся постов канала за один раз
+BACKLOG_MAX = 10       # после простоя: не больше стольких накопившихся постов канала за один раз
+BACKLOG_GAP = 1800     # простой — это канал не читали дольше 30 мин (бот был выключен, долго не было сети)
+READ_OK = {}           # (тема, канал) -> когда канал последний раз прочитали: при обычной работе старьё не режем
 SEEN = {}              # (тема, канал, пост) -> (когда впервые увидели, id сообщений)
 RECHECK = set()        # каналы, которые надо перечитать через FRESH_SEC секунд
 WATCH = set()          # имена каналов (в нижнем регистре), за которыми следим
@@ -7536,6 +7723,8 @@ async def process_channel(client, ch, fails):
         await _process_channel(client, ch, fails, fresh)
     finally:
         perf_add("tg", "чтение канала Telegram", time.perf_counter() - t0)
+        if SPAM_STATE["log_dirty"]:                     # «съеденное» за это чтение — на диск одним разом
+            await asyncio.to_thread(spam_log_flush, True)
         if fresh:
             await asyncio.to_thread(send_previews, fresh)
 
@@ -7548,6 +7737,9 @@ async def _process_channel(client, ch, fails, fresh):
         return
     msgs = await client.get_messages(ch, min_id=LAST_IDS[ch], limit=30)
     msgs = sorted(msgs, key=lambda m: m.id)
+    rkey = (t.id, ch.lower())
+    idle = time.time() - READ_OK.get(rkey, 0) > BACKLOG_GAP   # первое чтение после запуска или долгий простой
+    READ_OK[rkey] = time.time()
     if len(msgs) >= 30 and msgs[0].grouped_id:         # самый старый альбом обрезан лимитом — без начала
         gid = msgs[0].grouped_id                       # (а текст на первом фото) его не публикуем калекой
         msgs = [m for m in msgs if m.grouped_id != gid]
@@ -7561,7 +7753,9 @@ async def _process_channel(client, ch, fails, fresh):
             order.append(key)
         groups[key].append(m)
 
-    if len(order) > BACKLOG_MAX:                     # бот долго был выключен: не заваливаем админа старьём
+    if idle and len(order) > BACKLOG_MAX:            # бот долго был выключен: не заваливаем админа старьём.
+                                                     # При обычной работе (канал читаем часто) посты не режем:
+                                                     # у оживлённого канала за минуту бывает и 10+ постов
         skipped = [m for key in order[:-BACKLOG_MAX] for m in groups[key]]
         order = order[-BACKLOG_MAX:]
         LAST_IDS[ch] = max(LAST_IDS[ch], max(m.id for m in skipped))
@@ -7649,7 +7843,8 @@ async def _process_channel(client, ch, fails, fresh):
             entry = {"norm": norm(body), "img": hashes, "t": time.time(),
                      "fwd": [k for k in (fwd_key(m) for m in grp) if k]}
             has_media = bool(img_paths or vids or docs)
-            dup = find_duplicate(entry, history) if CFG["dedupe_on"] else None
+            dup = (await asyncio.to_thread(find_duplicate, entry, list(history))   # сравнение с историей —
+                   if CFG["dedupe_on"] else None)                                  # не в цикле: тяжёлое для CPU
             if skip:                                     # пост пропущен целиком: в журнале причина, молча
                 journal(f"[{ch}] пост {last}: {skip if skip.startswith('Skipped') else 'Skipped: ' + skip}")
             elif not body and not has_media:
@@ -12378,6 +12573,9 @@ def chat_info(chat_id):
         return r.json()
     if r.status_code in (403, 404) and cid is not None:
         CHAT_GONE[cid] = time.time()
+        if len(CHAT_GONE) > CHAT_GONE_MAX:                  # не растёт бесконечно: старые отметки — прочь
+            for k in sorted(list(CHAT_GONE), key=lambda k: CHAT_GONE.get(k, 0))[:CHAT_GONE_MAX // 2]:
+                CHAT_GONE.pop(k, None)
     return {}
 
 
@@ -14161,7 +14359,7 @@ def client_info(cid):
 
 def client_log_tail(cid, n=15):
     try:
-        with open(os.path.join(client_dir(cid), "bot.log"), encoding="utf-8", errors="ignore") as f:
+        with open(os.path.join(client_dir(cid), LOG_FILE), encoding="utf-8", errors="ignore") as f:
             lines = [ln.rstrip() for ln in f.readlines()[-200:] if ln.strip() and not ln.startswith(" ")]
         return lines[-n:]
     except OSError:

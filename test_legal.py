@@ -2,6 +2,7 @@
 реквизиты и ссылки на документы — только у хозяина (/legal, ADMIN_IDS); у покупателя — документы, реквизиты и что
 бот хранит; согласие с офертой и политикой ДО оплаты (без него оплатить нельзя никаким путём); цена в ЮKassa — ровно
 та, что на кнопке; запрос на удаление данных — хозяину; отписка от рекламы."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import importlib.util
 import json
 import os
@@ -105,7 +106,7 @@ for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "COOKIES_URL
           "SUPPORT_EMAIL", "OFFER_URL", "PRIVACY_URL", "REFUND_URL", "ADMIN_IDS"):
     os.environ.pop(k, None)
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "HOSTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "HOSTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
@@ -213,7 +214,7 @@ set_field("refund_url", "https://site.ru/refund")
 li = bot.legal_info()
 assert (li["inn"], li["ogrn"], li["phone"], li["offer_url"]) == (INN_IP, OGRNIP, "+79991234567", "https://site.ru/offer"), li
 assert "Не заполнено" not in text_of(HC) and f"ИНН: {INN_IP}" in text_of(HC), text_of(HC)
-assert json.load(open("settings.json"))["legal"]["inn"] == INN_IP, "реквизиты сохраняются (переживают перезапуск)"
+assert tio.rjson("settings.json")["legal"]["inn"] == INN_IP, "реквизиты сохраняются (переживают перезапуск)"
 press(HOST, HC, "a:cllgform")                                            # ИП → ООО: ИНН и ОГРНИП не подходят
 assert bot.legal_info()["form"] == "ООО" and "⚠️ Не подходит к форме «ООО»" in text_of(HC) \
     and "10 цифр" in text_of(HC), text_of(HC)
@@ -271,7 +272,7 @@ msg(BUYER, BC, "buyer@mail.ru")
 assert len(srv.payments) == n_pay and any(b.get("text") == OFF for b in btns(BC)), last(BC)
 press(BUYER, BC, "lg:tick:0:30")
 assert any(b.get("text") == ON for b in btns(BC)) and bot.legal_consented(BUYER)
-rec = json.load(open("legal_consents.json"))[str(BUYER)]
+rec = tio.rjson("legal_consents.json")[str(BUYER)]
 assert rec["ver"] == bot.legal_version() and rec["t"] and rec["key"] == KEY and rec["docs"]["offer"] == "https://site.ru/offer"
 press(BUYER, BC, "lg:tick:0:30")                                         # снял галочку — согласия нет
 assert any(b.get("text") == OFF for b in btns(BC)) and not bot.legal_consented(BUYER)
@@ -334,7 +335,7 @@ alert = next(e for e in reversed(SENT) if e[0] == HC)
 assert "удален" in alert[1].lower() and str(BUYER) in alert[1] and KEY in json.dumps(alert[2]), alert
 assert f"m:cldel:{KEY}" in json.dumps(alert[2]) and f"m:clc:{KEY}" in json.dumps(alert[2])
 assert "Запрос отправлен" in " ".join(e[1] for e in SENT[-3:] if e[0] == BC)
-reqs = json.load(open("legal_requests.json"))
+reqs = tio.rjson("legal_requests.json")
 assert reqs[KEY]["status"] == "new" and reqs[KEY]["uid"] == str(BUYER) and reqs[KEY]["t"]
 n_host = len([e for e in SENT if e[0] == HC])
 press(BUYER, BC, "lg:del")
@@ -342,8 +343,8 @@ assert len([e for e in SENT if e[0] == HC]) == n_host and "уже" in text_of(BC
 press(HOST, HC, f"a:cldelok:{KEY}")                                    # хозяин удалил кабинет
 told = [e[1] for e in SENT if e[0] == BC][-3:]
 assert any("удалены" in x for x in told), told
-assert KEY not in bot.TENANTS and json.load(open("legal_requests.json"))[KEY]["status"] == "done"
-assert "name" not in json.load(open("legal_consents.json")).get(str(BUYER), {}), "в согласии не храним имя"
+assert KEY not in bot.TENANTS and tio.rjson("legal_requests.json")[KEY]["status"] == "done"
+assert "name" not in tio.rjson("legal_consents.json").get(str(BUYER), {}), "в согласии не храним имя"
 print("l7 ok: 🗑 «Запросить удаление моих данных» — хозяину с кнопками «удалить кабинет» и «кабинет», покупателю — "
       "«запрос отправлен», повторно — без дубля; удалил — покупателю «данные удалены», запрос закрыт")
 

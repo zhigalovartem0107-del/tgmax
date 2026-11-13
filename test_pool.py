@@ -1,7 +1,7 @@
 """Пул аккаунтов Telegram (reloader/services/telegram/pool.py) на поддельных клиентах — без сети.
 Запуск: python3 test_pool.py"""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio
-import json
 import os
 import shutil
 import sqlite3
@@ -166,7 +166,7 @@ async def main():
     pool2 = new_pool(folder, clock)
     await pool2.start()
     assert pool2.owner("news") == "b" and pool2.owner("third") is None     # каналы выбывшего «a» свободны
-    saved = json.load(open(os.path.join(folder, "pool.json"), encoding="utf-8"))
+    saved = tio.rjson(os.path.join(folder, "pool.json"), encoding="utf-8")
     assert saved["channels"]["news"] == "b" and saved["accounts"]["a"]["full"] is True, saved
     print("p6 ok: закрепление каналов и состояние аккаунтов сохраняются в pool.json")
 

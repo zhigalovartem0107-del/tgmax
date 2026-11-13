@@ -2,8 +2,8 @@
 ни логики); остаётся «Ночь»; шаги интервала на месте; настройки разбиты на страницы с «⬅️ Назад» / «Далее ➡️».
 Выбор канала MAX — постранично по 5, с «⬅️ Назад» / «Далее ➡️», «Обновить» и «Ввести ссылку» на каждой странице.
 На каждом экране есть кнопка назад — из меню не попасть в тупик. Кнопки короткие."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -20,7 +20,7 @@ tele.events = types.SimpleNamespace(NewMessage=lambda *a, **k: None)
 sys.modules["telethon"] = tele
 sys.modules["telethon.errors"] = tele.errors
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "T", "max_channel_link": "https://max.ru/x"}, open("config.json", "w"))
+tio.wjson({"max_token": "T", "max_channel_link": "https://max.ru/x"}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)

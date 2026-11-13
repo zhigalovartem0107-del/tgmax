@@ -2,10 +2,10 @@
 /stashnow — как любая незнакомая команда; фото без команды никуда не сохраняется; старый stash.json с прошлой версии
 не публикуется. У покупателя в «⚙️ Ещё настройки» нет «🎭 Темы» — каналы открываются из главного меню
 («🎭 Мои каналы»). Бот в host-режиме: поддельный MAX, настоящие нажатия кнопок."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio
 import glob
 import importlib.util
-import json
 import os
 import re
 import sys
@@ -47,13 +47,12 @@ for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ADMIN_IDS",
           "YOOKASSA_SECRET_KEY"):
     os.environ.pop(k, None)
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "TESTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": ""}, "config.json", "w")
 LEGACY_ITEM = {"id": "s1", "text": "мем из старого тайника", "photos": [], "videos": [], "files": [],
                "added": time.time() - 86400, "by": 1, "sent": 0, "fails": 0}
-json.dump({"themes": [{"id": "t9", "name": "Старая тема", "link": "", "chat_id": -7001, "own": {"night_on": False},
-                        "legacy": False, "owner": "1"}], "active": {"1": "t9"}, "last_report": ""},
-          open("themes.json", "w"), ensure_ascii=False)
-json.dump([LEGACY_ITEM], open("stash_t9.json", "w"), ensure_ascii=False)
+tio.wjson({"themes": [{"id": "t9", "name": "Старая тема", "link": "", "chat_id": -7001, "own": {"night_on": False},
+                        "legacy": False, "owner": "1"}], "active": {"1": "t9"}, "last_report": ""}, "themes.json", "w", _dump=dict(ensure_ascii=False))
+tio.wjson([LEGACY_ITEM], "stash_t9.json", "w", _dump=dict(ensure_ascii=False))
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
@@ -167,7 +166,7 @@ def n8():
         assert told, SENT[n1_:]
         for _, text, rows in told:
             no_stash("📭 предупреждение", text, rows)
-    assert json.load(open("stash_t9.json")) == [LEGACY_ITEM], "старый файл не трогаем"
+    assert tio.rjson("stash_t9.json") == [LEGACY_ITEM], "старый файл не трогаем"
 
 
 @check
@@ -256,7 +255,7 @@ def n6():
                 no_stash(f"{uid}: фото без команды", text, rows)
     assert not os.path.isdir("stash_media"), os.listdir("stash_media")
     assert sorted(glob.glob("stash*.json")) == ["stash_t9.json"], glob.glob("stash*")   # только старый файл
-    assert json.load(open("stash_t9.json")) == [LEGACY_ITEM], "старый файл не трогаем"
+    assert tio.rjson("stash_t9.json") == [LEGACY_ITEM], "старый файл не трогаем"
 
 
 @check
@@ -280,7 +279,7 @@ def n9():
     files = [os.path.join(ROOT, "tg_to_max.py"), os.path.join(ROOT, "README.txt"), os.path.join(ROOT, "SERVER.txt")]
     files += glob.glob(os.path.join(ROOT, "reloader", "**", "*.py"), recursive=True)
     left = [(os.path.relpath(f, ROOT), i + 1, line.strip()[:90]) for f in files
-            for i, line in enumerate(open(f, encoding="utf-8")) if WORDS.search(line)]
+            for i, line in enumerate(tio.rfile(f, encoding="utf-8").splitlines()) if WORDS.search(line)]
     assert not left, (len(left), left[:8])
     for name in ("STASH", "STASH_FILE", "STASH_DIR", "publish_stash", "stash_add", "stash_remove", "stash_due",
                  "maybe_stash", "save_stash", "stash_prompt", "stash_fill_rows", "stash_mode_text"):

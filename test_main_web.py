@@ -1,3 +1,4 @@
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import os as _os
 ROOT = _os.path.dirname(_os.path.abspath(__file__))
 import asyncio, importlib.util, os, sys, tempfile, types
@@ -11,7 +12,7 @@ tele.events = types.SimpleNamespace(NewMessage=lambda *a, **k: None)
 tele.errors = types.SimpleNamespace(SessionPasswordNeededError=Exception)
 sys.modules["telethon"] = tele; sys.modules["telethon.errors"] = tele.errors
 os.chdir(tempfile.mkdtemp())
-open("web_mode.flag", "w").write("web")                     # выбор «без входа» уже сделан
+tio.wfile("web", "web_mode.flag", "w")                     # выбор «без входа» уже сделан
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
 

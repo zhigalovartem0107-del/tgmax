@@ -23,6 +23,7 @@ class FakeMax:
         self.actions = []        # (chat_id, action): «печатает…», «отправляет фото…»
         self.ai_replies = []     # ИИ (OpenRouter/DeepSeek): очередь ответов (код, текст) на POST /chat/completions
         self.ai_calls = []       # (ключ из Authorization, текст задания) — что спросили у ИИ
+        self.ai_rule = None      # (ключ, текст задания) -> (код, текст) или None: свой ответ ИИ (например, 429 на всё)
         self.delay = 0.0         # задержка каждого ответа (сек): «медленный MAX» для нагрузочных проверок
         self.lock = threading.Lock()
         self.updates = []                  # очередь событий для бота
@@ -48,7 +49,6 @@ class FakeMax:
         self.subscriptions = []            # вебхуки; пока они есть, long polling (/updates) ничего не получает
         self.fail_messages = 0             # столько раз ответить 502 на отправку сообщения (MAX перегружен)
         self._mid = 0
-        srv = self
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -287,9 +287,11 @@ class FakeMax:
                 if method == "POST" and p == "/chat/completions":   # ИИ в формате OpenAI (OpenRouter, DeepSeek)
                     body = json.loads(raw or b"{}")
                     with outer.lock:
-                        outer.ai_calls.append(((self.headers.get("Authorization") or "").replace("Bearer ", ""),
-                                               ((body.get("messages") or [{}])[0]).get("content") or ""))
-                        code, text = outer.ai_replies.pop(0) if outer.ai_replies else (200, "NO")
+                        key = (self.headers.get("Authorization") or "").replace("Bearer ", "")
+                        ask = ((body.get("messages") or [{}])[0]).get("content") or ""
+                        outer.ai_calls.append((key, ask))
+                        got = outer.ai_rule(key, ask) if outer.ai_rule else None
+                        code, text = got or (outer.ai_replies.pop(0) if outer.ai_replies else (200, "NO"))
                     if code != 200:
                         return self._send(code, {"error": {"message": "rate limit" if code == 429 else "error"}})
                     return self._send(200, {"choices": [{"message": {"content": text}}]})

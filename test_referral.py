@@ -3,8 +3,8 @@ PARTNER_ID), по /ref («🔗 Сгенерировать ссылку для к
 бот берёт ID клиента и отвечает ссылкой https://max.ru/<бот>?start=ref_<ID партнёра>, закрепляя клиента за партнёром.
 Кто пришёл по ссылке (?start=ref_…), закреплён за партнёром; купил подписку — хозяину «💰 Клиент [Имя] купил
 подписку по ссылке партнера [ID]!». Выплаты партнёру — вручную."""
+import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -66,8 +66,8 @@ def r2():
     assert R is not None
     d = tempfile.mkdtemp()
     path = os.path.join(d, "referrals.json")
-    save = lambda p, data, **k: json.dump(data, open(p, "w"), ensure_ascii=False)
-    load = lambda p, default: json.load(open(p)) if os.path.exists(p) else default
+    save = lambda p, data, **k: tio.wjson(data, p, "w", _dump=dict(ensure_ascii=False))
+    load = lambda p, default: tio.rjson(p) if os.path.exists(p) else default
     st = R.Referrals(path, save=save, load=load)
     assert st.attach(7777, "123456", "ссылка", "Иван") == (True, "123456")
     assert st.attach("7777", "999", "ссылка", "Иван") == (False, "123456"), "первый партнёр остаётся"
@@ -79,7 +79,7 @@ def r2():
     s2.forget(["7777"])                                     # клиент попросил удалить данные (152-ФЗ)
     assert s2.partner_of([7777]) is None and all(not s["name"] for s in s2.sales if s["key"] == "7777")
     assert s2.stats("123456")["sum"] == 980, "суммы для расчёта с партнёром остаются, без имени"
-    open(path, "w").write('{"clients": [1, 2], "sales": "x"')
+    tio.wfile('{"clients": [1, 2], "sales": "x"', path, "w")
     assert R.Referrals(path, save=save, load=load).partner_of([7777]) is None
 
 
@@ -94,7 +94,7 @@ os.environ.update(MAX_API_URL=srv.url, BOT_TOKEN="TESTTOKEN", TGMAX_HOST="1", OW
 for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ADMIN_IDS", "PARTNER_ID"):
     os.environ.pop(k, None)
 os.chdir(tempfile.mkdtemp())
-json.dump({"max_token": "TESTTOKEN", "max_channel_link": ""}, open("config.json", "w"))
+tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": ""}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", os.path.join(ROOT, "tg_to_max.py"))
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)
@@ -144,7 +144,7 @@ def b1():
     os.environ["PARTNER_ID"] = "777"
     assert bot.partner_id() == "777", "переменная PARTNER_ID"
     msg(HOST, HC, "/partner 123456")
-    assert bot.partner_id() == "123456" and json.load(open("settings.json"))["partner_id"] == "123456"
+    assert bot.partner_id() == "123456" and tio.rjson("settings.json")["partner_id"] == "123456"
     os.environ.pop("PARTNER_ID", None)
     n1 = len(srv.messages)
     msg(HOST, HC, "/partner")
