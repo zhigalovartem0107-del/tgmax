@@ -170,6 +170,16 @@ def m8():
         assert any(x in ("m:main", "m:more", "m:cl", "m:q") for x in pls(rows)), (name, "есть назад")
 
 
+
+@check
+def m9():
+    """у главных меню — короткая подсказка в подзаголовке: «Расписание» объясняет частоту публикаций,
+    «Мои каналы» зовёт добавить каналы MAX"""
+    qt, _ = bot.screen("q", 1)
+    assert "Настрой, как часто бот будет выкладывать посты" in qt, qt[:160]
+    tt, _ = bot.screen("th", 1)
+    assert "Добавь свои каналы MAX" in tt, tt[:160]
+
 if FAILS:
     print("НЕ ПРОШЛИ:", ", ".join(FAILS))
     sys.exit(1)

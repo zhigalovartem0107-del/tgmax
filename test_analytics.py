@@ -47,6 +47,11 @@ assert (n["subs"], n["today"], n["d7"], n["d30"]) == (5008, 18, 78, None), n    
 assert (n["v24"], n["v48"], n["v72"], n["er24"]) == (1000, 1500, 2000, 20.0), n
 hist30 = {A.day_key(NOW - k * DAY): 5000 - k * 10 for k in range(1, 31)}
 assert A.channel_numbers("Канал", 5008, posts, hist30, NOW)["d30"] == 308
+nn = A.channel_numbers("Канал", 5008, posts, hist30, NOW)         # доп. поля для 📊-строки под картинкой
+assert nn["avg_reach"] == 1100, nn["avg_reach"]                   # медиана просмотров постов (охват)
+assert nn["growth_day"] == round(nn["d7"] / 7) and nn["best_day"] in A.RU_WEEKDAYS, nn
+empty_n = A.channel_numbers("Канал", None, [], {}, NOW)
+assert empty_n["avg_reach"] is None and empty_n["growth_day"] is None and empty_n["best_day"] is None, empty_n
 blind = A.channel_numbers("Канал", None, posts, {}, NOW)                   # MAX не сказал подписчиков
 assert blind["er24"] is None and blind["today"] is None and blind["d7"] is None
 chans = [A.channel_numbers(t, s, posts, {}, NOW) for t, s in (("A", 100), ("B", 5000), ("C", 300), ("D", 2000))]
@@ -193,8 +198,8 @@ assert not any((c["body"].get("text") or "").strip() for c in cards[::2]), "у �
 temp = {str(x["mid"]) for x in bot.AUTODEL["temp"]}
 assert not any(str(c["mid"]) in temp for c in cards), "картинки и цифры остаются в чате (не удаляем через час)"
 caps = [c["body"]["text"] for c in cards[1::2]]
-assert caps[0] == bot.card_caption(bot.anl_channel(th1.name, 5000)) and "5 008 подписчиков · сегодня" in caps[0], caps
-assert caps[1].startswith("📈 «") and "\n👥 1 200 подписчиков · сегодня" in caps[1] and caps[1].count("\n") == 2, caps
+assert caps[0].startswith("📈 «") and "5 008 подписчиков · сегодня" in caps[0] and "📊 Средний охват:" in caps[0], caps
+assert caps[1].startswith("📈 «") and "\n👥 1 200 подписчиков · сегодня" in caps[1] and "📊 Средний охват:" in caps[1], caps
 today = A.day_key(time.time())
 assert bot.SUBS_HIST["5000"][today] == 5008 and json.load(open("subs_history.json"))["6000"][today] == 1200
 srv.subs[5000] = 5020
@@ -208,7 +213,7 @@ bot.anl_cards_send(111, bot.my_channels(), "net", "off")
 assert len(srv.messages) == n_msg + 2 and not (srv.messages[-2]["body"].get("text") or "").strip(), "без подписи"
 assert srv.messages[-2]["body"]["attachments"][0]["type"] == "image" and not srv.messages[-1]["body"].get("attachments")
 blocks = srv.messages[-1]["body"]["text"].split("\n\n")                 # после сводки — 📈/👥/👁 по каждому каналу
-assert len(blocks) == 2 and all(b.startswith("📈 «") and b.count("\n") == 2 for b in blocks), blocks
+assert len(blocks) == 2 and all(b.startswith("📈 «") and "📊 Средний охват:" in b for b in blocks), blocks
 assert any(a == (111, "sending_photo") for a in srv.actions), srv.actions   # «отправляет фото…» пока рисуем
 print("a5 ok: 🖼 карточка на каждый канал и 🌐 сводка сети — картинкой в чат; подписчики по дням в subs_history.json")
 
@@ -241,14 +246,15 @@ bot.ai_ask_text = lambda text, rot, http, settings, log=print, prompt="", timeou
     asked.append((text, prompt, rot, timeout)), "Канал растёт (+83 за неделю), вовлечённость высокая: ER24 22,9%.")[1]
 bot.INSIGHT_CACHE.clear()
 got = bot.stats_text(full)
-assert got == bot.card_caption(full) + "\n🤖 Канал растёт (+83 за неделю), вовлечённость высокая: ER24 22,9%.", got
+assert got == bot.card_caption(full) + "\n" + bot.info_line(full) + "\n🤖 Канал растёт (+83 за неделю), вовлечённость высокая: ER24 22,9%.", got
+assert bot.info_line(full) == "📊 Средний охват: —, Средний прирост: — в день, Лучший день: —", bot.info_line(full)
 assert asked[0][0].startswith(bot.card_caption(full)) and asked[0][1] == INS.PROMPT and asked[0][2] is bot.AI_ROTATORS
 assert asked[0][3] <= 30, "ИИ ждём недолго — цифры важнее"
 assert bot.stats_text(full) == got and len(asked) == 1, "те же цифры — из памяти, ИИ второй раз не спрашиваем"
 bot.ai_ask_text = lambda *a, **k: (_ for _ in ()).throw(bot.AiUnavailable("нет ключей"))
-assert bot.stats_text(dict(full, subs=6000)) == bot.card_caption(dict(full, subs=6000)), "ИИ упал — три строки"
+assert bot.stats_text(dict(full, subs=6000)) == bot.card_caption(dict(full, subs=6000)) + "\n" + bot.info_line(dict(full, subs=6000)), "ИИ упал — три строки + 📊"
 bot.ai_llm_ready = lambda: False
-assert bot.stats_text(dict(full, subs=7000)) == bot.card_caption(dict(full, subs=7000)), "ключей нет — три строки"
+assert bot.stats_text(dict(full, subs=7000)) == bot.card_caption(dict(full, subs=7000)) + "\n" + bot.info_line(dict(full, subs=7000)), "ключей нет — три строки + 📊"
 bot.ai_llm_ready, bot.ai_ask_text = real_ready, real_ask
 print("a5c ok: 🤖 4-я строка — вывод ИИ по цифрам (ротация ключей), одной строкой, из памяти на те же цифры; "
       "нет ИИ — три строки")

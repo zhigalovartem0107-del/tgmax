@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026110628            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111328            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1960,8 +1960,14 @@ FILE_TYPES = {".pdf": "application/pdf", ".zip": "application/zip", ".rar": "app
               ".7z": "application/x-7z-compressed", ".apk": "application/vnd.android.package-archive",
               ".apks": "application/vnd.android.package-archive", ".xapk": "application/vnd.android.package-archive",
               ".obb": "application/octet-stream", ".mcaddon": "application/octet-stream",
-              ".mcpack": "application/octet-stream", ".mcworld": "application/octet-stream"}
+              ".mcpack": "application/octet-stream", ".mcworld": "application/octet-stream",
+              ".mctemplate": "application/octet-stream", ".mclevel": "application/octet-stream",
+              ".litemod": "application/octet-stream", ".mcstructure": "application/octet-stream"}
 STREAM_FROM = 40 * 1024 * 1024           # файлы больше — грузим потоком, не читая целиком в память
+
+# Без аккаунта Telegram (API) бот не читает файлы и закрытые каналы — t.me их не отдаёт. Этой же фразой
+# объясняем пропуск файла в журнале: пост не исчезает молча, всегда видно точную причину.
+FILE_NEEDS_API = "Не удалось скачать файл: нужен аккаунт Telegram (API) для чтения закрытых каналов"
 
 
 def file_mime(path):
@@ -3672,7 +3678,8 @@ def _screen(name, uid=None):
         rows.append(back)
     elif name.split(":")[0] == "q":
         page = 1 if name.partition(":")[2] == "1" else 0
-        text = (f"⏳ Расписание публикаций: {on_off(CFG['queue_on'])}\n\n"
+        text = (f"⏳ Расписание публикаций: {on_off(CFG['queue_on'])}\n"
+                 "Настрой, как часто бот будет выкладывать посты.\n\n"
                 f"Пауза между публикациями: {fmt_min(CFG['gap_min'])}\n"
                 f"Кнопка «⏰ Через…» на карточке поста: {fmt_min(CFG['later_min'])}\n"
                 f"Старые посты удаляются из очереди через {CFG['max_age_h']} ч\n\n"
@@ -3801,7 +3808,7 @@ def _screen(name, uid=None):
                 lines.append(f"{'✅' if t is active_theme(uid) else '▫️'} {i + 1}. {t.name} · каналов: {chans} · "
                              f"очередь: {len(QUEUE)}"
                              + ("" if t.chat_id else " · ⚠️ канал MAX не привязан"))
-        text = ("🎭 Темы\n\nКаждая тема читает свои каналы Telegram и выкладывает в свой канал MAX. "
+        text = ("🎭 Темы\nДобавь свои каналы MAX.\n\nКаждая тема читает свои каналы Telegram и выкладывает в свой канал MAX. "
                 "Отмеченная ✅ — та, которую ты сейчас настраиваешь.\n\n"
                 + "\n".join(lines))
         rows = [[B(("✅ " if t is active_theme(uid) else "") + t.name, f"a:thsw:{i}")] for i, t in enumerate(mine)]
@@ -7079,7 +7086,7 @@ async def _process_channel(client, ch, fails, fresh):
                 if not di:
                     continue
                 if is_web_client(client) and not getattr(m.document, "url", None):
-                    skip = skip or f"download failed ({di['name']}: без входа в Telegram файл не скачать)"
+                    skip = skip or f"{FILE_NEEDS_API} (файл «{di['name']}»)"
                 elif size_skip_reason(di["size"], media_cap_mb()):
                     skip = skip or size_skip_reason(di["size"], media_cap_mb())
                 else:
@@ -7431,7 +7438,7 @@ class WebMessage:
         media = self.photo or self.video or self.document
         if media is None or not media.url:
             if self.document is not None:
-                raise WebMediaUnavailable("файлы без входа в Telegram не скачать (нужен вход по коду)")
+                raise WebMediaUnavailable(FILE_NEEDS_API)
             raise WebMediaUnavailable("видео слишком большое для веб-версии Telegram (нужен вход по коду)")
         return await asyncio.to_thread(_download_url, media.url, file)
 
@@ -7470,6 +7477,17 @@ def _abs_url(u):
         return None
     u = _html.unescape(u)
     return "https:" + u if u.startswith("//") else u
+
+def _doc_download_url(tag):
+    """Прямая ссылка на файл из виджета t.me, если она есть (CDN Telegram). Ссылка на сам пост
+    (t.me/<канал>/<id>) файлом не является, поэтому её не берём — вернём None."""
+    for m in re.finditer(r'href="([^"]+)"', tag):
+        u = _html.unescape(m.group(1))
+        host = re.sub(r"^https?://", "", u).split("/")[0].lower()
+        if host and not host.endswith(("t.me", "telegram.me", "telegram.org")) and (
+                "telesco.pe" in host or "cdn" in host or "/file/" in u or "/dl/" in u):
+            return _abs_url(u)
+    return None
 
 
 def _html_to_md(h):
@@ -7514,9 +7532,10 @@ def _parse_block(ch, block):
             items.append((int(hm.group(1)) if hm else bubble, _abs_url(bg.group(1)) if bg else None, None))
     docs = []                                        # (id, _Media) — файлы и голосовые
     for dm in re.finditer(r'<a\b[^>]*class="[^"]*tgme_widget_message_document_wrap[^"]*"[^>]*>(.*?)</a>', block, re.S):
+        tag = dm.group(0)
         tm = re.search(r'tgme_widget_message_document_title[^>]*>(.*?)</div>', dm.group(1), re.S)
-        hm = re.search(r'href="[^"]*/(\d+)(?:\?[^"]*)?"', dm.group(0))
-        d = _Media(None)
+        hm = re.search(r'href="[^"]*/(\d+)(?:\?[^"]*)?"', tag)
+        d = _Media(_doc_download_url(tag))            # прямая ссылка на файл, если t.me её отдаёт (иначе None)
         d.name = _html.unescape(re.sub(r"<[^>]+>", "", tm.group(1))).strip() if tm else ""
         docs.append((int(hm.group(1)) if hm else bubble, d))
     vm = re.search(r'<audio\b[^>]*\bsrc="([^"]+)"', block)
@@ -8823,10 +8842,11 @@ def fwd_ad(uid, chat, key, src):
     posts = fwd_posts(res)
     reach = anlpot.ad_reach(res["subs"], fwd_views(posts))
     j, l, tot = FWD_WATCH.deltas(key)
+    n = fwd_numbers(res, key, posts)                                   # те же цифры, что под картинкой (с ER24)
     d = dict(reach, title=res["title"], subs=res["subs"], joins=j, leaves=l, total=tot,
-             series=[n for _, n in FWD_WATCH.history(key)][-60:])
+             er24=n.get("er24"), series=[x for _, x in FWD_WATCH.history(key)][-60:])
     img = anlimg.render_ad_reach(d, card_font, card_bg(anl_bg_mode(uid), res["title"]))
-    send_card(chat, img, stats_text(fwd_numbers(res, key, posts)))     # картинка без подписи, за ней — цифры
+    send_card(chat, img, stats_text(n))                                # картинка без подписи, за ней — цифры
     return res["title"]
 
 
@@ -9009,11 +9029,22 @@ def ai_insight(n, caption):
     return out
 
 
+def info_line(n):
+    """📊 Доп. контекст под картинкой: средний охват (медиана просмотров поста), средний прирост подписчиков в день
+    и лучший день недели. Чего не знаем — «—»."""
+    f, n = anlimg, n if isinstance(n, dict) else {}
+    growth = f.fmt_delta(n.get("growth_day")) if f.num(n.get("growth_day")) is not None else "—"
+    return (f"📊 Средний охват: {f.fmt_int(n.get('avg_reach'))}, "
+            f"Средний прирост: {growth} в день, Лучший день: {n.get('best_day') or '—'}")
+
+
 def stats_text(n, ai=True):
-    """Сообщение после картинки: три строки 📈/👥/👁 и 4-я — 🤖 вывод ИИ (если ИИ подключён и ответил)."""
+    """Сообщение после картинки: три строки 📈/👥/👁, 4-я — 📊 доп. контекст (охват, прирост, лучший день),
+    5-я — 🤖 вывод ИИ (если ИИ подключён и ответил). ИИ по-прежнему смотрит те самые три строки."""
     caption = card_caption(n)
+    body = f"{caption}\n{info_line(n)}"
     line = ai_insight(n, caption) if ai else None
-    return f"{caption}\n🤖 {line}" if line else caption
+    return f"{body}\n🤖 {line}" if line else body
 
 
 def upload_card(img, photo_like=False):

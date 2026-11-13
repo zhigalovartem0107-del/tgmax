@@ -41,6 +41,7 @@ WEEK = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 MONTHS = ("янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек.")
 DAY = 86400
 MARGIN = 40
+RU_WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 
 
 # ---------- числа ----------
@@ -154,10 +155,19 @@ def channel_numbers(title, subs, posts, history, now=None):
         keys = [k for k in old if k >= day_key(now - n * DAY)]
         return (subs - hist[keys[0]]) if keys and subs is not None else None
     span = (now - time.mktime(time.strptime(old[0], "%Y-%m-%d"))) / DAY if old else 0
-    return {"title": title, "subs": subs, "today": days[-1][2], "d7": back(7),
+    d7 = back(7)
+    pv = sorted(p["views"] for p in posts if num(p.get("views")) is not None)
+    avg_reach = pv[len(pv) // 2] if pv else None                        # медиана просмотров поста = «средний охват»
+    byday = {}                                                          # лучший день недели по средним просмотрам
+    for p in posts:
+        byday.setdefault(time.localtime(p["t"]).tm_wday, []).append(p["views"])
+    best = max(byday, key=lambda w: sum(byday[w]) / len(byday[w])) if byday else None
+    return {"title": title, "subs": subs, "today": days[-1][2], "d7": d7,
             "d30": back(30) if span >= 25 else None,
             "v24": v[24], "v48": v[48], "v72": v[72],
             "er24": round(v[24] / subs * 100, 1) if v[24] is not None and subs else None,
+            "avg_reach": avg_reach, "growth_day": round(d7 / 7) if d7 is not None else None,
+            "best_day": RU_WEEKDAYS[best] if best is not None else None,
             "days": days, "now": now}
 
 
@@ -1060,8 +1070,10 @@ def render_ad_reach(d_, font=None, bg=None, theme=None, now=None, credit=None):
     th = (444 - y0 - gap) // 2
     _tile(img, (tx, y0, W - MARGIN, y0 + th), t, font, "Подписчики", fmt_big(d_.get("subs")), "сейчас в канале",
           PURPLE)
-    _tile(img, (tx, y0 + th + gap, W - MARGIN, 444), t, font, "ER", fmt_pct(d_.get("er")),
-          "медиана просмотров / подписчики", HOTPINK)
+    er24 = num(d_.get("er24"))
+    _tile(img, (tx, y0 + th + gap, W - MARGIN, 444), t, font, "ER24",
+          fmt_pct(er24 if er24 is not None else d_.get("er")),
+          "просмотры за сутки / подписчики", HOTPINK)
     y1 = 724
     _panel(img, (MARGIN, 464, hx1, y1), t, 26)
     _panel_title(img, t, font, MARGIN + 28, 464 + 42, "Подписчики", "пока бот следит за каналом")

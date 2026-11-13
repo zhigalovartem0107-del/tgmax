@@ -212,7 +212,9 @@ FMT = re.compile(r"📈 «(?P<title>[^»\n]+)»\n"                              
                  r"👥 (?P<subs>\d[\d ]*|—) подписчиков · сегодня (?P<today>[+−]\d[\d ]*|—), "
                  r"за 7 дней (?P<d7>[+−]\d[\d ]*|—)\n"
                  r"👁 Просмотры на пост: 24 ч — (?P<v24>\d[\d ]*|—), 48 ч — (?P<v48>\d[\d ]*|—), "
-                 r"72 ч — (?P<v72>\d[\d ]*|—) · ER24 (?P<er>\d+,\d%|—)"
+                 r"72 ч — (?P<v72>\d[\d ]*|—) · ER24 (?P<er>\d+,\d%|—)\n"
+                 r"📊 Средний охват: (?P<reach>[\d ]+|—), Средний прирост: (?P<grow>[+−]\d[\d ]*|—) в день, "
+                 r"Лучший день: (?P<best>[^\n]+)"                           # 📊 доп. строка — всегда есть
                  r"(?:\n🤖 (?P<ai>[^\n]{2,320}))?")                      # 4-я строка — вывод ИИ (если есть ключи)
 NOT_BOUND = ("Этого канала нет в вашей сетке. Чтобы я мог его проверить, привяжите его в разделе "
              "«🎭 Мои каналы».")
@@ -325,6 +327,7 @@ def f2():
     assert m["subs"] == "1 000" and m["ai"] is None, m.groupdict()                # ИИ нет — ровно три строки
     kind, d = RENDERED[-1]
     assert kind == "render_ad_reach" and d["subs"] == 1000 and (d["joins"], d["leaves"], d["total"]) == (0, 0, 0), d
+    assert "er24" in d and bot.anlimg.fmt_pct(d["er24"]) == m["er"], (d.get("er24"), m["er"])   # ER24 на первой карточке
     assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "на картинке — знак Reloader"
     assert menus and str(menus[-1]["mid"]) in gone(), "прежнее меню канала убрано"
     menu_left = srv.answers[a0]["body"]["message"]

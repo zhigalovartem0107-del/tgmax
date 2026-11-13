@@ -47,7 +47,8 @@ print("f1 ok: файл загружается в MAX со своим имене�
 for name, mime in (("Шапка FJODOR.pdf", "application/pdf"), ("update_0.32.zip", "application/zip"),
                    ("Standoff 2 0.32.apk", "application/vnd.android.package-archive"),
                    ("pack.rar", "application/vnd.rar"), ("data.7z", "application/x-7z-compressed"),
-                   ("Mob Food (addon).mcaddon", "application/octet-stream")):
+                   ("Mob Food (addon).mcaddon", "application/octet-stream"),
+                   ("Pack (addon).mcpack", "application/octet-stream")):
     assert bot.file_mime(name) == mime, (name, bot.file_mime(name))
     fp = os.path.join(tempfile.mkdtemp(), name)
     open(fp, "wb").write(b"PK\x03\x04" + name.encode() * 20)
@@ -145,8 +146,8 @@ def wrap(post, inner):
             f'<time datetime="2026-10-21T14:36:00+00:00">14:36</time></a></div></div></div></div>')
 
 
-def docblock(pid, title):
-    return (f'<div class="tgme_widget_message_document_wrap"><a class="tgme_widget_message_document_wrap" href="https://t.me/v/{pid}">'
+def docblock(pid, title, href=None):
+    return (f'<div class="tgme_widget_message_document_wrap"><a class="tgme_widget_message_document_wrap" href="{href or f"https://t.me/v/{pid}"}">'
             f'<i class="tgme_widget_message_document_icon accent_bg"></i><div class="tgme_widget_message_document">'
             f'<div class="tgme_widget_message_document_title accent_color" dir="auto">{title}</div>'
             f'<div class="tgme_widget_message_document_extra" dir="auto">875.0 KB</div></div></a></div>')
@@ -157,10 +158,12 @@ PAGE = "<section class='tgme_channel_history'>" + "".join([
     wrap(22, docblock(22, "только_файл.pdf")),
     wrap(23, '<div class="tgme_widget_message_voice_player"><audio class="tgme_widget_message_voice js-message_voice" '
              'src="https://cdn4.telesco.pe/file/voice23.oga" preload="none"></audio></div>'),
+    wrap(24, docblock(24, "Mob Food (addon).mcaddon", "https://cdn4.telesco.pe/file/mob.mcaddon")),
 ]) + "</section>"
 msgs = {m.id: m for m in bot.parse_web_page("v", PAGE)}
 assert msgs[21].document.name == "Пуловер.pdf" and msgs[21].text == "Схема пуловера" and msgs[21].document.url is None
 assert msgs[23].document.url.endswith("voice23.oga")
+assert msgs[24].document.name == "Mob Food (addon).mcaddon" and msgs[24].document.url.endswith("mob.mcaddon"), msgs[24].document.url
 bot.web_fetch = lambda url: PAGE
 bot._download_url = lambda url, dest: open(dest, "wb").write(b"OggS") and dest
 web = bot.WebClient()
@@ -168,14 +171,18 @@ bot.QUEUE.clear(); bot.LAST_IDS["v"] = 20; NOTES.clear()
 asyncio.run(bot.process_channel(web, "v", {})); MONO[0] += 10
 asyncio.run(bot.process_channel(web, "v", {}))
 q = {x["id"]: x for x in bot.QUEUE}
-assert set(q) == {"v:23"}, list(q)                        # пост с PDF без входа не скачать — пропущен целиком
-assert any("Skipped: download failed" in j and "v:21" not in j or "Skipped: download failed" in j for j in bot.JOURNAL)
+assert set(q) == {"v:23", "v:24"}, list(q)                # PDF без прямой ссылки пропущен; .mcaddon с ссылкой — в очереди
+assert any("нужен аккаунт Telegram (API)" in j for j in bot.JOURNAL), "файл пропущен — с точной причиной в журнале"
 assert not [n for n in NOTES if "PDF" in n], NOTES           # ни текста без PDF, ни сообщения
+assert asyncio.run(bot.publish_item(web, 5, q["v:24"])) == "ok"          # .mcaddon скачан по прямой ссылке t.me
+bmc = srv.messages[-1]["body"]; tokmc = bmc["attachments"][0]["payload"]["token"]
+assert srv.files[tokmc][0] == "Mob Food (addon).mcaddon" and srv.file_mimes[tokmc] == "application/octet-stream", \
+    (srv.files[tokmc][0], srv.file_mimes[tokmc])
 n0 = len(srv.messages)
 assert asyncio.run(bot.publish_item(web, 5, q["v:23"])) == "ok"
 b = srv.messages[-1]["body"]
 assert srv.files[b["attachments"][0]["payload"]["token"]] == ("voice_23.ogg", b"OggS"), b
-print("f3 ok: без входа: пост с PDF пропущен целиком (без текста и сообщений), голосовое переносится")
+print("f3 ok: без входа: PDF без ссылки пропущен с точной причиной; .mcaddon с прямой ссылкой t.me и голосовое переносятся")
 
 # 4) пересланное боту сообщение: текст и файл (имя, токен, ссылка) достаются из вложенного сообщения
 msg = {"body": {"text": "", "attachments": []}, "link": {"type": "forward", "message": {
