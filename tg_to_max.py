@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026111331            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111501            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -5811,8 +5811,6 @@ def run_command(cmd, arg, uid, chat_id):
         return max(lo, min(hi, int(m.group()))) if m else None
 
     pend = sum(1 for x in QUEUE if x.get("status") == "pending")
-    if cmd == "start" and arg:
-        ref_from_payload(uid, arg)                     # «/start ref_…» — пришёл по ссылке партнёра
     if cmd in ("partner", "ref", "reflink") and can_panel(uid):   # 🤝 партнёрская ссылка — только хозяин
         say(*ref_start(uid)) if cmd != "partner" else say(partner_screen(arg))
     elif HOST_MODE and can_panel(uid) and cmd in ("start", "menu", "m", "panel", "admin", "p"):
@@ -6384,6 +6382,11 @@ UPD_STATS = Counter()     # какие события MAX присылал с з
 
 def handle_update(u):
     kind = u.get("update_type")
+    if kind in ("bot_started", "message_created"):    # 🔗 переход по партнёрской ссылке — первым делом, до всех проверок
+        try:
+            ref_on_update(u, kind)
+        except Exception:
+            log_exc("партнёрская ссылка")
     with contextlib.suppress(Exception):
         ct = ((u.get("message") or {}).get("recipient") or {}).get("chat_type") if kind == "message_created" else ""
         UPD_STATS[f"{kind}:{ct}" if ct else str(kind)] += 1
@@ -6475,9 +6478,7 @@ def _handle_update(u, kind):
               or chat_info_cached(u.get("chat_id")).get("type") == "channel") and (HOST_MODE or not CFG["admins"] or is_admin(adder)):
             on_channel_message({"chat_id": u.get("chat_id"), "chat_type": "channel"}, adder, added=True)
     elif kind == "bot_started":
-        user = u.get("user") or {}
-        with contextlib.suppress(Exception):           # ?start=ref_<ID> — пришёл по ссылке партнёра
-            ref_from_payload(user.get("user_id"), u.get("payload"), user.get("first_name") or user.get("name") or "")
+        user = u.get("user") or {}                       # ?start=ref_<ID> уже учтён в handle_update (ref_on_update)
         handle_message(user.get("user_id"), u.get("chat_id"),
                        user.get("first_name") or user.get("name") or "", "/start")
 
@@ -12897,8 +12898,9 @@ def log_purchase(key, plan, days, price, how, code=""):
 # ---------- 🤝 ПАРТНЁРСКАЯ ССЫЛКА: хозяин делает ссылку для партнёра, бот помнит, кто от кого, и сообщает о покупках ----------
 from reloader.services import referral as refs  # noqa: E402
 
-REF_FILE = "referrals.json"             # кто из клиентов за каким партнёром и что купил (для выплат вручную)
-REFS = refs.Referrals(REF_FILE, save=save_json, load=load_json_safe)
+REF_FILE = "referrals.json"             # переходы по ссылке, кто за каким партнёром, что купил, процент и выплаты
+REFS = refs.Referrals(REF_FILE, save=lambda path, data: save_json(path, data, private=True, backup=True),
+                      load=load_json_safe)  # это деньги партнёра: на диск надёжно, с копией; файл — только для бота
 REF_FREE = ("промокод 100%",)           # так подписка достаётся бесплатно — это не покупка
 
 
@@ -12909,6 +12911,68 @@ def partner_id():
         if refs.valid_pid(v):
             return v
     return None
+
+
+def partner_rate(pid=None):
+    """Процент партнёра с покупок его клиентов: /partner % 30, иначе переменная хостинга PARTNER_PERCENT.
+    Не задан — None: долг партнёру тогда не считаем, а подсказываем, как задать процент."""
+    pid = pid or partner_id()
+    got = REFS.rate(pid) if pid else None
+    return got if got is not None else refs.parse_pct(os.environ.get("PARTNER_PERCENT") or "")
+
+
+def pct_text(pct):
+    """30 -> «30», 12.5 -> «12,5»."""
+    return f"{pct:g}".replace(".", ",")
+
+
+_START_ARG = re.compile(r"/start(?:@\S+)?\s+(\S+)", re.IGNORECASE)
+
+
+def ref_event(u, kind):
+    """(ID человека, имя, метка ?start=, каким событием) — если это запуск бота по ссылке с меткой: «бот запущен»
+    (bot_started) с payload или «/start <метка>» текстом в личке. Иначе None."""
+    if kind == "bot_started":
+        user = u.get("user") or {}
+        return user.get("user_id"), user.get("first_name") or user.get("name") or "", u.get("payload"), "start"
+    msg = u.get("message") or {}
+    if kind != "message_created" or ((msg.get("recipient") or {}).get("chat_type")) not in (None, "dialog"):
+        return None
+    text = (msg.get("body") or {}).get("text")
+    m = _START_ARG.fullmatch(text.strip()) if isinstance(text, str) else None
+    if not m:
+        return None
+    sender = msg.get("sender") or {}
+    return sender.get("user_id"), sender.get("first_name") or sender.get("name") or "", m.group(1), "text"
+
+
+def ref_on_update(u, kind):
+    """🔗 Запуск бота по партнёрской ссылке (?start=ref_<ID>). Сначала +1 к переходам партнёра — сразу, до
+    обязательной подписки, кабинета и любых проверок: переход засчитан, даже если человек ничего не купит (и даже
+    если это хозяин проверяет ссылку). Потом — закрепить клиента за партнёром (свои правила в ref_from_payload).
+    Раньше закрепление шло после проверки подписки — и неподписанный клиент терялся для партнёра."""
+    got = ref_event(u, kind)
+    pid = refs.partner_from_payload(got[2]) if got else None
+    if not pid:
+        return
+    uid, name, payload, via = got
+    REFS.click(pid, uid, via)
+    ref_from_payload(uid, payload, name)
+
+
+def ref_breakdown(pid):
+    """Воронка партнёра четырьмя строками — для /partner и статистики в панели хозяина: переходы по ссылке → зашли
+    в бота (закреплены) → купили подписку → долг партнёру. Возвращает (итоги из учёта, строки)."""
+    st = REFS.summary(pid, partner_rate(pid))
+    f = anlimg.fmt_int
+    if st["owed"] is None:
+        debt = "? — задайте процент партнёра: /partner % 30"
+    else:
+        debt = f"{f(max(st['owed'], 0))} ₽" + (f" (переплата {f(-st['owed'])} ₽)" if st["owed"] < 0 else "")
+    return st, [f"🔗 Переходов по ссылке: {f(st['clicks'])}",
+                f"👥 Зашло в бота (привязалось): {f(st['clients'])}",
+                f"💰 Купили подписку: {f(st['sales'])}" + (f" (на {f(st['sum'])} ₽)" if st["sum"] else ""),
+                f"💵 Долг партнеру: {debt}"]
 
 
 def ref_link(pid=None):
@@ -12942,31 +13006,64 @@ def ref_on_purchase(key, plan, days, price, how):
     if not pid:
         return
     name = rec.get("name") or str(key)
-    REFS.sale(pid, key, name, plan, days, price, how)
+    REFS.sale(pid, key, name, plan, days, price, how, rate=partner_rate(pid))   # процент — на момент покупки
     host_alert(f"💰 Клиент {name} купил подписку по ссылке партнера {pid}!\n"
                f"{plan}, {int(days or 0)} дн." + (f", {int(price)} ₽" if price else "") + f" ({how}) · ID клиента {key}")
 
 
+_PCT_ARG = re.compile(r"%\s*(\S+)|(\S+?)\s*%")
+_PAY_ARG = re.compile(r"(?:выплачено|выплатил[аи]?|выплата|paid|payout)\b\s*(.*)", re.IGNORECASE)
+
+
 def partner_screen(arg):
-    """/partner [ID | -]: показать, задать или убрать ID партнёра; ссылка и итоги для выплат."""
-    arg = (arg or "").strip()
+    """/partner [ID | - | % 30 | выплачено 5000]: ID партнёра (задать / убрать), процент партнёра с покупок его
+    клиентов, отметка выплаты. Показывает ссылку и воронку: переходы → зашли в бота → купили → долг партнёру."""
+    arg = " ".join((arg or "").split())
+    note, f = "", anlimg.fmt_int
+    pct_m, pay_m = _PCT_ARG.fullmatch(arg), _PAY_ARG.fullmatch(arg)
     if arg == "-":
         GCFG.pop("partner_id", None)
         save_cfg()
+    elif pct_m or pay_m:
+        pid = partner_id()
+        if not pid:
+            return "Сначала задайте ID партнёра: /partner 123456 (или переменная PARTNER_ID на хостинге)."
+        if pct_m:
+            pct = refs.parse_pct(pct_m.group(1) or pct_m.group(2))
+            if pct is None or not REFS.set_rate(pid, pct):
+                return "Процент партнёра — число от 0 до 100, например: /partner % 30"
+            note = (f"✅ Процент партнёра {pid}: {pct_text(pct)}% с каждой покупки его клиентов. Покупки, у которых "
+                    "процента ещё не было, — тоже по нему; посчитанные по прежнему проценту не меняются.\n\n")
+        else:
+            raw = re.sub(r"(?:₽|р\.?|руб\.?|rub)$", "", pay_m.group(1).replace(" ", ""), flags=re.IGNORECASE)
+            amount = int(raw) if re.fullmatch(r"-?\d{1,10}", raw) else None
+            if amount is None or not REFS.payout(pid, amount):
+                return ("Сумма выплаты — целое число рублей, например: /partner выплачено 5000\n"
+                        "Ошиблись — отметьте минусом: /partner выплачено -500")
+            note = f"✅ Отметил: партнёру {pid} выплачено {f(amount)} ₽.\n\n"
     elif arg:
         if not refs.valid_pid(arg):
             return ("ID партнёра — буквы, цифры, «_» или «-», до 32 знаков, без пробелов. Например: "
-                    "/partner 123456")
+                    "/partner 123456\nПроцент партнёра: /partner % 30 · отметить выплату: /partner выплачено 5000")
         GCFG["partner_id"] = arg
         save_cfg()
     pid = partner_id()
     if not pid:
         return ("🤝 Партнёр не задан.\n\nЗадайте его ID: /partner 123456 (или переменная PARTNER_ID на хостинге). "
                 "Потом /ref — ссылка для клиента.")
-    st = REFS.stats(pid)
-    return (f"🤝 Партнёр: {pid}\nСсылка: {ref_link(pid) or 'не узнал ник бота в MAX — попробуйте позже'}\n\n"
-            f"Клиентов за партнёром: {st['clients']} · покупок: {st['sales']} на {anlimg.fmt_int(st['sum'])} ₽\n\n"
-            "🔗 Ссылка для клиента: /ref · поменять партнёра: /partner 123456 · убрать: /partner -")
+    st, lines = ref_breakdown(pid)
+    if st["rate"] is None:
+        money = "Процент партнёра не задан: /partner % 30 — тогда долг = 30% с каждой покупки его клиентов."
+    else:
+        last = REFS.last_payout(pid)
+        money = (f"Процент партнёра: {pct_text(st['rate'])}% · начислено {f(st['earned'])} ₽ · выплачено "
+                 f"{f(st['paid'])} ₽" + (f" (последняя отметка — {time.strftime('%d.%m.%Y', time.localtime(last['t']))})"
+                                         if last else ""))
+    return (note + f"🤝 Партнёр: {pid}\nСсылка: {ref_link(pid) or 'не узнал ник бота в MAX — попробуйте позже'}\n\n"
+            + "\n".join(lines) + "\n\n" + money + "\n\n"
+            "Заплатили партнёру — отметьте: /partner выплачено 5000\n"
+            "🔗 Ссылка для клиента: /ref · процент: /partner % 30 · поменять партнёра: /partner 123456 · убрать: "
+            "/partner -")
 
 
 def ref_start(uid):
@@ -14480,6 +14577,9 @@ def host_stats(now=None):
         lines.append("📦 Тарифы у активных: " + ", ".join(f"{p} — {n}" for p, n in plans.items()))
     if pend:
         lines.append(f"🧾 Ждут подтверждения перевода: {len(pend)}")
+    pid = partner_id()
+    if pid:                                                # 🤝 партнёр: переходы → зашли → купили → долг
+        lines += ["", f"🤝 Партнёр {pid} (ссылка, процент, выплаты: /partner):"] + ref_breakdown(pid)[1]
     if active:
         lines += ["", "С подпиской сейчас:"] + [
             f"• {name(k)} — до {fmt_date(cab[k]['until'])}" for k in sorted(active, key=lambda k: cab[k]["until"])[:15]]
