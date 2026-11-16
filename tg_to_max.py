@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026111501            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111601            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -1772,6 +1772,8 @@ def rsya_check(msg):
     if not is_rsya_ad(rsya_text(body)):
         return False
     mid = str(body.get("mid") or "")
+    if mid and mid in XP_MIDS:
+        return False                                     # наш пост кросс-промо — не реклама РСЯ, очередь не трогаем
     with theme_ctx(t):
         if mid and any(str(p.get("mid")) == mid for p in list(PUB.get("day_posts", []))):
             return False                                 # это мы выложили пост с такими словами
@@ -4184,6 +4186,11 @@ def _screen(name, uid=None):
         if got is not None:
             return got
         name = "main"
+    if name.split(":")[0] in ("xp", "xpnew", "xpch", "xpiv", "xpdel"):   # 📢 кросс-промо: свои проверки доступа
+        got = xp_screen(name, uid)
+        if got is not None:
+            return got
+        name = "main"
     if name == "dg" and simple_menu(uid):
         name = "main"                                   # 🔎 проверки связи у покупателя нет — его меню
     if name == "bview" and HOST_MODE and can_panel(uid):   # 👀 админ смотрит меню глазами покупателя
@@ -4648,6 +4655,7 @@ def _screen(name, uid=None):
                 [B("✋ Проверка постов", "m:ap")],
                 [B("📖 Инструкция", "m:gd")],
                 *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
+                *([[B("📢 Кросс-промо", "m:xp")]] if xp_allowed(uid) else []),
                 [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")],
                 [B("📄 Условия", "m:terms")], back]
     elif HOST_MODE and simple_menu(uid) and not can_panel(uid):
@@ -4670,6 +4678,7 @@ def _screen(name, uid=None):
                 [B("📊 Статус", "m:st"), B("🧪 Тест", "m:ts")],
                 [B("❓ Команды", "m:hp")],
                 [B("📌 Закреп и автоудаление", "m:pinset")],
+                *([[B("📢 Кросс-промо", "m:xp")]] if xp_allowed(uid) else []),
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
                 [B("🧠 Умное", "m:ai"), B("🔎 Проверка", "m:dg")] + ([B("🔑 Telegram", "tg:menu")] if show_tg(uid) else []),
                 [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")]]
@@ -5021,6 +5030,8 @@ def do_action(act, uid=None):
     """Кнопки-действия. Возвращает экран, который показать после."""
     p = act.split(":")
     scr = "main"
+    if p[0].startswith("xp"):                              # 📢 кросс-промо: только свои каналы и кампании
+        return xp_action(p, uid)
     if p[0] == "cllgform":                                  # ⚖️ форма: ИП → ООО → самозанятый
         return legal_form_cycle(uid)
     if p[0] in ("buyerask", "buyercard", "codesexp") and HOST_MODE and can_panel(uid):   # 👥 🎟 — в панели хозяина
@@ -6201,6 +6212,10 @@ def handle_message(uid, chat_id, name, text, msg=None):
             ref_input(uid, chat_id, msg, t)
         else:
             PENDING.pop(uid, None)
+        return
+    if action in ("xpost", "xpiv"):                        # 📢 кросс-промо: рекламный пост или интервал
+        PENDING.pop(uid, None)
+        xp_input(uid, chat_id, action, content if action == "xpost" else t, atts)
         return
     if not action and not (HOST_MODE and can_panel(uid) and session_atts(atts)) \
             and (src := fwdw.source_of(msg, t)) is not None:      # 📊 пост из любого канала / ссылка на канал
@@ -12376,6 +12391,431 @@ def ad_broadcast(d):
                         "Число доставленных сохранено — пригодится для отчёта в ОРД.")
 
 
+# ---------- 📢 КРОСС-ПРОМО: свой рекламный пост в СВОИ каналы по своему таймеру (не через очередь) ----------
+# Кампания: пост (текст + фото/видео), каналы своего кабинета, интервал. Выходит раз в N часов отдельно от очереди
+# постов из источников: не занимает её мест (очередь, пауза между постами и счётчики темы не меняются), не ждёт её и не
+# зависит от того, пуста ли она и на паузе ли бот. Каналы — ТОЛЬКО своего кабинета: чужие не показываем, кнопку с чужой
+# темой отклоняем, и при выкладке ещё раз сверяем владельца (ID в кнопке — не пропуск).
+from reloader.services import xpromo  # noqa: E402
+
+XP_FILE = "xpromo.json"
+XP = xpromo.Campaigns(XP_FILE, save=lambda path, data: save_json(path, data, private=True, backup=True),
+                      load=load_json_safe)
+XP_DRAFT = {}            # uid -> черновик новой кампании: {"owner", "text", "media", "themes", "t"}
+XP_MIDS = {}             # mid поста кросс-промо -> когда вышел: свой пост — перехватчик РСЯ его не «закапывает»
+XP_MIDS_KEEP = 2000
+XP_BUSY = set()          # (кампания, тема), которые прямо сейчас уходят в канал
+XP_TASKS = set()         # задачи цикла (ссылки держим, чтобы задачу не собрал сборщик мусора)
+XP_HOURS = (1, 2, 3, 4, 6, 8, 12, 24, 48)
+XP_ASK = ("📢 Новая кампания кросс-промо\n\nПришли рекламный пост одним сообщением: текст и фото или видео (можно "
+          "просто текст или переслать готовый пост). Дальше выберешь свои каналы и как часто его выкладывать.")
+
+
+def xp_owner(uid):
+    """Чей кабинет у пользователя: ключ кабинета (host-режим) или "" (обычный бот — все темы его). None — кабинета нет."""
+    if not HOST_MODE:
+        return ""
+    return tenant_key(uid)
+
+
+def xp_owner_allowed(owner):
+    """Кабинету можно кросс-промо: хозяин, админы ADMIN_IDS и VIP-кабинеты («⭐ VIP» включает хозяин в карточке)."""
+    if not HOST_MODE:
+        return True
+    if not owner:
+        return False
+    if owner == host_id():
+        return True
+    c = TENANTS.get(owner) or {}
+    return bool(c.get("vip")) or any(is_global_admin(a) for a in c.get("admins") or [])
+
+
+def xp_allowed(uid):
+    """Кнопка «📢 Кросс-промо»: хозяин и админы панели; покупатель — если его кабинет VIP и работает."""
+    if uid is None:
+        return False
+    if not HOST_MODE:
+        return is_admin(uid)
+    if can_panel(uid):
+        return True
+    key = tenant_key(uid)
+    return bool(key) and tenant_live(key) and xp_owner_allowed(key)
+
+
+def xp_owns(owner, t):
+    """Тема — своя для кабинета owner (в обычном боте все темы — его)."""
+    return t is not None and (not HOST_MODE or (bool(owner) and t.owner == owner))
+
+
+def xp_my_themes(uid):
+    """Из каких каналов можно выбирать: ТОЛЬКО темы своего кабинета с подключённым каналом MAX."""
+    owner = xp_owner(uid)
+    if owner is None or not xp_allowed(uid):
+        return []
+    return [t for t in THEMES if xp_owns(owner, t) and t.chat_id]
+
+
+def xp_every_text(sec):
+    h = int(sec) // 3600
+    return "каждый час" if h == 1 else "раз в сутки" if h == 24 else f"каждые {h} ч"
+
+
+def xp_title(c):
+    """Название кампании в списках: начало первой строки поста, по целому слову."""
+    line = plain_snip((c.get("text") or "").strip().split("\n")[0], 200).strip()
+    if not line:
+        return "пост без текста"
+    if len(line) <= 45:
+        return line
+    cut = line[:45].rsplit(" ", 1)[0]
+    return (cut if len(cut) >= 20 else line[:45]).rstrip(" ,.:;—-") + "…"
+
+
+def xp_media(atts):
+    """Фото и видео из сообщения -> [{"kind", "token"}] (MAX разрешает слать вложение повторно по токену). Токена
+    нет — скачиваем и загружаем в MAX сами. Файлы, музыку и голосовые не берём. Сбой — исключение."""
+    out = []
+    for a in atts or []:
+        if a.get("kind") not in xpromo.KINDS:
+            continue
+        tok = a.get("token")
+        if not tok and a.get("url"):
+            os.makedirs(MEDIA_DIR, exist_ok=True)
+            path = fetch_file(a["url"], f"{MEDIA_DIR}/xp_{secrets.token_hex(4)}", ".jpg" if a["kind"] == "image" else ".mp4")
+            try:
+                tok = upload_retry(a["kind"], path, f"Кросс-промо: {'фото' if a['kind'] == 'image' else 'видео'}")
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+        if not tok:
+            raise ValueError("у вложения нет токена MAX")
+        out.append({"kind": a["kind"], "token": tok})
+    return out[:xpromo.MAX_MEDIA]
+
+
+def xp_iv_rows():
+    hrs = [B(f"{h} ч", f"a:xpiv:{h}") for h in XP_HOURS]
+    return [hrs[i:i + 3] for i in range(0, len(hrs), 3)] + [[B("❌ Отмена", "a:xpno")]]
+
+
+def xp_input(uid, chat_id, action, text, atts):
+    """Ввод в мастере кампании: пост (текст + фото/видео) -> выбор своих каналов; число часов -> кампания."""
+    if not xp_allowed(uid):
+        XP_DRAFT.pop(uid, None)
+        send_screen(chat_id, *screen("main", uid))
+        return
+    if action == "xpiv":
+        every = xpromo.parse_hours(text)
+        if every is None:
+            PENDING[uid] = "xpiv"
+            api_send(chat_id, "Не понял интервал. Пришли число часов от 1 до 168 (например: 2 или 12) — или нажми "
+                              "кнопку.", xp_iv_rows())
+            return
+        send_screen(chat_id, *screen(xp_save(uid, every), uid))
+        return
+    text = (text or "").strip()
+    try:
+        media = xp_media(atts)
+    except Exception as e:
+        PENDING[uid] = "xpost"
+        _log_line(time.strftime("%H:%M:%S") + f" Кросс-промо: не взял вложение из сообщения: {why(e)}")
+        api_send(chat_id, "Не получилось взять фото или видео из сообщения — пришли пост ещё раз.",
+                 [[B("❌ Отмена", "a:xpno")]])
+        return
+    if not text and not media:
+        PENDING[uid] = "xpost"
+        api_send(chat_id, "Нужен рекламный пост: текст и фото или видео (можно просто текст). Файлы, музыка и "
+                          "голосовые не подходят.\n\n" + XP_ASK, [[B("❌ Отмена", "a:xpno")]])
+        return
+    XP_DRAFT[uid] = {"owner": xp_owner(uid), "text": text, "media": media, "themes": [], "t": time.time()}
+    send_screen(chat_id, *screen("xpch", uid))
+
+
+def xp_save(uid, every):
+    """Черновик -> кампания. Каналы ещё раз сверяем с кабинетом: в кампанию попадают только свои (подложенная в
+    черновик чужая тема отбрасывается). Возвращает экран."""
+    PENDING.pop(uid, None)
+    d, owner = XP_DRAFT.get(uid), xp_owner(uid)
+    if not d or owner is None or d.get("owner") != owner:
+        XP_DRAFT.pop(uid, None)
+        FLASH[uid] = "Черновик кампании потерялся — начни заново: «➕ Новая кампания»."
+        return "xp"
+    if every is None or not xpromo.EVERY_MIN <= every <= xpromo.EVERY_MAX:
+        PENDING[uid] = "xpiv"
+        FLASH[uid] = "Интервал — от 1 часа до 7 дней."
+        return "xpiv"
+    mine = {t.id for t in xp_my_themes(uid)}
+    themes = [x for x in d["themes"] if x in mine]
+    foreign = len(d["themes"]) - len(themes)
+    if not themes:
+        FLASH[uid] = "Отметь хотя бы один свой канал."
+        return "xpch"
+    c = XP.add(owner, uid, d["text"], d["media"], themes, every)
+    if c is None:
+        FLASH[uid] = f"Не сохранил: у кабинета уже {xpromo.KEEP_PER_OWNER} кампаний — удали ненужную."
+        return "xp"
+    XP_DRAFT.pop(uid, None)
+    names = ", ".join(t.name for t in (theme_by_id(x) for x in themes) if t is not None)
+    with theme_ctx(theme_by_id(themes[0])):
+        journal(f"📢 Кросс-промо «{xp_title(c)}»: кампания запущена — {names}, {xp_every_text(every)}")
+    FLASH[uid] = (f"✅ Кампания запущена: {names} — {xp_every_text(every)}. Первый пост выйдет в течение минуты, "
+                  "дальше — по своему таймеру, отдельно от очереди."
+                  + (" ⛔ Чужие каналы в кампанию не попали." if foreign else ""))
+    return "xp"
+
+
+def xp_screen(name, uid):
+    """Экраны кросс-промо: xp — кампании кабинета; xpnew — пришли пост; xpch — выбор своих каналов; xpiv — как часто;
+    xpdel:<id> — удалить? None — нет доступа (покажем обычное меню)."""
+    if not xp_allowed(uid):
+        return None
+    owner = xp_owner(uid)
+    kind, _, arg = name.partition(":")
+    cancel = [[B("❌ Отмена", "a:xpno")]]
+    if kind == "xpnew" and PENDING.get(uid) == "xpost":
+        return XP_ASK, cancel
+    if kind in ("xpch", "xpiv"):
+        d = XP_DRAFT.get(uid)
+        if not d or d.get("owner") != owner:
+            FLASH[uid] = "Черновик кампании потерялся — начни заново: «➕ Новая кампания»."
+        elif kind == "xpiv":
+            names = ", ".join(t.name for t in xp_my_themes(uid) if t.id in d["themes"])
+            return (f"⏱ Как часто выкладывать пост в {names}?\n\nВыбери кнопкой или пришли число часов (от 1 до 168). "
+                    "Первый пост выйдет сразу, дальше — по этому таймеру, отдельно от очереди."), xp_iv_rows()
+        else:
+            mine = xp_my_themes(uid)
+            if not mine:
+                return ("📢 Где выкладывать?\n\nУ тебя пока нет подключённых каналов MAX. Подключи канал: «🎭 Мои "
+                        "каналы» → тема → «📢 Канал MAX», потом создай кампанию."), cancel
+            what = " · ".join(f"{n} {w}" for n, w in (
+                (sum(m["kind"] == "image" for m in d["media"]), "фото"),
+                (sum(m["kind"] == "video" for m in d["media"]), "видео")) if n)
+            bare = [t.name for t in THEMES if xp_owns(owner, t) and not t.chat_id]
+            text = ("📢 Где выкладывать? Отметь свои каналы — пост будет выходить в каждый из них.\n\n"
+                    f"Пост: {plain_snip(d['text'], 80) if d['text'] else 'без текста'}" + (f" ({what})" if what else "")
+                    + (f"\n\nБез канала MAX (выбрать нельзя, пока не подключишь в «🎭 Мои каналы»): {', '.join(bare)}"
+                       if bare else ""))
+            rows = [[B(("✅ " if t.id in d["themes"] else "▫️ ") + t.name[:50], f"a:xpt:{t.id}")] for t in mine]
+            return text, rows + [[B("☑️ Все мои каналы", "a:xpall")], [B("➡️ Дальше: как часто", "a:xpnext")]] + cancel
+    if kind == "xpdel":
+        c = XP.get(arg)
+        if c is not None and c["owner"] == owner:
+            return (f"🗑 Удалить кампанию «{xp_title(c)}»? Пост больше не будет выходить в каналы. Вернуть нельзя — "
+                    "только создать заново."), [[B("🗑 Да, удалить", f"a:xpdelok:{arg}")], [B("Нет", "m:xp")]]
+        FLASH[uid] = "⛔ Такой кампании у тебя нет."
+    return xp_list(uid, owner)
+
+
+def xp_list(uid, owner):
+    """«📢 Кросс-промо»: кампании этого кабинета (и только его) с «⏸ Остановить» / «▶️ Возобновить» и «🗑 Удалить»."""
+    back = ([B("◀️ Панель", "m:cl")] if HOST_MODE and can_panel(uid) else
+            [B("◀️ Назад", "m:more" if simple_menu(uid) else "m:main")])
+    camps = XP.of_owner(owner) if owner is not None else []
+    now = time.time()
+    lines = ["📢 Кросс-промо", "",
+             "Твой рекламный пост выходит в твои каналы MAX по своему таймеру — отдельно от очереди постов: не "
+             "занимает её мест, не ждёт её и выходит, даже когда очередь пуста или бот на паузе. Между обычными "
+             "постами — с ними не перемешивается. Остановить — «⏸ Остановить».", ""]
+    rows = []
+    if not camps:
+        lines.append("Кампаний пока нет — нажми «➕ Новая кампания».")
+    else:
+        lines.append("Кампании:")
+    for i, c in enumerate(camps, 1):
+        names = [t.name for t in (theme_by_id(x) for x in c["themes"]) if t is not None]
+        on = c["state"] == "on"
+        if not on:
+            when = "остановлена"
+        elif not names:
+            when = "каналов не осталось"
+        else:
+            nxt = min(c["next"].values(), default=now)
+            day = "" if time.localtime(nxt)[:3] == time.localtime(now)[:3] else time.strftime("%d.%m ", time.localtime(nxt))
+            when = "следующий — сейчас" if nxt <= now + 60 else f"следующий {day}в {time.strftime('%H:%M', time.localtime(nxt))}"
+        lines.append(f"{i}. {'▶️' if on else '⏸'} «{xp_title(c)}» — {xp_every_text(c['every'])} → "
+                     f"{', '.join(names) or '—'} · вышло {c['sent']} {n_word(c['sent'], 'раз', 'раза', 'раз')} · {when}"
+                     + (f"\n   ⚠️ {c['note']}" if c.get("note") and on else ""))
+        rows.append([B(f"⏸ Остановить {i}", f"a:xpstop:{c['id']}") if on else B(f"▶️ Возобновить {i}", f"a:xpgo:{c['id']}"),
+                     B(f"🗑 Удалить {i}", f"m:xpdel:{c['id']}")])
+    if owner is None:
+        lines += ["", "Сначала заведи свой кабинет с каналом: «🎭 Мои каналы»."]
+    rows.append([B("➕ Новая кампания", "a:xpnew")])
+    return "\n".join(lines), rows + [back]
+
+
+def xp_action(p, uid):
+    """Кнопки кросс-промо. Своё проверяем здесь, на сервере: подделанная кнопка с чужой темой или кампанией ничего
+    не сделает — ID в кнопке не пропуск. Возвращает экран."""
+    if not xp_allowed(uid):
+        XP_DRAFT.pop(uid, None)
+        return "main"
+    owner = xp_owner(uid)
+    act, arg = p[0], (p[1] if len(p) > 1 else "")
+    if act == "xpnew":
+        if owner is None:
+            FLASH[uid] = "Сначала заведи свой кабинет с каналом: «🎭 Мои каналы»."
+            return "xp"
+        if len(XP.of_owner(owner)) >= xpromo.KEEP_PER_OWNER:
+            FLASH[uid] = f"Кампаний уже {xpromo.KEEP_PER_OWNER} — удали ненужную, потом создай новую."
+            return "xp"
+        XP_DRAFT.pop(uid, None)
+        PENDING[uid] = "xpost"
+        return "xpnew"
+    if act == "xpno":
+        XP_DRAFT.pop(uid, None)
+        PENDING.pop(uid, None)
+        FLASH[uid] = "Отменил — кампания не создана."
+        return "xp"
+    if act in ("xpt", "xpall", "xpnext", "xpiv"):
+        d = XP_DRAFT.get(uid)
+        if not d or owner is None or d.get("owner") != owner:
+            XP_DRAFT.pop(uid, None)
+            FLASH[uid] = "Черновик кампании потерялся — начни заново: «➕ Новая кампания»."
+            return "xp"
+        mine = [t.id for t in xp_my_themes(uid)]
+        if act == "xpt":
+            if arg not in mine:
+                FLASH[uid] = "⛔ Этот канал не твой — выбрать можно только каналы своего кабинета."
+                return "xpch"
+            if arg in d["themes"]:
+                d["themes"].remove(arg)
+            else:
+                d["themes"].append(arg)
+            return "xpch"
+        if act == "xpall":
+            d["themes"] = list(mine)
+            return "xpch"
+        if act == "xpnext":
+            if not any(x in mine for x in d["themes"]):
+                FLASH[uid] = "Отметь хотя бы один свой канал."
+                return "xpch"
+            PENDING[uid] = "xpiv"
+            return "xpiv"
+        return xp_save(uid, int(arg) * 3600 if arg.isdigit() and int(arg) in XP_HOURS else None)
+    if act in ("xpstop", "xpgo", "xpdelok"):
+        c = XP.get(arg)
+        if c is None or owner is None or c["owner"] != owner:
+            FLASH[uid] = "⛔ Такой кампании у тебя нет."
+            return "xp"
+        ok = {"xpstop": XP.pause, "xpgo": XP.resume, "xpdelok": XP.delete}[act](arg, owner)
+        FLASH[uid] = {"xpstop": f"⏸ Кампания «{xp_title(c)}» остановлена — пост не выходит, пока не возобновишь.",
+                      "xpgo": f"▶️ Кампания «{xp_title(c)}» снова идёт — по своему расписанию.",
+                      "xpdelok": f"🗑 Кампания «{xp_title(c)}» удалена."}[act] if ok else "Не получилось — попробуй ещё раз."
+        return "xp"
+    return "xp"
+
+
+def xp_due(now=None):
+    """Какие (кампания, тема) пора выкладывать. Удалённая или чужая тема убирается из кампании (в чужой канал пост
+    не уйдёт, даже если тему подложили в файл); кабинет без права на кросс-промо, выключенный, тема на паузе тарифа
+    или без канала — пропускаем, пока не поправят (кампания не теряется)."""
+    now = time.time() if now is None else now
+    out, camps = [], {}
+    for cid, tid in XP.due(now):
+        c = camps[cid] if cid in camps else camps.setdefault(cid, XP.get(cid))
+        if c is None:
+            continue
+        t = theme_by_id(tid)
+        if t is None or not xp_owns(c["owner"], t):
+            XP.drop_theme(cid, tid)
+            _log_line(time.strftime("%H:%M:%S") + f" Кросс-промо {cid}: тема {tid} "
+                      + ("удалена" if t is None else "не этого кабинета") + " — убрал её из кампании")
+            continue
+        if t.chat_id and xp_owner_allowed(c["owner"]) and theme_live(t) and (cid, tid) not in XP_BUSY:
+            out.append((cid, tid))
+    return out
+
+
+def xp_publish(cid, tid, now=None):
+    """Пост кампании — в канал темы. Это не пост из очереди: очередь, пауза между постами, счётчики и аналитика темы
+    не трогаются. Сбой — без половинок (ушедшие части убираем) и повтор позже. 'ok' / 'skip' / 'retry'."""
+    now = time.time() if now is None else now
+    c, t = XP.get(cid), theme_by_id(tid)
+    if c is None or c["state"] != "on" or t is None or tid not in c["themes"] or not xp_owns(c["owner"], t) \
+            or not t.chat_id or not xp_owner_allowed(c["owner"]) or not theme_live(t) or c["next"].get(tid, 0) > now:
+        return "skip"
+    chat = t.chat_id
+    with theme_ctx(t):
+        left = DENIED.get(chat, 0) - time.time()
+        if left > 0:                                      # MAX пока не пускает бота в канал — подождём
+            XP.later(cid, tid, now + max(xpromo.RETRY_SEC, left))
+            return "retry"
+        images = [{"token": m["token"]} for m in c["media"] if m["kind"] == "image"]
+        videos = [{"token": m["token"]} for m in c["media"] if m["kind"] == "video"]
+        mids = []
+        try:
+            for part in build_parts(c["text"], images, videos):
+                mid = send_part(chat, *part)
+                if mid:
+                    mids.append(str(mid))
+        except Exception as e:
+            for mid in mids:                              # без половинок: уже ушедшие части убираем
+                with contextlib.suppress(Exception):
+                    delete_msg(mid)
+            if isinstance(e, ChatDenied):
+                with contextlib.suppress(Exception):
+                    note_denied(chat, e)
+            wait = XP.failed(cid, tid, now, why(e)) or xpromo.RETRY_SEC
+            journal(f"📢 Кросс-промо «{xp_title(c)}»: не вышло в канал ({why(e)}) — повторю через {fmt_min(wait // 60)}")
+            return "retry"
+        note_allowed(chat)
+        XP.done(cid, tid, now)
+        stamp = time.time()
+        for mid in mids:
+            XP_MIDS[mid] = stamp
+        while len(XP_MIDS) > XP_MIDS_KEEP:
+            XP_MIDS.pop(next(iter(XP_MIDS)))
+        journal(f"📢 Кросс-промо «{xp_title(c)}» вышло в канал ({xp_every_text(c['every'])}, отдельно от очереди)")
+        return "ok"
+
+
+async def _xp_job(cid, tid, now):
+    """Один канал одной кампании — под замком своей темы (тем же, под которым планировщик выкладывает посты из
+    очереди): с обычным постом не перемешается, а занятый канал не держит остальные."""
+    try:
+        t = theme_by_id(tid)
+        if t is None:
+            return
+        if t.lock is None:
+            t.lock = asyncio.Lock()
+        async with t.lock:
+            await asyncio.to_thread(xp_publish, cid, tid, now)
+    except Exception:
+        log_exc("кросс-промо")
+    finally:
+        XP_BUSY.discard((cid, tid))
+
+
+async def xpromo_tick(now=None, wait=True):
+    """Шаг таймера кросс-промо: всё, чему пора, — в каналы (каждый канал — своей задачей). wait — дождаться (проверки);
+    цикл бота не ждёт: медленный канал не задерживает следующий шаг."""
+    jobs = await asyncio.to_thread(xp_due, now)
+    tasks = []
+    for job in jobs:
+        if job in XP_BUSY:
+            continue
+        XP_BUSY.add(job)
+        tasks.append(asyncio.ensure_future(_xp_job(job[0], job[1], now)))
+    if wait:
+        if tasks:
+            await asyncio.gather(*tasks)
+        return len(tasks)
+    for task in tasks:
+        XP_TASKS.add(task)
+        task.add_done_callback(XP_TASKS.discard)
+    return len(tasks)
+
+
+async def xpromo_loop():
+    """📢 Свой таймер кросс-промо — отдельно от планировщиков тем и их очередей."""
+    while True:
+        await asyncio.sleep(TICK)
+        try:
+            await xpromo_tick(wait=False)
+        except Exception:
+            log_exc("кросс-промо")
+
+
 def who_pressed(u):
     """Кто на самом деле написал/нажал. В нажатии кнопки message.sender — это сам бот, нужен callback.user."""
     for cand in ((u.get("callback") or {}).get("user"), u.get("user"), (u.get("message") or {}).get("sender")):
@@ -13857,6 +14297,8 @@ def legal_forget(key):
         TREND_ALERTS.save()
     with contextlib.suppress(Exception):               # 🤝 отметка партнёра — тоже (суммы для расчёта — без имени)
         REFS.forget(ids)
+    with contextlib.suppress(Exception):               # 📢 кампании кросс-промо кабинета — тоже
+        XP.forget_owner(str(key))
 
 
 def ads_opt_out(uid):
@@ -14749,6 +15191,8 @@ def host_screen(name, uid):
         n_cab = sum(1 for k, c in TENANTS.items() if k != host_id() and c.get("plan") != "Хозяин")
         rows.append([B(f"👥 Все покупатели ({n_cab})", "m:cll:0")])
         rows.append([B("🎭 Мои каналы (мой кабинет)", "m:home")])   # хозяин настраивает свои темы (создаст, если их ещё нет)
+        n_xp = XP.count_on(host_id()) if host_id() else 0
+        rows.append([B("📢 Кросс-промо" + (f" ({n_xp})" if n_xp else ""), "m:xp")])   # только каналы своего кабинета
         rows += [[B("💰 Тарифы и реквизиты", "m:cltar"), B(f"🎟 Промокоды ({len(promos())})", "m:clpr")],
                  [B("🧪 Бета-функции", "m:clbeta"), B("📊 Аналитика", "m:anl")],
                  [B("📞 Изменить мой контакт", "p:clcontact")],
@@ -14931,6 +15375,8 @@ def host_screen(name, uid):
                  "бот попросит его поделиться номером, и ты напишешь лично. Или «✉️ Написать» — придёт от бота.")
         if c.get("trial"):
             text += "\n🎁 Пробный период был"
+        if c.get("vip"):
+            text += "\n⭐ VIP: ИИ без экономии и «📢 Кросс-промо»"
         if key == str(HOST_OWNER):                          # свой кабинет — не продлевать/не удалять, а настраивать
             return text + "\n\n⭐ Это твой личный кабинет — бесплатно и бессрочно.", \
                 [[B("🎭 Настроить мои каналы", "m:home")], back]
@@ -14946,6 +15392,7 @@ def host_screen(name, uid):
         rows += [[B("⛔ Выключить", f"a:cloff:{key}") if mode != "off" else B("✅ Включить", f"a:clon:{key}")],
                  [B("📦 Тариф", f"m:clpl:{key}"), B("📏 Лимиты", f"m:cllim:{key}")],
                  [B("✉️ Написать", f"p:clsay:{key}"), B("🧪 Бета-функции", f"m:clbt:{key}")],
+                 [B(f"⭐ VIP: {'да' if c.get('vip') else 'нет'}", f"a:clvip:{key}")],
                  [B("🗑 Удалить", f"m:cldel:{key}")], back]
         return text, rows
     if kind == "clpl":
@@ -14989,6 +15436,14 @@ def host_action(p, uid):
         sent = tenant_send(p[1], "👋 " + CONTACT_ASK, [[CONTACT_BTN]])
         FLASH[uid] = ("📇 Попросил контакт — когда покупатель нажмёт кнопку, номер придёт сюда." if sent else
                       "Не получилось — покупатель ещё не писал боту.")
+        return f"clc:{p[1]}"
+    if p[0] == "clvip" and len(p) > 1 and p[1] in TENANTS and p[1] != host_id():   # ⭐ VIP: ИИ и кросс-промо
+        with CL_LOCK:
+            TENANTS[p[1]]["vip"] = not TENANTS[p[1]].get("vip")
+            save_tenants()
+        FLASH[uid] = ("⭐ VIP включён: у покупателя ИИ без экономии и «📢 Кросс-промо» (⚙️ Ещё настройки)."
+                      if TENANTS[p[1]]["vip"] else
+                      "VIP выключен: кросс-промо покупателя остановлены (не удалены), ИИ — как у всех.")
         return f"clc:{p[1]}"
     if p[0] == "cladgo":                                    # 📢 разослать рекламу (в фоне — получателей может быть много)
         d = AD_DRAFT.pop(uid, None)
@@ -15761,6 +16216,7 @@ async def main():
             hub_start()                                  # чтение каналов для ботов клиентов
         threading.Thread(target=supervise_loop, daemon=True).start()   # боты клиентов (продажа)
     asyncio.create_task(background_loop())              # чистка карточек, отчёт
+    asyncio.create_task(xpromo_loop())                  # 📢 кросс-промо — свой таймер, не через очередь
     try:
         trend_start()                                    # 🔥 тренды: свой поток, раз в 2–3 часа на канал
     except Exception:
