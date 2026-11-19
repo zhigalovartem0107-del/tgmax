@@ -910,7 +910,7 @@ n0 = len(OUT)
 it42 = {"id": "x:1", "ch": "chan", "date": time.time(), "enq": time.time(), "text": "Новость с видео",
         "photos": [], "vids": [1], "docs": [], "sent": 0, "fails": 0, "status": "ok"}
 bot.QUEUE.append(it42)
-assert bot.skip_post(it42, "download failed: video (обрыв)") == "dropped" and it42 not in bot.QUEUE
+assert bot.skip_post(it42, "download failed: video (обрыв)", "ERR_TG_DOWNLOAD") == "dropped" and it42 not in bot.QUEUE
 assert not [o for o in OUT[n0:] if o[1]], OUT[n0:]                   # ни кнопок, ни карточки
 assert any("Skipped: download failed" in j for j in bot.JOURNAL), bot.JOURNAL[-3:]
 print("h42 ok: 📎 вложение не скачалось — пост пропущен целиком: без текста, без карточки и кнопок, причина в журнале")

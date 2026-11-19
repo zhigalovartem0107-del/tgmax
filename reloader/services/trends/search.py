@@ -24,6 +24,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 
 class SearchError(Exception):
     """Поиск не ответил (сбой сети, ошибка сайта)."""
+    code = "ERR_SEARCH"
 
 
 class RateLimited(SearchError):

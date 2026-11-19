@@ -1,4 +1,5 @@
-"""Журнал бота: всё, что бот печатает, дублируется в bot.log; журнал постов (/log); ошибки с подробностями."""
+"""Журнал бота: всё, что бот печатает, дублируется в bot.log; журнал постов (/log); ошибки с подробностями.
+У каждой пойманной ошибки — код из reloader/core/errors.py: «[ERR_AI_429] Лимиты ИИ исчерпаны …»."""
 import asyncio
 import builtins
 import os
@@ -8,9 +9,12 @@ import time
 import traceback
 from collections import deque
 
+from reloader.core import errors as _errors
+
 CUR = None                           # контекст темы (ставит tg_to_max/themes): чей кабинет у строки журнала
 LOG_FILE = "bot.log"
 JOURNAL = deque(maxlen=300)          # что бот делал с постами — для команды /log и кнопки «Журнал»
+ON_ERROR = None                      # бот ставит сюда: (код, где, исключение) -> запись в журнал хозяина
 
 
 _LOG_LOCK = threading.Lock()   # пишут многие потоки: строки не перемешиваются, ротацию делает один
@@ -55,8 +59,11 @@ class _JLine(str):
     owner = ""
 
 
-def journal(text):
-    """Запись о том, что произошло с постом: видна в консоли, в bot.log и в /log."""
+def journal(text, code=None):
+    """Запись о том, что произошло с постом: видна в консоли, в bot.log и в /log. code — ошибка или предупреждение:
+    строка «[КОД] Описание — текст»."""
+    if code:
+        text = _errors.line(code, text)
     print(text)
     line = _JLine(time.strftime("%d.%m %H:%M") + " " + text)
     t = CUR.get() if CUR is not None else None
@@ -64,17 +71,29 @@ def journal(text):
     JOURNAL.append(line)
 
 
-def log_exc(where):
-    """Ошибка с подробностями: в консоль — одна строка, полный текст — в bot.log."""
+def log_exc(where, code=None):
+    """Пойманная ошибка с кодом: в bot.log — «[КОД] Описание — ошибка в «где»: Тип: текст» и полный текст ошибки,
+    в консоль — одна строка с кодом, хозяину — запись в журнал (ON_ERROR). Код — явный или по исключению
+    (errors.classify). Возвращает код: его показывают в сообщении человеку."""
     e = sys.exc_info()[1]
-    _log_line(time.strftime("%H:%M:%S") + f" ОШИБКА в {where}:\n" + traceback.format_exc())
-    builtins.print(time.strftime("%H:%M:%S") + f" ⚠️ {where}: {type(e).__name__}: {e} (подробности в {LOG_FILE})",
-                   flush=True)
+    code = code if code in _errors.ERRORS else _errors.classify(e)
+    what = f"{type(e).__name__}: {e}" if e is not None else "—"
+    _log_line(time.strftime("%H:%M:%S") + f" {_errors.line(code)} — ошибка в «{where}»: {what}\n"
+              + traceback.format_exc())
+    builtins.print(time.strftime("%H:%M:%S") + f" ⚠️ [{code}] {where}: {what} (подробности в {LOG_FILE})", flush=True)
+    hook = ON_ERROR
+    if hook is not None:
+        try:
+            hook(code, where, e)
+        except Exception:                                # журнал хозяина не должен ронять обработку ошибки
+            pass
+    return code
 
 
 def _excepthook(tp, val, tb):
-    _log_line("НЕПЕРЕХВАЧЕННАЯ ОШИБКА:\n" + "".join(traceback.format_exception(tp, val, tb)))
-    builtins.print(f"⚠️ {tp.__name__}: {val} (подробности в {LOG_FILE})", flush=True)
+    _log_line(_errors.line("ERR_UNCAUGHT", "НЕПЕРЕХВАЧЕННАЯ ОШИБКА") + ":\n"
+              + "".join(traceback.format_exception(tp, val, tb)))
+    builtins.print(f"🛑 [ERR_UNCAUGHT] {tp.__name__}: {val} (подробности в {LOG_FILE})", flush=True)
 
 
 sys.excepthook = _excepthook

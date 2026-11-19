@@ -1,4 +1,5 @@
 """ИИ-пересказ поста: Gemini → OpenRouter → DeepSeek (у кого есть ключи). Все ключи всех исчерпаны — AiUnavailable."""
+from reloader.core import errors as _errors
 from reloader.services.ai.keys import AllKeysExhausted, KeyRejected, RateLimited
 
 ORDER = ("gemini", "openrouter", "deepseek")
@@ -13,7 +14,13 @@ PROMPT = ("Перескажи этот пост для канала своими
 
 
 class AiUnavailable(RuntimeError):
-    """Ни один провайдер не дал пересказ: все ключи упёрлись в лимит, не приняты или сервис не ответил."""
+    """Ни один провайдер не дал пересказ: все ключи упёрлись в лимит, не приняты или сервис не ответил.
+    kinds — причины по всем ключам всех провайдеров; code — код ошибки (ERR_AI_429, ERR_AI_TIMEOUT, …)."""
+
+    def __init__(self, detail, kinds=()):
+        super().__init__(detail)
+        self.kinds = list(kinds)
+        self.code = _errors.ai_code(self.kinds)
 
 
 def _retry_after(resp):
@@ -59,7 +66,7 @@ def call_provider(provider, key, text, http, url, model, timeout=60, prompt=PROM
 def rewrite(text, rotators, http, settings, log=print, prompt=PROMPT, timeout=60):
     """Пересказ: провайдеры по очереди ORDER, у каждого — ключи по кругу (429 — следующий ключ).
     prompt — другое задание тем же ключам (например, короткий совет к посту), timeout — сколько ждать ответа."""
-    reasons = []
+    reasons, kinds = [], []
     for provider in ORDER:
         rot = rotators.get(provider)
         if rot is None or not rot.keys():
@@ -69,9 +76,10 @@ def rewrite(text, rotators, http, settings, log=print, prompt=PROMPT, timeout=60
             return rot.run(lambda key, p=provider, c=cfg: call_provider(p, key, text, http, c["url"], c["model"],
                                                                         timeout, prompt))
         except AllKeysExhausted as e:
-            log(f"🤖 ИИ {provider}: все ключи исчерпаны — {e}")
+            log(_errors.line(e.code, f"🤖 ИИ {provider}: все ключи исчерпаны — {e}"))
             reasons.append(str(e))
-    raise AiUnavailable("; ".join(reasons) or "ключей ИИ нет")
+            kinds += e.kinds
+    raise AiUnavailable("; ".join(reasons) or "ключей ИИ нет", kinds)
 
 
 ADVICE = ("Ты — редактор каналов в мессенджере MAX. Оцени черновик поста коротко, по-русски, 2–3 пункта: что "

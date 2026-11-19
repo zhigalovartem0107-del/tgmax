@@ -6,6 +6,8 @@ import shutil
 import threading
 import time
 
+from reloader.core import errors as _errors
+
 
 def load_json(path, default):
     try:
@@ -32,7 +34,8 @@ def load_json_safe(path, default):
             data = json.load(f)
     except Exception:
         return default
-    print(f"💾 {path}: файл испорчен или пропал — поднял данные из резервной копии {path}.bak")
+    print("💾 " + _errors.line("ERR_DATA_RESTORED", f"{path}: файл испорчен или пропал — поднял данные из резервной "
+                                                     f"копии {path}.bak"))
     return data
 
 
@@ -74,7 +77,8 @@ def save_json(path, data, private=False, backup=False):
             try:
                 _write(path + ".bak", data, private, sync=True)
             except OSError as e:                        # копия не записалась — основной файл уже сохранён
-                print(f"💾 {path}.bak: резервная копия не записалась ({type(e).__name__}: {e})")
+                print("💾 " + _errors.line("ERR_DATA_WRITE", f"{path}.bak: резервная копия не записалась "
+                                                          f"({type(e).__name__}: {e})"))
 
 
 DATA_FILES = ["settings.json", "themes.json", "queue.json", "pub_state.json", "last_posts.json",

@@ -38,7 +38,7 @@ from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 
-BOT_VERSION = 2026111601            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026111901            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -47,8 +47,8 @@ if __name__ == "__main__":
     try:
         from reloader.services import license as _license
     except Exception:
-        print("🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized copy detected. Модуль лицензии недоступен — бот остановлен.",
-              flush=True)
+        print("🛑 [ERR_LICENSE_MODULE] Модуль защиты от копирования не найден\n🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized "
+              "copy detected. Модуль лицензии недоступен — бот остановлен.", flush=True)
         sys.exit(3)
     _license.enforce(log=lambda _m: print(_m, flush=True))
 
@@ -90,7 +90,7 @@ def env_int(name, default):
     try:
         return int(raw) if raw else default
     except ValueError:
-        print(f"⚠️ Переменная {name}={raw!r} — не число, беру {default}")
+        print(f"⚠️ [ERR_CONFIG] Неверная настройка в переменных окружения — {name}={raw!r} не число, беру {default}")
         return default
 
 
@@ -109,6 +109,7 @@ from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_s
 from reloader.keyboards import buttons as _buttons
 from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402
+from reloader.core import errors  # noqa: E402   🧾 коды ошибок: «[ERR_…] Описание — подробности»
 from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
 from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
@@ -265,7 +266,8 @@ def load_config(interactive):
            ("max_chat_id", "MAX_CHAT_ID")) if os.getenv(var)}
     env = {k: v.strip() for k, v in env.items()}
     if os.getenv("BOT_TOKEN") and os.getenv("MAX_TOKEN") and os.getenv("BOT_TOKEN").strip() != env["max_token"]:
-        print("⚠️ Заданы и BOT_TOKEN, и MAX_TOKEN, и они разные — беру MAX_TOKEN. Лишний лучше удалить.")
+        print("⚠️ " + errors.line("ERR_CONFIG", "заданы и BOT_TOKEN, и MAX_TOKEN, и они разные — беру MAX_TOKEN. "
+                                              "Лишний лучше удалить."))
     link = env.get("max_channel_link", "")
     if link and "max.ru/" not in link:                # «@name» или «name» -> https://max.ru/name
         env["max_channel_link"] = "https://max.ru/" + link.lstrip("@").strip("/")
@@ -273,7 +275,8 @@ def load_config(interactive):
         try:
             env["max_chat_id"] = int(env["max_chat_id"])
         except ValueError:
-            print("⚠️ MAX_CHAT_ID должен быть числом (например -80231555661308) — не использую.")
+            print("⚠️ " + errors.line("ERR_CONFIG", "MAX_CHAT_ID должен быть числом (например -80231555661308) — "
+                                                  "не использую."))
             del env["max_chat_id"]
     need = [(k, label) for k, label in CONFIG_FIELDS if (LOGIN or k not in TG_FIELDS)
             and not ((CLIENT_MODE or HOST_MODE) and k == "max_channel_link")]
@@ -1538,8 +1541,9 @@ def eat_spam(ch, mid, reason, kind, flood=True):
     spam_log_flush()
     if muted:
         msg = f"⚠️ Канал {src_name(ch)} заблокирован на 1 час из-за флуда спамом."
-        journal(msg)
-        owner_alert(msg)
+        journal(msg, code="ERR_SPAM_FLOOD")
+        owner_alert_err("ERR_SPAM_FLOOD", msg, f"{SPAM_FLOOD_N} спам-постов подряд из {src_name(ch)}; мут до "
+                                               f"{time.strftime('%H:%M', time.localtime(now + SPAM_MUTE_SEC))}")
     return muted
 
 
@@ -1890,11 +1894,14 @@ def ai_rewrite_allowed(t=None):
     return ai_budget() != "save" or theme_is_vip(t)
 
 
+AI_REWRITE_TIMEOUT = 60     # сколько ждать ответа ИИ на пересказ одного поста (сек); не ответил — ERR_AI_TIMEOUT
+
+
 def ai_rewrite(text):
-    """🤖 Пересказ поста через ИИ (Gemini → OpenRouter → DeepSeek). Все ключи исчерпаны — AiUnavailable."""
+    """🤖 Пересказ поста через ИИ (Gemini → OpenRouter → DeepSeek). Все ключи исчерпаны — AiUnavailable (с кодом)."""
     t0 = time.perf_counter()
     try:
-        return ai_rewrite_text(text, AI_ROTATORS, S, ai_settings(), journal)
+        return ai_rewrite_text(text, AI_ROTATORS, S, ai_settings(), journal, timeout=AI_REWRITE_TIMEOUT)
     finally:
         perf_add("ai", "пересказ поста", time.perf_counter() - t0)
 
@@ -2134,9 +2141,9 @@ def find_chat_id_safe():
         me = S.get(f"{MAX_API}/me", headers=HEADERS, timeout=30)
         print("Проверка токена /me ->", me.status_code, me.text[:150])
         if me.status_code in (401, 403):
-            print("⚠️ Токен MAX не принят — проверь BOT_TOKEN / max_token.")
+            print("🛑 " + errors.line("ERR_MAX_TOKEN", f"MAX ответил {me.status_code} — проверь BOT_TOKEN / max_token."))
     except Exception as e:
-        print("MAX: нет связи при запуске:", type(e).__name__, e)
+        print("⚠️ " + errors.line("ERR_MAX_NET", f"нет связи при запуске: {type(e).__name__}: {e}"))
     cid = resolve_chat_id(MAX_CHANNEL_LINK) if MAX_CHANNEL_LINK else None
     print("Поиск канала по ссылке", MAX_CHANNEL_LINK, "->", cid or "бот не видит такой канал среди своих")
     if cid:
@@ -2489,15 +2496,17 @@ def pick_channels(uid):
             or cabinet_admin_of(key, c["chat_id"], [uid])]
 
 
-def channel_test(chat_id):
-    """Пробуем по-настоящему опубликовать в канал проверочное сообщение (и сразу удаляем). Текст — что вышло."""
+def channel_test(chat_id, for_staff=True):
+    """Пробуем по-настоящему опубликовать в канал проверочное сообщение (и сразу удаляем). Текст — что вышло.
+    Не вышло — с кодом ошибки; ответ MAX (технические подробности) — только админу (for_staff)."""
     if not chat_id:
-        return "Канал MAX ещё не привязан — сначала выбери его."
+        return err_text("ERR_MAX_NOT_BOUND", "Канал MAX ещё не привязан — сначала выбери его.", for_staff=for_staff)
     try:
         r = S.post(f"{MAX_API}/messages", params={"chat_id": chat_id}, headers=HEADERS, timeout=30,
                    json={"text": "✅ Проверка: бот может публиковать в этот канал. (сообщение сейчас удалится)"})
     except Exception as e:
-        return f"⚠️ Нет связи с MAX ({type(e).__name__}). Попробуй через минуту."
+        return err_text("ERR_MAX_NET", "⚠️ Нет связи с MAX. Попробуй через минуту.", f"{type(e).__name__}: {e}",
+                        for_staff)
     if r.status_code == 200:
         with contextlib.suppress(Exception):
             delete_msg(((r.json().get("message") or {}).get("body") or {}).get("mid"))
@@ -2505,16 +2514,18 @@ def channel_test(chat_id):
     why = r.text[:200]
     rights = bot_rights(chat_id)
     if r.status_code == 403 or rights is False:
-        return ("⛔ MAX не разрешает боту публиковать в этот канал.\n\nЧто сделать:\n"
-                "1. Открой канал в MAX → ⋮ → Управление → Администраторы.\n"
-                "2. Если бота там нет — «Добавить администратора» → найди бота.\n"
-                "3. У бота включи право «Публиковать сообщения» (или «Писать сообщения») и сохрани.\n"
-                "4. Вернись и нажми «🩺 Проверить публикацию» ещё раз.\n\n"
-                f"Ответ MAX: {r.status_code} {why}")
+        return err_text("ERR_MAX_403", "⛔ MAX не разрешает боту публиковать в этот канал.\n\nЧто сделать:\n"
+                        "1. Открой канал в MAX → ⋮ → Управление → Администраторы.\n"
+                        "2. Если бота там нет — «Добавить администратора» → найди бота.\n"
+                        "3. У бота включи право «Публиковать сообщения» (или «Писать сообщения») и сохрани.\n"
+                        "4. Вернись и нажми «🩺 Проверить публикацию» ещё раз.",
+                        f"Ответ MAX: {r.status_code} {why}", for_staff, "⛔ MAX не разрешает боту публиковать в "
+                                                                      "этот канал (проверка публикации).")
     if r.status_code == 404:
-        return ("⛔ MAX не видит этот канал у бота — похоже, бота убрали из канала. Добавь бота администратором "
-                f"заново и выбери канал ещё раз.\n\nОтвет MAX: {why}")
-    return f"⚠️ MAX не принял проверочное сообщение: {r.status_code} {why}"
+        return err_text("ERR_MAX_REMOVED", "⛔ MAX не видит этот канал у бота — похоже, бота убрали из канала. Добавь "
+                        "бота администратором заново и выбери канал ещё раз.", f"Ответ MAX: {why}", for_staff)
+    return err_text("ERR_MAX_SEND", "⚠️ MAX не принял проверочное сообщение. Попробуй ещё раз чуть позже.",
+                    f"Ответ MAX: {r.status_code} {why}", for_staff)
 
 
 def _norm_link(link):
@@ -2708,7 +2719,7 @@ def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
                        headers=HEADERS, json=body, timeout=60)
         except requests.exceptions.ReadTimeout:
             # MAX мог принять сообщение, но не успел ответить — повтор дал бы дубль
-            print("  MAX не ответил вовремя, считаю сообщение отправленным")
+            print("  " + errors.line("ERR_MAX_NET", "MAX не ответил вовремя, считаю сообщение отправленным"))
             return
         if r.status_code == 200:
             mid = None
@@ -2732,10 +2743,11 @@ def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
             body.pop("format")                       # MAX не понял разметку — шлём тем же текстом без неё
             if text:
                 body["text"] = re.sub(r"\*\*|__|~~|`", "", text)
-            print("  MAX не принял разметку — отправляю обычным текстом")
+            print("  " + errors.line("ERR_MAX_FORMAT", f"MAX ответил {r.status_code}: {r.text[:120]} — отправляю "
+                                                       "обычным текстом"))
             continue
-        raise RuntimeError(f"MAX ошибка {r.status_code}: {r.text}")
-    raise RuntimeError("Вложение так и не стало готово")
+        raise errors.CodedError("ERR_MAX_SEND", f"MAX ошибка {r.status_code}: {r.text}")
+    raise errors.CodedError("ERR_MAX_UPLOAD", "Вложение так и не стало готово (MAX не обработал файл)")
 
 
 MAX_TEXT = 3900
@@ -2796,10 +2808,12 @@ def send_post(chat_id, text, images, videos, files=()):
 
 class MaxTemporary(RuntimeError):
     """MAX временно не принимает (перегружен, 5xx, 429) — пробовать позже, пост не выбрасывать."""
+    code = "ERR_MAX_TEMP"
 
 
 class AttachmentsLost(MaxTemporary):
     """MAX принял сообщение, но без вложения (сообщение уже убрано из канала) — отправить ещё раз."""
+    code = "ERR_MAX_ATTACH"
 
 
 MAX_RETRY_PAUSES = [2, 5, 10]   # повторы загрузки файла и отправки части поста в MAX (сек): 3 раза, коротко, молча
@@ -2861,11 +2875,24 @@ def retry_later(it, e, what):
     it["tfails"] = n
     it["retry_at"] = time.time() + min(900, 60 * 2 ** min(n - 1, 4))
     if n in (1, 5) or n % 20 == 0:
-        print(f"{what}: временный сбой ({type(e).__name__}: {str(e)[:120]}) — повторю позже, пост сохранён")
+        print(errors.line(max_code(e), f"{what}: временный сбой ({type(e).__name__}: {str(e)[:120]}) — повторю "
+                                       "позже, пост сохранён"))
+
+
+def max_code(e):
+    """Код сбоя отправки в MAX: свой код исключения; сеть или тайм-аут — ERR_MAX_NET; отказ MAX (ответ HTTP) —
+    ERR_MAX_SEND; прочее (ошибка в коде бота, а не ответ MAX) — ERR_INTERNAL."""
+    code = errors.classify(e, "")
+    if code in ("ERR_NET", "ERR_TIMEOUT"):
+        return "ERR_MAX_NET"
+    if code:
+        return code
+    return "ERR_MAX_SEND" if isinstance(e, requests.RequestException) else "ERR_INTERNAL"
 
 
 class ChatDenied(RuntimeError):
     """MAX не пускает бота в канал (бот не админ / нет права публиковать / канал удалён)."""
+    code = "ERR_MAX_403"
 
 
 DENIED = {}            # chat_id -> до какого времени не пытаться публиковать (нет прав)
@@ -2896,25 +2923,34 @@ def note_denied(chat_id, e):
     now = time.time()
     n = DENY_N[chat_id] = DENY_N.get(chat_id, 0) + 1
     rights = bot_rights(chat_id)
+    code = "ERR_MAX_REFUSED" if rights is True else "ERR_MAX_403"
     if n == 1 or (rights is True and n < 8):
         wait = 120 if n == 1 else 300
         DENIED[chat_id] = now + wait
-        print(f"Канал MAX {chat_id}: MAX не принял пост ({e}); бот админ канала: "
-              f"{ {True: 'да', False: 'нет'}.get(rights, 'не узнать') } — похоже на сбой, повторю через {wait // 60} мин")
+        print(errors.line(code, f"канал MAX {chat_id}: MAX не принял пост ({e}); бот админ канала: "
+                                f"{ {True: 'да', False: 'нет'}.get(rights, 'не узнать') } — похоже на сбой, повторю "
+                                f"через {wait // 60} мин"))
+        if n == 1:
+            journal(f"MAX не принял пост в канал ({str(e)[:150]}) — повторю через {wait // 60} мин", code=code)
         return
     DENIED[chat_id] = now + 600
-    print(f"Канал MAX {chat_id}: нет прав на публикацию ({e}) — посты сохранены, повторю через 10 минут")
+    print(errors.line(code, f"канал MAX {chat_id}: нет прав на публикацию ({e}) — посты сохранены, повторю через "
+                            "10 минут"))
     if now - DENIED_TOLD.get(chat_id, 0) > 3600:
         DENIED_TOLD[chat_id] = now
+        journal(f"MAX не принимает посты в канал ({str(e)[:150]}) — пробую каждые 10 минут", code=code)
         if rights is True:
-            notify("⚠️ MAX уже полчаса не принимает посты в канал этой темы, хотя бот в нём админ. Похоже на сбой "
-                   "MAX — посты не удаляю, пробую каждые 10 минут. Если не пройдёт само: в канале MAX сними бота "
-                   "из админов и добавь заново с правом публиковать.")
+            notify_err(code, "⚠️ MAX уже полчаса не принимает посты в канал этой темы, хотя бот в нём админ. Похоже "
+                             "на сбой MAX — посты не удаляю, пробую каждые 10 минут. Если не пройдёт само: в канале "
+                             "MAX сними бота из админов и добавь заново с правом публиковать.", f"Ответ MAX: {e}",
+                       what="MAX не принимает посты в канал этой темы, хотя бот — админ.")
             return
-        notify("⛔ Не могу публиковать в канал этой темы: MAX ответил «нет прав».\n\n"
-               "Что сделать: зайди в канал MAX → Админы → добавь бота админом с правом публиковать сообщения. "
-               "Если тема привязана не к тому каналу — «🎭 Мои каналы» → тема → «📢 Канал MAX».\n\n"
-               "Посты не удаляю — выложу, как только появится доступ (проверяю раз в 10 минут).")
+        notify_err(code, "⛔ Не могу публиковать в канал этой темы: MAX ответил «нет прав».\n\n"
+                         "Что сделать: зайди в канал MAX → Админы → добавь бота админом с правом публиковать "
+                         "сообщения. Если тема привязана не к тому каналу — «🎭 Мои каналы» → тема → «📢 Канал MAX»."
+                         "\n\nПосты не удаляю — выложу, как только появится доступ (проверяю раз в 10 минут).",
+                   f"Ответ MAX: {e}", what="Не могу публиковать в канал этой темы: MAX ответил «нет прав». Посты "
+                                           "сохранены, проверяю раз в 10 минут.")
 
 
 def note_allowed(chat_id):
@@ -2972,9 +3008,10 @@ def pin_post(chat, mid):
     try:
         r = S.put(f"{MAX_API}/chats/{chat}/pin", headers=HEADERS, timeout=20, json={"message_id": mid, "notify": False})
         if r.status_code != 200:
-            journal(f"📌 Не получилось закрепить пост: MAX {r.status_code} — дай боту право «Закреплять сообщения»")
+            journal(f"📌 Не получилось закрепить пост: MAX {r.status_code} — дай боту право «Закреплять сообщения»",
+                    code="ERR_MAX_PIN")
     except Exception as e:
-        print("Закреп:", e)
+        print(errors.line("ERR_MAX_PIN", f"закреп: {type(e).__name__}: {e}"))
 
 
 def post_extras(mids):
@@ -3667,7 +3704,7 @@ def api_send(chat_id, text, rows=None, image_token=None, keep=False):
     r = S.post(f"{MAX_API}/messages", params={"chat_id": chat_id},
                headers=HEADERS, json=body, timeout=30)
     if r.status_code != 200:
-        print("Меню: ошибка отправки", r.status_code, r.text[:150])
+        print(errors.line("ERR_MAX_SEND", f"меню: MAX не принял сообщение — {r.status_code} {r.text[:150]}"))
         return None
     try:
         mid = ((r.json().get("message") or {}).get("body") or {}).get("mid")
@@ -3806,7 +3843,7 @@ def delete_msg(mid):
         BOT_DELETED.append(str(mid))                   # это удалил сам бот — не «админ удалил спам»
     r = S.delete(f"{MAX_API}/messages", params={"message_id": mid}, headers=HEADERS, timeout=30)
     if r.status_code != 200:
-        print("Карточки: не удалось убрать", r.status_code, r.text[:100])
+        print(errors.line("ERR_MAX_DELETE", f"сообщение {mid}: MAX ответил {r.status_code} {r.text[:100]}"))
     return r.status_code == 200
 
 
@@ -3822,7 +3859,7 @@ def purge_cards():
         try:
             delete_msg(c["mid"])
         except Exception as e:
-            print("Карточки: ошибка удаления:", e)
+            print(errors.line("ERR_MAX_DELETE", f"карточки: {type(e).__name__}: {e}"))
     if due:
         with CARDS_LOCK:
             CARDS[:] = [c for c in CARDS if c not in due]
@@ -3838,7 +3875,7 @@ def api_answer(callback_id, text, rows):
         r = S.post(f"{MAX_API}/answers", headers=HEADERS, timeout=30,
                    json={"callback_id": callback_id, "message": msg})
     if r.status_code != 200:
-        print("Меню: ошибка ответа", r.status_code, r.text[:150])
+        print(errors.line("ERR_MAX_SEND", f"меню: MAX не принял ответ на кнопку — {r.status_code} {r.text[:150]}"))
 
 
 def preview_text(it):
@@ -3877,12 +3914,12 @@ def send_preview(it, rows=None, chats=None):
         try:
             token = upload_image(it["photos"][0])
         except Exception as e:
-            print("Предпросмотр: фото не загрузилось:", e)
+            print(errors.line("ERR_MAX_UPLOAD", f"предпросмотр: фото не загрузилось ({type(e).__name__}: {e})"))
     for chat in (chats or card_chats()):
         try:
             add_card(chat, api_send(chat, msg, rows, token), it["id"])
         except Exception as e:
-            print("Предпросмотр: ошибка:", e)
+            print(errors.line(max_code(e), f"предпросмотр: {type(e).__name__}: {e}"))
 
 
 def send_previews(items):
@@ -3916,7 +3953,7 @@ def send_previews(items):
         try:
             add_card(chat, api_send(chat, text, rows), gid)
         except Exception as e:
-            print("Предпросмотр: ошибка:", e)
+            print(errors.line(max_code(e), f"предпросмотр: {type(e).__name__}: {e}"))
 
 
 def same_uid(a, b):
@@ -4943,9 +4980,10 @@ def apply_text(action, text, uid=None):
             else:
                 t.chat_id = None
                 save_cfg()
-                print(f"Канал MAX {cid}: уже привязан к теме «{other.name}» другого кабинета — сюда не переношу")
-                return ("⚠️ Этот канал MAX уже привязан к другому кабинету — сюда привязать его не могу. "
-                        "Если канал твой, напиши в «❓ Поддержка»."), "thm"
+                print(errors.line("ERR_MAX_CHANNEL_BUSY", f"канал MAX {cid}: уже привязан к теме «{other.name}» другого "
+                                                          "кабинета — сюда не переношу"))
+                return errors.user("ERR_MAX_CHANNEL_BUSY", "⚠️ Этот канал MAX уже привязан к другому кабинету — сюда "
+                                   "привязать его не могу. Если канал твой, напиши в «❓ Поддержка»."), "thm"
         if t.chat_id:
             t.own.pop("bind_wait", None)
         else:
@@ -5077,7 +5115,7 @@ def do_action(act, uid=None):
         CFG["autodel_h"] = max(0, min(24 * 30, int(p[1])))
         return "pinset"
     if p[0] == "chtest":
-        FLASH[uid] = channel_test(cur().chat_id)
+        FLASH[uid] = channel_test(cur().chat_id, staff(uid))
         return "thm"
     if p[0] == "pause":
         CFG["paused"] = not CFG["paused"]
@@ -5786,9 +5824,9 @@ def drop_webhooks():
     HOOKS["dropped"] += n
     if n and HOOKS["dropped"] >= 3 and not HOOKS["warned"] and CFG["admins"]:
         HOOKS["warned"] = True
-        notify("⚠️ Кто-то снова и снова ставит вебхук на токен бота (хостинг или вторая копия бота). Пока он стоит, "
-               "бот не слышит сообщения. Оставь бота запущенным только в одном месте, а на хостинге выключи "
-               "вебхук/домен для этого бота.", tag=False)
+        notify_err("ERR_MAX_WEBHOOK", "⚠️ Кто-то снова и снова ставит вебхук на токен бота (хостинг или вторая копия "
+                   "бота). Пока он стоит, бот не слышит сообщения. Оставь бота запущенным только в одном месте, а на "
+                   "хостинге выключи вебхук/домен для этого бота.", f"вебхуков снято: {HOOKS['dropped']}", tag=False)
     return n
 
 
@@ -6014,6 +6052,81 @@ def host_alert(text, rows=None):
         chat = GCFG["admin_chats"].get(str(GCFG["admins"][0]))
     if chat:
         in_background(_quiet_send, chat, text, rows, name="host-alert")   # из корутины — не держим цикл
+
+
+# ---------- 🧾 КОДЫ ОШИБОК В СООБЩЕНИЯХ: покупателю — вежливо и код, хозяину и админам — код и точные подробности ----------
+def staff(uid):
+    """Видит ли человек технические подробности ошибок: хозяин и админы панели (host-режим), админы обычного бота.
+    Покупатели (кабинеты, боты клиентов) получают вежливый текст и код ошибки — его можно прислать в поддержку."""
+    if uid is None or CLIENT_MODE:
+        return False
+    return can_panel(uid) if HOST_MODE else is_admin(uid)
+
+
+def chat_staff(chat):
+    """То же по чату, когда известен только чат: личный чат хозяина или админа панели (в обычном боте — чат админа)."""
+    if chat is None or CLIENT_MODE:
+        return False
+    if not HOST_MODE:
+        return True
+    if same_uid(chat, HOST_CHAT.get("chat")):
+        return True
+    return any(same_uid(c, chat) and can_panel(u) for rec in list(TENANTS.values())
+               for u, c in list((rec.get("chats") or {}).items()))
+
+
+def theme_staff(t=None):
+    """Админы темы — хозяин или админы бота (тема хозяина, обычный бот), а не покупатель."""
+    t = t if t is not None else cur()
+    if CLIENT_MODE:
+        return False
+    if HOST_MODE:
+        return bool(getattr(t, "owner", "")) and t.owner == host_id()
+    return True
+
+
+def err_text(code, polite, details="", for_staff=False, what=""):
+    """Сообщение об ошибке: админу — код, описание, что случилось (what или вежливый текст), точные подробности и что
+    сделать; покупателю — вежливый текст и в конце «Код ошибки: …» (без технических подробностей)."""
+    if for_staff:
+        return errors.admin(code, details, what or polite)
+    return errors.user(code, polite)
+
+
+def notify_err(code, polite, details="", tag=True, rows=None, what=""):
+    """Ошибка — админам текущей темы: покупателю — вежливо и код, хозяину и админам бота — с подробностями."""
+    notify(err_text(code, polite, details, theme_staff(), what), tag=tag, rows=rows)
+
+
+def owner_alert_err(code, polite, details="", what=""):
+    """Ошибка — главному админу кабинета текущей темы (покупателю — вежливо и код, хозяину — с подробностями)."""
+    owner_alert(err_text(code, polite, details, theme_staff(), what))
+
+
+def host_alert_err(code, what, details="", rows=None):
+    """Ошибка — хозяину бота: код, описание, что случилось, точные подробности и что сделать."""
+    host_alert(errors.admin(code, details, what), rows)
+
+
+ERRLOG_SEEN = {}            # (код, где) -> когда пойманная ошибка последний раз попала в журнал хозяина
+ERRLOG_LOCK = threading.Lock()
+ERRLOG_SEC = 600    # одинаковые ошибки подряд — в журнал не чаще раза в 10 минут (в bot.log — каждая)
+
+
+def err_to_journal(code, where, e):
+    """Пойманная ошибка (log_exc) — в журнал хозяина: код, где и точный текст. Покупатель её не видит."""
+    now, key = time.time(), (code, where)
+    with ERRLOG_LOCK:
+        if now - ERRLOG_SEEN.get(key, 0) < ERRLOG_SEC:
+            return
+        ERRLOG_SEEN[key] = now
+        if len(ERRLOG_SEEN) > 500:
+            for k in sorted(ERRLOG_SEEN, key=ERRLOG_SEEN.get)[:250]:
+                ERRLOG_SEEN.pop(k, None)
+    admin_log(f"{where}: {type(e).__name__}: {str(e)[:200]}" if e is not None else where, code=code)
+
+
+_log.ON_ERROR = err_to_journal
 
 
 def note_wrong_code(uid, t, name=""):
@@ -6259,7 +6372,7 @@ def handle_message(uid, chat_id, name, text, msg=None):
         text, rows = session_upload(uid, atts)
         if not gone:
             text = ("⚠️ Не смог удалить твоё сообщение с файлом из чата — удали его сам: зажми сообщение → "
-                    "«Удалить». В нём полный доступ к аккаунту.\n\n" + text)
+                    "«Удалить». В нём полный доступ к аккаунту. Код ошибки: ERR_MAX_DELETE\n\n" + text)
         send_screen(chat_id, text, rows)
         return
     if (action in ("clyk", "clvk", "cltt") or (action or "").startswith("claikeys:")) and can_panel(uid):   # ключи: из чата
@@ -6298,7 +6411,7 @@ def rights_note(chat_id):
         return "\n\nБот — админ канала, могу публиковать ✅"
     if r is False:
         return ("\n\n⚠️ Но я НЕ админ этого канала — публиковать не смогу. Открой канал в MAX → Админы → "
-                "добавь бота админом и включи «Публиковать сообщения». Посты подождут.")
+                "добавь бота админом и включи «Публиковать сообщения». Посты подождут. Код ошибки: ERR_MAX_403")
     return ""
 
 
@@ -6380,16 +6493,17 @@ def on_bot_removed(u):
     bot_mark = " — это бот" if who.get("is_bot") else ""
     RIGHTS_TOLD[cid] = time.time()                 # часовая проверка не будет повторять то же самое
     with theme_ctx(t):
-        journal(f"⛔ Бота убрали из канала MAX темы «{t.name}». Убрал: {name} (ID {who.get('user_id', '?')}){bot_mark}")
+        journal(f"⛔ Бота убрали из канала MAX темы «{t.name}». Убрал: {name} (ID {who.get('user_id', '?')}){bot_mark}",
+                code="ERR_MAX_REMOVED")
     with theme_ctx(t):                                   # сообщение — владельцу ЭТОЙ темы
-        owner_alert(f"⛔ Бота убрали из канала MAX темы «{t.name}».\n\nКто убрал: {name}{bot_mark} "
+        owner_alert_err("ERR_MAX_REMOVED", f"⛔ Бота убрали из канала MAX темы «{t.name}».\n\nКто убрал: {name}{bot_mark} "
                 f"(ID {who.get('user_id', '?')}).\n\n"
                 + ("Похоже, это бот-аналитик или «защитник» канала: у него есть право управлять админами. "
                    "Забери у него это право (канал → Админы → этот бот → права) или убери его, потом снова "
                    "добавь моего бота админом.\n\n" if who.get("is_bot") else
                    "Добавь бота админом снова: канал → Админы → Добавить.\n\n")
                 + "Посты не пропадут — выложу, как только вернёшь права. ID канала я помню, заново привязывать "
-                  "не нужно.")
+                  "не нужно.", f"событие MAX bot_removed: канал {cid}, убрал {name} (ID {who.get('user_id', '?')})")
 
 
 UPD_STATS = Counter()     # какие события MAX присылал с запуска (для /channels): тип[:вид чата]
@@ -6426,16 +6540,19 @@ def handle_update(u):
     with theme_ctx(active_theme(uid)):           # меню работает с темой, выбранной этим админом
         try:
             _handle_update(u, kind)
-        except Exception:
-            log_exc("обработка сообщения в меню")
+        except Exception as e:
+            code = log_exc("обработка сообщения в меню")
             msg = u.get("message") or {}
             rec = msg.get("recipient") or {}
             chat = u.get("chat_id") if kind == "bot_started" else (
                 rec.get("chat_id") if rec.get("chat_type") in (None, "dialog") or kind == "message_callback" else None)
             if chat and is_admin(uid):
                 with contextlib.suppress(Exception):
-                    api_send(chat, "⚠️ Не получилось — попробуй ещё раз. Если повторится, пришли /log тому, "
-                                   "кто настраивает бота.", [[B("◀️ Меню", "m:main")]])
+                    api_send(chat, err_text(code, "⚠️ Не получилось — попробуй ещё раз. Если повторится, пришли этот "
+                                                  "код тому, кто настраивает бота.",
+                                            f"обработка сообщения в меню ({update_label(u)}): {type(e).__name__}: "
+                                            f"{str(e)[:300]}", staff(uid), "⚠️ Кнопка или команда в меню не сработала."),
+                             [[B("◀️ Меню", "m:main")]])
 
 
 def _handle_update(u, kind):
@@ -6733,12 +6850,14 @@ def menu_loop():
         except (requests.ConnectionError, requests.Timeout) as e:
             # мобильный интернет рвёт долгие соединения — это нормально, просто переподключаемся
             fails += 1
-            _log_line(time.strftime("%H:%M:%S") + f" Меню: обрыв связи с MAX ({fails} подряд): {e}")
+            _log_line(time.strftime("%H:%M:%S") + " " + errors.line("ERR_MAX_NET", f"меню: обрыв связи с MAX ({fails} "
+                                                                                     f"подряд): {e}"))
             if fails == 3:
-                print("Меню: нет связи с MAX — проверь интернет. Бот переподключится сам.")
+                print("⚠️ " + errors.line("ERR_MAX_NET", "меню: нет связи с MAX — проверь интернет. Бот переподключится "
+                                                         "сам."))
             time.sleep(5 if fails < 3 else 15)
         except Exception as e:
-            print("Меню: сбой связи:", type(e).__name__, e)
+            print(errors.line(max_code(e), f"меню: сбой связи с MAX — {type(e).__name__}: {e}"))
             time.sleep(5)
 
 
@@ -6766,14 +6885,17 @@ DL_TIMEOUT_MIN = 90               # одна попытка скачать фа�
 
 class MediaLost(Exception):
     """Вложение поста потерялось или не скачалось: без решения админа пост без него не выходит."""
+    code = "ERR_TG_DOWNLOAD"
 
 
 class MediaUploadFailed(MediaLost):
     """Файл не загрузился в MAX и после повторов: пост не выходит вовсе (без «огрызка» без файла)."""
+    code = "ERR_MAX_UPLOAD"
 
 
 class DownloadTimeout(Exception):
     """Попытка скачать файл из Telegram длилась дольше положенного (Telegram «завис»)."""
+    code = "ERR_TG_DOWNLOAD"
 
 
 def media_size(msg):
@@ -7053,10 +7175,10 @@ async def cdn_check(client):
 async def cdn_check_report(client):
     """После запуска: проверяем CDN с этого сервера. Не работает — пишем хозяину (с точной причиной)."""
     ok, text = await cdn_check(client)
-    journal(("✅ " if ok else "⚠️ ") + text)
+    journal(("✅ " if ok else "⚠️ ") + text, code=None if ok else "ERR_TG_CDN")
     if not ok:
-        await asyncio.to_thread(host_alert, f"⚠️ {text}\nВидео и файлы из больших каналов Telegram могут не "
-                                            "скачиваться — посты будут ждать. Пришли это сообщение разработчику.")
+        await asyncio.to_thread(host_alert_err, "ERR_TG_CDN", "Видео и файлы из больших каналов Telegram могут не "
+                                "скачиваться — посты будут ждать. Пришли это сообщение разработчику.", text)
 
 
 async def tg_media(msg, dest, ch=None):
@@ -7290,13 +7412,16 @@ def item_has_media(it):
     return bool(it.get("photos") or it.get("vids") or it.get("docs"))
 
 
-def admin_log(text):
+def admin_log(text, code=None):
     """Сбой с файлами и повторы — только админу бота: bot.log и его журнал. Покупатель этого не видит — ни в чате,
     ни в своём «📜 Журнал»: в host-режиме запись без кабинета видна только хозяину (с пометкой, чей кабинет);
-    у бота клиента — bot.log (продавец смотрит его в «💼 Клиенты» → клиент → «📜 Журнал»)."""
+    у бота клиента — bot.log (продавец смотрит его в «💼 Клиенты» → клиент → «📜 Журнал»). code — код ошибки:
+    строка «[КОД] Описание — текст»."""
     t = cur()
     if HOST_MODE and t.owner:
         text += f" · кабинет «{(TENANTS.get(t.owner) or {}).get('name') or t.owner}» ({t.owner}), тема «{t.name}»"
+    if code:
+        text = errors.line(code, text)
     if CLIENT_MODE:
         print(text)
         return
@@ -7320,10 +7445,10 @@ def rollback_post(it):
     it.update(sent=0, mids=[], mid0=None)
 
 
-def skip_post(it, reason):
-    """Пост пропускаем целиком: причина — в журнал админа. Без текста без вложения, без ссылок, без кнопок, без
-    сообщений покупателю."""
-    admin_log(f"📎 [{it['ch']}] пост {it['id']}: Skipped: {reason}")
+def skip_post(it, reason, code):
+    """Пост пропускаем целиком: причина и код ошибки — в журнал админа. Без текста без вложения, без ссылок, без
+    кнопок, без сообщений покупателю."""
+    admin_log(f"📎 [{it['ch']}] пост {it['id']}: Skipped: {reason}", code=code)
     resolve_cards([it["id"]])                        # старые карточки этого поста — убрать
     drop_item(it)
     save_queue()
@@ -7334,7 +7459,7 @@ def drop_legacy_stuck():
     """Посты «ждут файла» из прежней версии — пропускаем по новому правилу. Возвращает их число."""
     old = [it for it in QUEUE if it.get("status") == "stuck"]
     for it in old:
-        skip_post(it, f"download failed (из прежней очереди: {str(it.get('stuck_why') or '')[:80]})")
+        skip_post(it, f"download failed (из прежней очереди: {str(it.get('stuck_why') or '')[:80]})", "ERR_TG_DOWNLOAD")
     return len(old)
 
 
@@ -7356,7 +7481,7 @@ async def publish_item(client, chat_id, it):
         it["retry_at"] = time.time() + 600
         save_queue()
         admin_log(f"⏱ [{it['ch']}] пост {it['id']} публиковался больше {PUBLISH_TIMEOUT // 60} мин (зависло) — "
-                  "прервал, повторю через 10 мин; остальные посты выходят")
+                  "прервал, повторю через 10 мин; остальные посты выходят", code="ERR_PUB_TIMEOUT")
         return "retry"
     finally:
         PUBLISHING.discard(it["id"])
@@ -7383,8 +7508,8 @@ async def _publish_item(client, chat_id, it):
                 try:                                   # пересказ — один раз: повтор отправки его не повторяет
                     it["ai_text"] = await asyncio.to_thread(ai_rewrite, body)
                     save_queue()
-                except AiUnavailable:                  # все ключи ИИ 429 — выкладываем оригинал, пост не теряем
-                    journal(AI_EXHAUSTED_LOG)
+                except AiUnavailable as e:             # ИИ недоступен (429, тайм-аут…) — выкладываем оригинал
+                    journal(AI_EXHAUSTED_LOG, code=e.code)
             body = it.get("ai_text") or body
             full = compose_text(body, it.get("ch", ""), rewritten=bool(it.get("ai_text")))
         chunks = split_text(full)
@@ -7422,8 +7547,9 @@ async def _publish_item(client, chat_id, it):
                     if not is_temporary(e):
                         raise
                     err, last = why(e) if not isinstance(e, MaxTemporary) else str(e)[:220], n == attempts - 1
-                    print(f"📎 [{it['ch']}] пост {it['id']}, часть {i + 1}/{len(parts)}: MAX не принял сообщение "
-                          f"(попытка {n + 1}/{attempts}): {err}" + ("" if last else f" — повтор через {MAX_RETRY_PAUSES[n]} с"))
+                    print(errors.line(max_code(e), f"📎 [{it['ch']}] пост {it['id']}, часть {i + 1}/{len(parts)}: MAX "
+                                                   f"не принял сообщение (попытка {n + 1}/{attempts}): {err}"
+                                                   + ("" if last else f" — повтор через {MAX_RETRY_PAUSES[n]} с")))
                     if last:
                         raise SendFailed(f"part {i + 1} of {len(parts)} — {err} ({attempts} attempts)") from e
                     await asyncio.sleep(MAX_RETRY_PAUSES[n])
@@ -7452,7 +7578,7 @@ async def _publish_item(client, chat_id, it):
         return "ok"
     except MediaLost as e:
         await asyncio.to_thread(rollback_post, it)    # «огрызок» прошлой попытки (если был) — из канала
-        return skip_post(it, str(e))
+        return skip_post(it, str(e), errors.classify(e, "ERR_TG_DOWNLOAD"))
     except ChatDenied as e:
         await asyncio.to_thread(note_denied, chat_id, e)
         it["retry_at"] = DENIED.get(chat_id, time.time() + 600)
@@ -7461,18 +7587,19 @@ async def _publish_item(client, chat_id, it):
     except Exception as e:
         if item_has_media(it):                        # файл не ушёл в MAX и после повторов — пост не выходит вовсе:
             await asyncio.to_thread(rollback_post, it)  # уже отправленные части — из канала
-            return skip_post(it, f"upload failed: {str(e)[:300]}")
+            return skip_post(it, f"upload failed: {str(e)[:300]}", "ERR_MAX_UPLOAD")
         if is_temporary(e):
             retry_later(it, e, f"[{it['ch']}] пост {it['id']}")
             save_queue()
             return "retry"
         it["fails"] = it.get("fails", 0) + 1
         bump("errors")
-        print(f"[{it['ch']}] ошибка публикации {it['id']} (попытка {it['fails']}):", e)
+        print(errors.line(max_code(e), f"[{it['ch']}] ошибка публикации {it['id']} (попытка {it['fails']}): "
+                                       f"{type(e).__name__}: {e}"))
         if it["fails"] >= 3:
             drop_item(it)
             save_queue()
-            journal(f"[{it['ch']}] пост {it['id']}: Skipped: publish failed ({str(e)[:150]})")
+            journal(f"[{it['ch']}] пост {it['id']}: Skipped: publish failed ({str(e)[:150]})", code="ERR_PUB_FAIL")
             return "dropped"
         it["retry_at"] = time.time() + 60
         save_queue()
@@ -7508,7 +7635,7 @@ async def publish_due(client, chat_id):
         drop_item(it)
         bump("expired")
         journal(f"[{it['ch']}] пост {it['id']} простоял в очереди больше {CFG['max_age_h']} ч — удалён "
-                f"(очередь не успевает: уменьши паузу в «⏳ Расписание»)")
+                f"(очередь не успевает: уменьши паузу в «⏳ Расписание»)", code="ERR_QUEUE_EXPIRED")
     if stale:
         save_queue()
         resolve_cards(item_refs(stale))
@@ -7640,10 +7767,12 @@ def check_rights_all(now=None):
         with theme_ctx(t):
             if r is False and now - RIGHTS_TOLD.get(t.chat_id, 0) > 6 * 3600:
                 RIGHTS_TOLD[t.chat_id] = now
-                journal("⛔ Проверка прав: бот больше не админ канала MAX этой темы")
-                notify("⛔ Проверка прав: бот больше не админ канала MAX этой темы — посты выходить не смогут.\n\n"
-                       "Что сделать: канал MAX → Админы → добавь бота админом с правом публиковать сообщения.\n"
-                       "Посты не пропадут — выложу, как только права вернутся.")
+                journal("⛔ Проверка прав: бот больше не админ канала MAX этой темы", code="ERR_MAX_403")
+                notify_err("ERR_MAX_403", "⛔ Проверка прав: бот больше не админ канала MAX этой темы — посты выходить "
+                           "не смогут.\n\nЧто сделать: канал MAX → Админы → добавь бота админом с правом публиковать "
+                           "сообщения.\nПосты не пропадут — выложу, как только права вернутся.",
+                           f"ежечасная проверка: MAX говорит, что бот не админ канала {t.chat_id}",
+                           what="Проверка прав: бот больше не админ канала MAX этой темы.")
             elif r is True and RIGHTS_TOLD.pop(t.chat_id, None):
                 journal("✅ Проверка прав: бот снова админ канала MAX")
                 notify("✅ Права в канале MAX вернулись — публикую дальше.")
@@ -7680,7 +7809,7 @@ async def background_loop():
                     and local_hour() >= CFG["report_hour"]:
                 await asyncio.to_thread(send_report)
         except Exception as e:
-            print("Фоновые задачи: ошибка:", e)
+            print(errors.line(errors.classify(e), f"фоновые задачи: {type(e).__name__}: {e}"))
 
 
 # ---------- ЧТЕНИЕ КАНАЛОВ ----------
@@ -7841,28 +7970,32 @@ async def _process_channel(client, ch, fails, fresh):
                         hashes.append(f"v{vi[0]}-{vi[1]}")
             # файлы (PDF, архивы, музыка, голосовые): качаем при публикации.
             # Строгое правило: файл больше лимита или без входа в Telegram не скачать — пост пропускается целиком.
-            docs, skip = [], None
+            docs, skip, skip_code = [], None, None
             for m in media:
                 di = doc_info(m)
                 if not di:
                     continue
                 if is_web_client(client) and not getattr(m.document, "url", None):
-                    skip = skip or f"{FILE_NEEDS_API} (файл «{di['name']}»)"
+                    skip, skip_code = (skip, skip_code) if skip else (f"{FILE_NEEDS_API} (файл «{di['name']}»)",
+                                                                      "ERR_TG_API_NEEDED")
                 elif size_skip_reason(di["size"], media_cap_mb()):
-                    skip = skip or size_skip_reason(di["size"], media_cap_mb())
+                    skip, skip_code = (skip, skip_code) if skip else (size_skip_reason(di["size"], media_cap_mb()),
+                                                                      "ERR_TG_FILE_BIG")
                 else:
                     docs.append(di)
                     hashes.append(f"d{di['size']}-{di['name']}")
             if not skip:
                 skip = next((size_skip_reason(vi[0], media_cap_mb()) for _, vi in vids
                              if size_skip_reason(vi[0], media_cap_mb())), None)
+                skip_code = "ERR_TG_FILE_BIG" if skip else None
             entry = {"norm": norm(body), "img": hashes, "t": time.time(),
                      "fwd": [k for k in (fwd_key(m) for m in grp) if k]}
             has_media = bool(img_paths or vids or docs)
             dup = (await asyncio.to_thread(find_duplicate, entry, list(history))   # сравнение с историей —
                    if CFG["dedupe_on"] else None)                                  # не в цикле: тяжёлое для CPU
-            if skip:                                     # пост пропущен целиком: в журнале причина, молча
-                journal(f"[{ch}] пост {last}: {skip if skip.startswith('Skipped') else 'Skipped: ' + skip}")
+            if skip:                                     # пост пропущен целиком: в журнале причина и код, молча
+                journal(f"[{ch}] пост {last}: {skip if skip.startswith('Skipped') else 'Skipped: ' + skip}",
+                        code=skip_code)
             elif not body and not has_media:
                 journal(f"[{ch}] пост {last}: пусто после чистки — пропускаю")
             elif (bw := blocked_word(body)) is not None:
@@ -7891,14 +8024,15 @@ async def _process_channel(client, ch, fails, fresh):
                 bump("dups")
                 journal(f"[{ch}] пост {last}: ДУБЛЬ по смыслу, уже публиковали — пропускаю")
             elif len(QUEUE) >= 100:
-                journal(f"[{ch}] пост {last}: очередь переполнена (100) — пропускаю")
+                journal(f"[{ch}] пост {last}: очередь переполнена (100) — пропускаю", code="ERR_QUEUE_FULL")
             else:
                 status = "pending" if CFG["approval_on"] else "ok"
                 if status == "ok" and CFG.get("smart_quality") and CFG["admin_chats"] \
                         and post_quality(body, has_media) < 4:
                     status = "pending"                   # 🧠 слабый пост — сначала тебе на одобрение
                 if status == "pending" and not CFG["admin_chats"]:
-                    journal("⚠️ Некому показать пост на одобрение: напиши своему боту в MAX /start")
+                    journal("⚠️ Некому показать пост на одобрение: напиши своему боту в MAX /start",
+                            code="ERR_APPROVAL_NOBODY")
                 item = {"id": f"{t.prefix}{ch}:{grp[0].id}", "ch": ch,
                         "date": grp[0].date.timestamp(), "enq": time.time(),
                         "text": body, "photos": img_paths, "pids": pids,
@@ -7924,11 +8058,13 @@ async def _process_channel(client, ch, fails, fresh):
             fails[(t.id, ch, last)] = fails.get((t.id, ch, last), 0) + 1
             n = fails[(t.id, ch, last)]
             bump("errors")
-            print(f"[{ch}] ошибка на посте {last} (попытка {n}):", e)
+            print(errors.line("ERR_TG_POST", f"[{ch}] ошибка на посте {last} (попытка {n}): {type(e).__name__}: {e}"))
             if n < 3:
                 return                    # повторим на следующей проверке
-            journal(f"[{ch}] пост {last} не получается обработать — пропускаю")
-            await asyncio.to_thread(notify, f"⚠️ @{ch}: пост {last} не удалось обработать ({str(e)[:100]}), пропущен.")
+            journal(f"[{ch}] пост {last} не получается обработать — пропускаю ({type(e).__name__}: {str(e)[:150]})",
+                    code="ERR_TG_POST")
+            await asyncio.to_thread(notify_err, "ERR_TG_POST", f"⚠️ @{ch}: пост {last} не удалось обработать — пропущен.",
+                                    f"{type(e).__name__}: {str(e)[:200]}")
         finally:
             if not queued:
                 for p in img_paths:
@@ -7974,15 +8110,16 @@ async def sync_channels(client):
             latest = await asyncio.wait_for(src.get_messages(ch, limit=1), 60)
         except Exception as e:
             if POOL.note_error(src, e):                # аккаунт пула отдыхает или выбыл — читаем другим
-                journal(f"👤 [{ch}] аккаунт пула: {type(e).__name__} — прочитаю другим на следующем круге")
+                journal(f"👤 [{ch}] аккаунт пула: {type(e).__name__} — прочитаю другим на следующем круге",
+                        code="ERR_TG_FLOOD" if "Flood" in type(e).__name__ else "ERR_TG_ACCOUNT")
                 continue
             if is_social(ch):                          # соцсеть: не трогаем Telegram, повтор через 10 минут
                 first = down_first(ch)
                 BAD[ch] = time.time() + 600
-                journal(f"Источник {ch_label(ch)} не открывается: {e}")
+                journal(f"Источник {ch_label(ch)} не открывается: {e}", code="ERR_SOCIAL")
                 if first:
-                    await asyncio.to_thread(notify, f"⚠️ {ch_label(ch)} не открывается: {str(e)[:200]}. "
-                                                    "Пробую каждые 10 минут.")
+                    await asyncio.to_thread(notify_err, "ERR_SOCIAL", f"⚠️ {ch_label(ch)} не открывается. Пробую "
+                                            "каждые 10 минут.", f"{type(e).__name__}: {str(e)[:200]}")
                 continue
             if is_auth_dead(e):
                 await auth_dead(client, e)
@@ -7993,11 +8130,11 @@ async def sync_channels(client):
                 continue
             first = down_first(ch)
             BAD[ch] = time.time() + 600                # повтор через 10 минут
-            journal(f"Канал {ch} не открывается: {type(e).__name__}: {e}")
+            journal(f"Канал {ch} не открывается: {type(e).__name__}: {e}", code="ERR_TG_CHANNEL")
             if first:
                 await asyncio.to_thread(
-                    notify, f"⚠️ Канал @{ch} не открывается ({type(e).__name__}). Пробую каждые 10 минут. "
-                            f"Если имя неверное — убери его в меню.")
+                    notify_err, "ERR_TG_CHANNEL", f"⚠️ Канал @{ch} не открывается. Пробую каждые 10 минут. Если имя "
+                                                  f"неверное — убери его в меню.", f"{type(e).__name__}: {str(e)[:200]}")
             continue
         note_net(ch)
         down_over(ch)
@@ -8075,14 +8212,14 @@ def note_net(ch, e=None, web=True):
     since = NET["since"].setdefault(ch, time.time())
     if n == 1:
         journal(f"Канал {ch}: {'t.me' if web else 'Telegram'} не отвечает ({type(e).__name__}) — "
-                f"пробую реже, пока не заработает")
-    _log_line(time.strftime("%H:%M:%S") + f" t.me {ch}: {type(e).__name__}: {e}")
+                f"пробую реже, пока не заработает", code="ERR_TG_DOWN")
+    _log_line(time.strftime("%H:%M:%S") + " " + errors.line("ERR_TG_DOWN", f"t.me {ch}: {type(e).__name__}: {e}"))
     if not NET["warned"] and time.time() - since > 180 and CFG["admins"]:
         NET["warned"] = True
         text = TG_DOWN_TEXT if web else ("⚠️ Нет связи с Telegram уже несколько минут — каналы не читаются. "
                                          "Проверь интернет. Бот переподключится сам.")
-        print(text.replace("\n\n", " "))
-        notify(text, tag=False)
+        print(errors.line("ERR_TG_DOWN", text.replace("\n\n", " ")))
+        notify_err("ERR_TG_DOWN", text, f"{ch}: {type(e).__name__}: {str(e)[:200]}", tag=False)
 
 
 async def reconnect_tg(client):
@@ -8119,11 +8256,12 @@ async def auth_dead(client, e):
     name = type(e).__name__
     why = ("Telegram заблокировал аккаунт" if "Ban" in name or "Deactivated" in name else
            "Telegram завершил вход бота (сеанс завершили в «Устройствах» или Telegram отозвал его сам)")
-    print(f"Telegram: вход больше не действует ({name}) — читаю каналы через t.me")
-    journal(f"🔑 Вход в Telegram слетел ({name}) — перешёл на t.me")
-    await asyncio.to_thread(owner_alert, f"🔑 {why}.\n\nБот не остановился: читаю открытые каналы через t.me "
-                            "(без файлов и больших видео).\n\nЧтобы вернуть: 🔑 Telegram → «Подключить аккаунт». "
-                            "Совет: включи в Telegram облачный пароль — так вход надёжнее.")
+    print(errors.line("ERR_TG_SESSION", f"Telegram: вход больше не действует ({name}) — читаю каналы через t.me"))
+    journal(f"🔑 Вход в Telegram слетел ({name}) — перешёл на t.me", code="ERR_TG_SESSION")
+    await asyncio.to_thread(owner_alert_err, "ERR_TG_SESSION", f"🔑 {why}.\n\nБот не остановился: читаю открытые "
+                            "каналы через t.me (без файлов и больших видео).\n\nЧтобы вернуть: 🔑 Telegram → "
+                            "«Подключить аккаунт». Совет: включи в Telegram облачный пароль — так вход надёжнее.",
+                            f"{name}: {str(e)[:200]}")
     if not CLIENT_MODE:
         for cid in list(PROCS):                  # боты клиентов, читавшие через этот вход, — на t.me
             with contextlib.suppress(Exception):
@@ -8170,7 +8308,7 @@ WEB_UA = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHT
 
 
 class WebMediaUnavailable(RuntimeError):
-    pass
+    code = "ERR_TG_API_NEEDED"
 
 
 class _Media:
@@ -9117,9 +9255,11 @@ def analytics_send(chat, chans):
         for name, ws, thumbs in res:
             send_dashboard(chat, name, ws, thumbs)
     except Exception as e:
-        log_exc("аналитика")
+        code = log_exc("аналитика", code="ERR_ANALYTICS")
         with contextlib.suppress(Exception):
-            api_send(chat, f"⚠️ Аналитика не получилась: {type(e).__name__}: {str(e)[:150]}. Попробуй ещё раз.")
+            api_send(chat, err_text(code, "⚠️ Аналитика не получилась. Попробуй ещё раз чуть позже.",
+                                    f"{type(e).__name__}: {str(e)[:300]}", chat_staff(chat),
+                                    "⚠️ Аналитика не получилась."))
 
 
 def send_dashboard(chat, name, ws, thumbs=()):
@@ -9328,7 +9468,8 @@ def tg_account(ref, private=False):
     try:
         return asyncio.run_coroutine_threadsafe(_tg_account(client, ref, private), loop).result(40)
     except Exception as e:
-        _log_line(time.strftime("%H:%M:%S") + f" Проверка канала: аккаунт Telegram не ответил ({type(e).__name__})")
+        _log_line(time.strftime("%H:%M:%S") + " " + errors.line("ERR_TG_ACCOUNT", f"проверка канала: аккаунт Telegram "
+                                                                                    f"не ответил ({type(e).__name__})"))
         return "error"
 
 
@@ -9779,11 +9920,12 @@ def ai_insight(n, caption):
     try:
         out = anlinsight.clean(ai_ask_text(ask, AI_ROTATORS, S, ai_settings(), journal, prompt=anlinsight.PROMPT,
                                            timeout=20))
-    except AiUnavailable:                              # все ключи 429 — без 🤖-строки, только три стандартные
-        _log_line(time.strftime("%H:%M:%S") + " " + AI_EXHAUSTED_LOG)
+    except AiUnavailable as e:                         # ИИ недоступен — без 🤖-строки, только три стандартные
+        _log_line(time.strftime("%H:%M:%S") + " " + errors.line(e.code, AI_EXHAUSTED_LOG))
         return None
     except Exception as e:
-        _log_line(time.strftime("%H:%M:%S") + f" Вывод ИИ по каналу: не получен ({type(e).__name__}: {str(e)[:120]})")
+        _log_line(time.strftime("%H:%M:%S") + " " + errors.line(errors.classify(e, "ERR_AI_FAIL"), "вывод ИИ по каналу "
+                  f"не получен ({type(e).__name__}: {str(e)[:120]})"))
         return None
     finally:
         perf_add("ai", "вывод по каналу", time.perf_counter() - t0)
@@ -9883,9 +10025,11 @@ def anl_cards_send(chat, chans, mode, bg="pattern"):
         print(f"⏱ Карточки аналитики ({'сеть' if mode == 'net' else 'каналы'}, {len(nums)}): "
               f"данные MAX {t1 - t0:.1f} с, картинки и отправка {time.perf_counter() - t1:.1f} с")
     except Exception as e:
-        log_exc("карточки аналитики")
+        code = log_exc("карточки аналитики", code="ERR_ANALYTICS")
         with contextlib.suppress(Exception):
-            api_send(chat, f"⚠️ Карточка не получилась: {type(e).__name__}: {str(e)[:150]}. Попробуй ещё раз.")
+            api_send(chat, err_text(code, "⚠️ Карточка не получилась. Попробуй ещё раз чуть позже.",
+                                    f"{type(e).__name__}: {str(e)[:300]}", chat_staff(chat),
+                                    "⚠️ Карточка аналитики не получилась."))
 
 
 def anl_cards_start(uid, mode):
@@ -9940,7 +10084,8 @@ def predict_text(text, photo=False, video=False, cid=None, name=None, with_p=Fal
             tip = ai_ask_text(text[:3000], AI_ROTATORS, S, ai_settings(), journal)
             out += "\n\n🤖 Совет ИИ:\n" + tip.strip()[:700]
         except Exception as e:
-            _log_line(time.strftime("%H:%M:%S") + f" Прогноз: ИИ не ответил ({type(e).__name__}: {str(e)[:120]})")
+            _log_line(time.strftime("%H:%M:%S") + " " + errors.line(errors.classify(e, "ERR_AI_FAIL"), "прогноз: ИИ не "
+                      f"ответил ({type(e).__name__}: {str(e)[:120]})"))
         finally:
             perf_add("ai", "совет к посту", time.perf_counter() - t0)
     return (out, p) if with_p else out
@@ -9974,10 +10119,11 @@ def predict_start(uid, chat, text, atts=()):
                 bg = card_bg(anl_bg_mode(uid), name or "Прогноз поста")
                 tok = upload_card(anlimg.render_predict(p, card_font, bg, name), True)
             except Exception:
-                log_exc("карточка прогноза")           # не вышла — ответ всё равно придёт текстом
+                log_exc("карточка прогноза", code="ERR_ANALYTICS")   # не вышла — ответ всё равно придёт текстом
         except Exception as e:
-            log_exc("прогноз поста")
-            answer = f"⚠️ Прогноз не получился: {type(e).__name__}. Попробуй ещё раз."
+            code = log_exc("прогноз поста", code="ERR_ANALYTICS")
+            answer = err_text(code, "⚠️ Прогноз не получился. Попробуй ещё раз.", f"{type(e).__name__}: {str(e)[:300]}",
+                              staff(uid), "⚠️ Прогноз поста не получился.")
         if tok:                                        # картинка прогноза без подписи, за ней — ответ
             api_send(chat, None, None, tok, keep=True)
         api_send(chat, answer, rows, keep=True)
@@ -10116,14 +10262,14 @@ def trend_ask(prompt):
     """Строгий вопрос ИИ — через те же ключи и ротацию (KeyRotator), что и пересказ постов. Нет ключей,
     все исчерпаны или дневной лимит трендов кончился — TrendNoAI (пересказу постов ключи нужнее)."""
     if not ai_llm_ready():
-        raise TrendNoAI("нет ключей ИИ")
+        raise TrendNoAI("нет ключей ИИ", "ERR_AI_NO_KEYS")
     if not TREND_STATE.ai_take(TREND_AI_DAY, time.strftime("%Y-%m-%d")):
-        raise TrendNoAI(f"на сегодня лимит вопросов ИИ о трендах исчерпан ({TREND_AI_DAY})")
+        raise TrendNoAI(f"на сегодня лимит вопросов ИИ о трендах исчерпан ({TREND_AI_DAY})", "ERR_AI_LIMIT")
     t0 = time.perf_counter()
     try:
         return ai_ask_text(prompt, AI_ROTATORS, S, ai_settings(), journal, prompt="", timeout=45)
     except AiUnavailable as e:
-        raise TrendNoAI(f"ИИ не ответил: {str(e)[:150]}") from None
+        raise TrendNoAI(f"ИИ не ответил: {str(e)[:150]}", e.code) from None
     finally:
         perf_add("ai", "тренды", time.perf_counter() - t0)
 
@@ -10156,7 +10302,7 @@ def trend_run(tid, manual=False):
     """Одна проверка темы на тренды (фон или «Проверить сейчас»). Итог scan + название канала."""
     t = theme_by_id(tid)
     if t is None:
-        return {"verdict": "error", "error": "темы больше нет", "t": time.time()}
+        return {"verdict": "error", "error": "темы больше нет", "t": time.time(), "code": "ERR_INTERNAL"}
     with TREND_LOCK:
         job = trend_job(t)
         with theme_ctx(t):
@@ -10169,6 +10315,8 @@ def trend_run(tid, manual=False):
     line = (f"🔥 Тренды «{job.channel}»{' (вручную)' if manual else ''}: новостей {res.get('found', 0)}, "
             f"новых {res.get('new', 0)} — {TREND_VERDICT.get(res.get('verdict'), res.get('verdict'))}"
             + (f" ({res['error']})" if res.get("error") else ""))
+    if res.get("code"):
+        line = errors.line(res["code"], line)
     if res.get("verdict") in ("yes", "send-error", "ai-error", "error"):
         print(line)
     else:
@@ -10192,8 +10340,10 @@ def trend_start():
     return TREND_WORKER
 
 
-def trend_result_text(res):
-    """Ответ на «🔎 Проверить сейчас», когда сигнала нет (если есть — пришёл сам сигнал)."""
+def trend_result_text(res, for_staff=False):
+    """Ответ на «🔎 Проверить сейчас», когда сигнала нет (если есть — пришёл сам сигнал). Сбой — с кодом ошибки;
+    точная причина (ответ поиска или ИИ) — только админу."""
+    code, why = res.get("code"), res.get("error") or ""
     v, words = res.get("verdict"), ", ".join((res.get("words") or [])[:5]) or "—"
     if v == "no":
         return (f"🔥 Проверил свежие новости по словам: {words} (новых: {res.get('new', 0)}) — ничего вирусного по "
@@ -10209,13 +10359,16 @@ def trend_result_text(res):
         return ("🔥 Не из чего взять слова для поиска: в канале пока нет постов. Задай свои: "
                 "«🔥 Тренды» → «✏️ Свои слова для поиска».")
     if v == "no-ai":
-        return (f"⚠️ ИИ недоступен ({res.get('error') or 'нет ключей'}) — без ИИ сигналы не отправляю: "
-                "без строгого отбора пришлось бы слать всё подряд.")
+        return err_text(code or "ERR_AI_NO_KEYS", "⚠️ ИИ сейчас недоступен — без ИИ сигналы не отправляю: без "
+                        "строгого отбора пришлось бы слать всё подряд.", why or "нет ключей", for_staff)
     if v == "search-error":
-        return f"⚠️ Поиск новостей не ответил: {res.get('error') or 'нет связи'}. Попробую в следующий раз."
+        return err_text(code or "ERR_SEARCH", "⚠️ Поиск новостей не ответил. Попробую в следующий раз.",
+                        why or "нет связи", for_staff)
     if v == "send-error":
-        return "⚠️ Нашёл тренд, но MAX не принял сообщение — попробую в следующий раз."
-    return f"⚠️ Проверка не получилась: {res.get('error') or v}. Попробую в следующий раз."
+        return err_text(code or "ERR_MAX_SEND", "⚠️ Нашёл тренд, но MAX не принял сообщение — попробую в следующий раз.",
+                        why, for_staff)
+    return err_text(code or "ERR_INTERNAL", "⚠️ Проверка не получилась. Попробую в следующий раз.", why or str(v),
+                    for_staff)
 
 
 def trend_check_now(uid):
@@ -10244,11 +10397,12 @@ def trend_check_now(uid):
             TREND_STATE.schedule(tid, time.time() + random.uniform(*TREND_EVERY))   # фон не повторит сразу
             TREND_STATE.save()
             if res.get("verdict") != "yes":
-                api_send(chat, trend_result_text(res), [[B("🔥 Тренды", "m:trends")]])
-        except Exception:
-            log_exc("тренды: проверить сейчас")
+                api_send(chat, trend_result_text(res, staff(uid)), [[B("🔥 Тренды", "m:trends")]])
+        except Exception as e:
+            code = log_exc("тренды: проверить сейчас")
             with contextlib.suppress(Exception):
-                api_send(chat, "⚠️ Проверка трендов не получилась — попробуй позже.")
+                api_send(chat, err_text(code, "⚠️ Проверка трендов не получилась — попробуй позже.",
+                                        f"{type(e).__name__}: {str(e)[:300]}", staff(uid)))
 
     threading.Thread(target=run, daemon=True, name="trend-now").start()
     return "🔎 Ищу свежие новости по теме канала и спрашиваю ИИ — ответ придёт сюда (до минуты)."
@@ -10307,7 +10461,9 @@ def trend_screen(uid):
         lines.append(f"Последняя проверка: {time.strftime('%d.%m %H:%M', time.localtime(last['t']))} — "
                      + TREND_VERDICT.get(last.get("verdict"), str(last.get("verdict")))
                      + (f" (новостей {last.get('found', 0)}, новых {last.get('new', 0)})" if last.get("found") else "")
-                     + (f": {last['error']}" if last.get("error") and last.get("verdict") != "yes" else "")
+                     + (f": {last['error']}" if last.get("error") and last.get("verdict") != "yes" and staff(uid)
+                        else "")
+                     + (f" · код ошибки: {last['code']}" if last.get("code") else "")
                      + (f" ({last['reason']})" if last.get("reason") and last.get("verdict") == "no" else ""))
     if on and nxt and t.chat_id:
         lines.append(f"Следующая: ≈ {time.strftime('%H:%M', time.localtime(max(nxt, time.time())))}")
@@ -11178,7 +11334,7 @@ async def telegram_login(client):
     print(f"Нужен вход в Telegram. Номер: {PHONE}")
     ok_ver, ver = telethon_version_note()
     if not ok_ver:
-        print("⚠️ " + ver)
+        print("⚠️ " + errors.line("ERR_TG_VERSION", ver))
     print("  1 — войти по коду (придёт в приложение Telegram или по SMS)")
     print("  2 — войти по ссылке (нужно второе устройство с этим аккаунтом)")
     print("  3 — БЕЗ ВХОДА: читать публичные каналы через t.me")
@@ -11189,10 +11345,10 @@ async def telegram_login(client):
             if await (_login_by_code if choice == "1" else _login_by_link)(client, E):
                 print("Вход выполнен ✅")
                 return client
-            print("Войти не удалось.")
+            print(errors.line("ERR_TG_LOGIN", "войти не удалось."))
         except Exception as e:
             _log_line(traceback.format_exc())
-            print(f"Ошибка Telegram: {type(e).__name__}: {e}")
+            print(errors.line("ERR_TG_LOGIN", f"ошибка Telegram: {type(e).__name__}: {e}"))
             print(_wait_text(e) or _explain(e) or "Войти не получилось. Пришли эту строку, подскажу.")
         choice = (await asyncio.to_thread(
             input, "1 — снова по коду, 2 — по ссылке, 3 — без входа [3]: ")).strip() or "3"
@@ -11450,7 +11606,7 @@ def tg_forget(mid):
         return False
 
 
-DELETE_YOURSELF = "⚠️ Не смог удалить твоё сообщение — удали его из чата сам."
+DELETE_YOURSELF = "⚠️ Не смог удалить твоё сообщение — удали его из чата сам. Код ошибки: ERR_MAX_DELETE"
 
 
 def save_tg_keys(api_id, api_hash, phone):
@@ -12756,7 +12912,8 @@ def xp_publish(cid, tid, now=None):
                 with contextlib.suppress(Exception):
                     note_denied(chat, e)
             wait = XP.failed(cid, tid, now, why(e)) or xpromo.RETRY_SEC
-            journal(f"📢 Кросс-промо «{xp_title(c)}»: не вышло в канал ({why(e)}) — повторю через {fmt_min(wait // 60)}")
+            journal(f"📢 Кросс-промо «{xp_title(c)}»: не вышло в канал ({why(e)}) — повторю через "
+                    f"{fmt_min(wait // 60)}", code=max_code(e))
             return "retry"
         note_allowed(chat)
         XP.done(cid, tid, now)
@@ -12959,8 +13116,10 @@ def fsub_missing(uid, fresh=False):
         if ok is None:
             if time.time() - FSUB_WARN.get(c["chat_id"], 0) > 6 * 3600:
                 FSUB_WARN[c["chat_id"]] = time.time()
-                host_alert(f"⚠️ Не могу проверить подписку на «{c['title']}»: бот больше не администратор канала или "
-                           f"MAX не отвечает. Пока пускаю всех. Проверь, что бот — админ канала: {c['link']}")
+                host_alert_err("ERR_FSUB_CHECK", f"Не могу проверить подписку на «{c['title']}»: бот больше не "
+                                                 "администратор канала или MAX не отвечает. Пока пускаю всех. Проверь, "
+                                                 f"что бот — админ канала: {c['link']}",
+                               f"MAX не дал список подписчиков канала {c['chat_id']}")
         elif not ok:
             missing.append(c)
     if not missing:
@@ -13074,8 +13233,9 @@ def fsub_add(text):
     if any(c["chat_id"] == cid for c in force_subs()):
         return "Этот канал уже в списке.", "clfs"
     if is_member(cid, host_id() or 0) is None:              # проверяем ровно то, что нужно: видит ли бот подписчиков
-        return ("⛔ Бот не может проверять подписчиков этого канала — MAX разрешает это только администраторам. "
-                "Сделай бота администратором канала и пришли ссылку ещё раз."), "clfs"
+        return errors.admin("ERR_FSUB_CHECK", f"MAX не дал список подписчиков канала {cid}",
+                            "⛔ Бот не может проверять подписчиков этого канала — MAX разрешает это только "
+                            "администраторам. Сделай бота администратором канала и пришли ссылку ещё раз."), "clfs"
     info = chat_info(cid)
     link = info.get("link") or ("" if re.fullmatch(r"-?\d+", t) else t)   # ссылка от MAX — точная
     if not link:
@@ -13742,15 +13902,15 @@ def host_pay_online(rest, uid, email=None):
         pid, url = yk_create(price, f"Доступ к боту TG→MAX: «{t['name']}», {days} дней",
                              {"key": key, "plan": t["name"], "days": days}, "https://max.ru", email=email)
     except Exception as e:
-        log_exc("ЮKassa (host)")
+        code = log_exc("ЮKassa (host)")
         ok, why = yk_check(fresh=True)
-        host_alert(f"⚠️ ЮKassa не дала ссылку на оплату (кабинет «{(TENANTS.get(key) or {}).get('name') or key}», "
-                   f"{price} ₽).\nОтвет ЮKassa: {str(e)[:300]}"
-                   + ("" if ok else f"\nКлючи: {why}") + "\n\nПокупателю сказал попробовать чуть позже.")
+        host_alert_err(code, f"ЮKassa не дала ссылку на оплату (кабинет «{(TENANTS.get(key) or {}).get('name') or key}», "
+                             f"{price} ₽). Покупателю предложил оплату переводом.",
+                       f"Ответ ЮKassa: {str(e)[:300]}" + ("" if ok else f"\nКлючи: {why}"))
         how = (GCFG.get("pay_info") or "").strip() or f"реквизиты пришлёт продавец — напиши {SELLER_CONTACT}"
-        return (f"⚠️ Онлайн-оплата сейчас не открылась (продавец уже знает).\n\nМожно оплатить переводом: "
-                f"«{t['name']}» на {days} дней — {price} ₽.\n{how}\n\nПосле перевода нажми «✅ Я оплатил» — продавец "
-                "проверит и откроет доступ."), \
+        return errors.user(code, f"⚠️ Онлайн-оплата сейчас не открылась (продавец уже знает).\n\nМожно оплатить "
+                                 f"переводом: «{t['name']}» на {days} дней — {price} ₽.\n{how}\n\nПосле перевода "
+                                 "нажми «✅ Я оплатил» — продавец проверит и откроет доступ."), \
             [[B("✅ Я оплатил", f"pd:{i}:{days}")], [B("🔄 Попробовать онлайн ещё раз", f"py:{i}:{days}")],
              [B("◀️ Назад", "m:pay")]]
     with CL_LOCK:
@@ -13823,9 +13983,11 @@ def host_pay_settle(key):
         st = yk_status(p["pid"])
         p.pop("err", None)
     except Exception as e:
+        p["code"] = errors.classify(e, "ERR_YK_HTTP")
         if p.get("err") != str(e):                       # одну и ту же ошибку не пишем каждые 20 секунд
             p["err"] = str(e)
-            print(f"ЮKassa: не проверить оплату {p['pid']} (кабинет «{c.get('name')}»): {type(e).__name__}: {e}")
+            print(errors.line(p["code"], f"ЮKassa: не проверить оплату {p['pid']} (кабинет «{c.get('name')}»): "
+                                         f"{type(e).__name__}: {e}"))
         st = None
     if st == "succeeded":
         with CL_LOCK:
@@ -13845,12 +14007,14 @@ def host_pay_settle(key):
     if st is not None:
         tenant_send(key, "❌ Оплата не прошла или ссылка устарела. Попробуй ещё раз: «💳 Оплатить доступ».")
         return "gone"
-    tenant_send(key, "⏳ Не получилось автоматически проверить оплату в ЮKassa — передал продавцу, он проверит вручную "
-                     "и откроет доступ. Если ты уже оплатил — ничего делать не нужно.")
-    host_alert(f"⚠️ Не могу проверить оплату в ЮKassa уже {PAY_WAIT // 3600} ч (кабинет «{c.get('name')}», "
-               f"«{p['plan']}», {p['days']} дн., {p.get('price', 0)} ₽, платёж {p['pid']}).\nОшибка: {p.get('err', '?')[:300]}"
-               "\n\nПроверь платёж в личном кабинете ЮKassa и нажми кнопку:",
-               [[B("✅ Оплата пришла — открыть", f"a:clpayok:{key}")], [B("❌ Не пришла", f"a:clpayno:{key}")]])
+    tenant_send(key, errors.user("ERR_YK_CHECK", "⏳ Не получилось автоматически проверить оплату в ЮKassa — передал "
+                                                 "продавцу, он проверит вручную и откроет доступ. Если ты уже оплатил — "
+                                                 "ничего делать не нужно."))
+    host_alert_err("ERR_YK_CHECK", f"Не могу проверить оплату в ЮKassa уже {PAY_WAIT // 3600} ч (кабинет "
+                                   f"«{c.get('name')}», «{p['plan']}», {p['days']} дн., {p.get('price', 0)} ₽, платёж "
+                                   f"{p['pid']}). Проверь платёж в личном кабинете ЮKassa и нажми кнопку ниже.",
+                   f"[{p.get('code', 'ERR_YK_HTTP')}] {p.get('err', '?')[:300]}",
+                   [[B("✅ Оплата пришла — открыть", f"a:clpayok:{key}")], [B("❌ Не пришла", f"a:clpayno:{key}")]])
     return "manual"
 
 
@@ -13876,8 +14040,8 @@ def host_pay_check(uid):
         return ("⏳ Оплата ещё не пришла. Если ты уже оплатил — подожди минуту: ЮKassa иногда подтверждает не сразу, "
                 "бот проверит сам."), again
     if res == "error":
-        return ("⚠️ Сейчас не получилось спросить ЮKassa — бот продолжит проверять сам. Если оплата прошла, доступ "
-                "откроется автоматически."), again
+        return errors.user(p.get("code") or "ERR_YK_HTTP", "⚠️ Сейчас не получилось спросить ЮKassa — бот продолжит "
+                           "проверять сам. Если оплата прошла, доступ откроется автоматически."), again
     return "Эта оплата уже не ждёт — сообщение об этом пришло выше.", [[B("💳 Тарифы", "m:pay")]]
 
 
@@ -14550,7 +14714,7 @@ def secret_tail(uid):
     """Приписка к ответу, если сообщение с ключом из чата убрать не вышло."""
     return ("" if YK_MSG_GONE.pop(uid, True) else
             "\n\n⚠️ Твоё сообщение с ключом удалить не смог (MAX не даёт боту удалять чужие сообщения) — "
-            "удали его сам: зажми сообщение → «Удалить».")
+            "удали его сам: зажми сообщение → «Удалить». Код ошибки: ERR_MAX_DELETE")
 
 
 def yk_seen():
@@ -14583,8 +14747,8 @@ def yk_check(fresh=False):
 
 def _yk_check(keys):
     if not keys:
-        return False, ("не подключена. Добавь в Bothost переменные YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY "
-                       "и сделай пересборку.")
+        return False, ("не подключена [ERR_YK_NO_KEYS]. Добавь в Bothost переменные YOOKASSA_SHOP_ID и "
+                       "YOOKASSA_SECRET_KEY и сделай пересборку.")
     sid, key = keys
     hints = []
     if not sid.isdigit():
@@ -14595,7 +14759,7 @@ def _yk_check(keys):
     try:
         r = S.get(f"{YK_API}/v3/me", auth=keys, timeout=20)
     except Exception as e:
-        return False, f"нет связи с ЮKassa ({type(e).__name__}). Попробуй позже."
+        return False, f"нет связи с ЮKassa ({type(e).__name__}) [ERR_YK_NET]. Попробуй позже."
     if r.status_code == 200:
         j = r.json()
         kind = "тестовый магазин — настоящие деньги не списываются" if j.get("test") else "боевой магазин"
@@ -14604,7 +14768,7 @@ def _yk_check(keys):
         err_id = None
         with contextlib.suppress(Exception):
             err_id = r.json().get("id")
-        return False, ("ключи не подходят ❌ — ЮKassa ответила «Error in shopId or secret key».\n"
+        return False, ("ключи не подходят ❌ [ERR_YK_401] — ЮKassa ответила «Error in shopId or secret key».\n"
                        + (f"🆔 Код ошибки для поддержки ЮKassa: {err_id} — по нему поддержка видит, почему ключ "
                           "не принят.\n" if err_id else "")
                        + f"🔎 {yk_seen()}. Сверь shopId и последние 4 символа ключа с личным кабинетом ЮKassa.\n"
@@ -14613,7 +14777,7 @@ def _yk_check(keys):
                          "магазина СВОЙ shopId и свои ключи). Там: Интеграция → Ключи API → скопируй shopId и нажми "
                          "«Выпустить новый ключ» (старый сразу перестаёт работать). Пришли оба кнопкой "
                          "«🔑 Ввести ключи ЮKassa» в «💰 Тарифы и реквизиты» — без перезапуска.")
-    return False, f"ЮKassa ответила {r.status_code}: {r.text[:150]}"
+    return False, f"ЮKassa ответила {r.status_code}: {r.text[:150]} [{errors.yk_code(r.status_code)}]"
 
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
@@ -14636,21 +14800,28 @@ def yk_create(amount, description, metadata, return_url, email=None):
         body["receipt"] = {"customer": {"email": customer}, "items": [{
             "description": description[:128], "quantity": "1.00", "vat_code": 1, "amount": money,
             "payment_subject": "service", "payment_mode": "full_payment"}]}
-    r = S.post(f"{YK_API}/v3/payments", auth=yk_keys(), timeout=30,
-               headers={"Idempotence-Key": str(uuid.uuid4())}, json=body)
+    try:
+        r = S.post(f"{YK_API}/v3/payments", auth=yk_keys(), timeout=30,
+                   headers={"Idempotence-Key": str(uuid.uuid4())}, json=body)
+    except requests.RequestException as e:
+        raise errors.CodedError("ERR_YK_NET", f"нет связи с ЮKassa: {type(e).__name__}: {e}") from e
     if r.status_code == 400 and "receipt" in r.text.lower() and not customer:
-        raise RuntimeError("в магазине ЮKassa включены чеки — добавь в Bothost переменную YOOKASSA_RECEIPT_EMAIL "
-                           "(твоя почта для чеков) или выключи чеки в ЮKassa")
-    if r.status_code >= 300:
-        raise RuntimeError(f"ЮKassa {r.status_code}: {r.text[:1500]}")   # ответ целиком — в bot.log
+        raise errors.CodedError("ERR_YK_400", "в магазине ЮKassa включены чеки — добавь в Bothost переменную "
+                                "YOOKASSA_RECEIPT_EMAIL (твоя почта для чеков) или выключи чеки в ЮKassa. "
+                                f"Ответ ЮKassa {r.status_code}: {r.text[:300]}")
+    if r.status_code >= 300:                            # ответ целиком — в bot.log
+        raise errors.CodedError(errors.yk_code(r.status_code), f"ЮKassa {r.status_code}: {r.text[:1500]}")
     j = r.json()
     return j["id"], j["confirmation"]["confirmation_url"]
 
 
 def yk_status(pid):
-    r = S.get(f"{YK_API}/v3/payments/{pid}", auth=yk_keys(), timeout=30)
+    try:
+        r = S.get(f"{YK_API}/v3/payments/{pid}", auth=yk_keys(), timeout=30)
+    except requests.RequestException as e:
+        raise errors.CodedError("ERR_YK_NET", f"нет связи с ЮKassa: {type(e).__name__}: {e}") from e
     if r.status_code >= 300:
-        raise RuntimeError(f"ЮKassa {r.status_code}: {r.text[:1500]}")
+        raise errors.CodedError(errors.yk_code(r.status_code), f"ЮKassa {r.status_code}: {r.text[:1500]}")
     return r.json().get("status")
 
 
@@ -14704,10 +14875,11 @@ def check_pay_requests(now=None):
                 os.remove(path)
             with contextlib.suppress(Exception):
                 write_subscription(cid)                   # у бота клиента — тарифы и цены продавца сейчас
-            client_send(cid, "⚠️ Цена тарифа изменилась, пока ты оформлял оплату, — ничего не списано. Открой "
-                             "«💳 Тариф и оплата» и выбери тариф заново: там актуальная цена.")
+            client_send(cid, errors.user("ERR_PAY_PRICE", "⚠️ Цена тарифа изменилась, пока ты оформлял оплату, — "
+                                         "ничего не списано. Открой «💳 Тариф и оплата» и выбери тариф заново: там "
+                                         "актуальная цена."))
             journal(f"💳 Заявка «{c.get('name')}» не принята: в заявке {req.get('price')} ₽, а тариф "
-                    f"«{req.get('plan')}» на {req.get('days')} дн. стоит {pay_request_price(req)} ₽")
+                    f"«{req.get('plan')}» на {req.get('days')} дн. стоит {pay_request_price(req)} ₽", code="ERR_PAY_PRICE")
             continue
         if req.get("mode") == "online" and yk_keys():
             if req.get("status") == "new":
@@ -14716,12 +14888,13 @@ def check_pay_requests(now=None):
                                          {"cid": cid, "plan": req["plan"], "days": req["days"]},
                                          f"https://max.ru/{c['username']}" if c.get("username") else "https://max.ru")
                 except Exception as e:
-                    log_exc("ЮKassa: платёж не создан")
+                    code = log_exc("ЮKassa: платёж не создан")
                     req["status"] = "error"
                     save_json(path, req)
-                    client_send(cid, f"⚠️ Не получилось создать ссылку на оплату. Попробуй чуть позже или напиши: "
-                                     f"{SELLER_CONTACT}")
-                    seller_notify(f"⚠️ ЮKassa не создала платёж для «{c.get('name')}»: {str(e)[:150]}")
+                    client_send(cid, errors.user(code, "⚠️ Не получилось создать ссылку на оплату. Попробуй чуть позже "
+                                                       f"или напиши: {SELLER_CONTACT}"))
+                    seller_notify(errors.admin(code, f"Ответ ЮKassa: {str(e)[:300]}",
+                                               f"ЮKassa не создала платёж для «{c.get('name')}»."))
                     continue
                 req.update(status="link", pid=pid, url=url, t_link=now, t_poll=now)
                 save_json(path, req)
@@ -14827,8 +15000,9 @@ def note_client_crash(cid, c):
     with contextlib.suppress(OSError), open(os.path.join(client_dir(cid), "stderr.log"),
                                             encoding="utf-8", errors="ignore") as f:
         tail = "".join(f.readlines()[-6:])[-600:]
-    seller_notify(f"🆘 Бот клиента «{c.get('name')}» падает уже {len(CRASHES[cid])} раз за 15 минут — "
-                  f"перезапускаю, но посты у него могут не выходить.\n\nПоследняя ошибка:\n{tail or '—'}",
+    seller_notify(errors.admin("ERR_CLIENT_CRASH", f"Последняя ошибка:\n{tail or '—'}",
+                               f"🆘 Бот клиента «{c.get('name')}» падает уже {len(CRASHES[cid])} раз за 15 минут — "
+                               "перезапускаю, но посты у него могут не выходить."),
                   [[B("📜 Журнал клиента", f"m:cllog:{cid}")], [B("💼 Клиенты", "m:cl")]])
 
 
@@ -15677,7 +15851,8 @@ def clients_screen(name, uid):
         alive = pr is not None and pr["p"].poll() is None
         left = int((c.get("until", 0) - time.time()) // 86400)
         text = (f"🤖 {c['name']}" + (f" (@{c['username']})" if c.get("username") else "") + "\n\n"
-                f"Статус: {CL_STATUS[mode]}" + ("" if alive else " · ⚠️ процесс не запущен, перезапускаю") + "\n"
+                f"Статус: {CL_STATUS[mode]}" + ("" if alive else " · ⚠️ процесс не запущен, перезапускаю "
+                                                         "[ERR_CLIENT_CRASH]") + "\n"
                 + f"Тариф: «{c.get('plan') or 'индивидуальный'}»\n"
                 + (f"Подписка до: {fmt_date(c['until'])} ({left} дн.)\n" if c.get("until") else "")
                 + f"Темы: {info['themes']} из {c.get('lim_themes', LIMIT_THEMES)} — {', '.join(info['names'])}\n"
@@ -15705,9 +15880,11 @@ def clients_screen(name, uid):
                 [B("◀️ Клиент", f"m:clc:{cid}")]]
         return text, rows
     if kind == "cllog":
-        lines = client_log_tail(cid)
-        text = f"📜 Журнал «{c['name']}» (последнее)\n\n" + ("\n".join(lines) or "пока пусто")
-        return text[-3500:], [[B("🔄 Обновить", f"m:cllog:{cid}")], [B("◀️ Клиент", f"m:clc:{cid}")]]
+        head = f"📜 Журнал «{c['name']}» (последнее)\n\n"
+        body, room = "\n".join(client_log_tail(cid)) or "пока пусто", 3500 - len(head)
+        if len(body) > room:                           # длинный журнал — старые строки долой, заголовок остаётся
+            body = "…\n" + body[-room:].split("\n", 1)[-1]
+        return head + body, [[B("🔄 Обновить", f"m:cllog:{cid}")], [B("◀️ Клиент", f"m:clc:{cid}")]]
     if kind == "cldel":
         text = (f"🗑 Удалить клиента «{c['name']}»? Его бот остановится, настройки будут удалены. "
                 "Вернуть нельзя.")
@@ -16102,7 +16279,7 @@ async def check_cli():
     try:
         await client.connect()
     except Exception as e:
-        print("Telegram: не удалось подключиться:", e)
+        print(errors.line("ERR_TG_DOWN", f"Telegram: не удалось подключиться: {type(e).__name__}: {e}"))
     out = [telethon_version_note()] + await asyncio.to_thread(diag_max) + await diag_telegram(client)
     print("\n".join(("✅ " if ok else "❌ ") + t for ok, t in out))
 
@@ -16127,7 +16304,7 @@ async def main():
             await client.connect()
             ok = await client.is_user_authorized()
         except Exception as e:
-            print("Telegram: не удалось подключиться:", e)
+            print(errors.line("ERR_TG_DOWN", f"Telegram: не удалось подключиться: {type(e).__name__}: {e}"))
     if not ok and CLIENT_MODE:
         sc = await shared_client()
         if sc is not None:
@@ -16160,8 +16337,9 @@ async def main():
         log_exc("пул аккаунтов Telegram")
     if not is_web_client(client) and not CLIENT_MODE:
         asyncio.create_task(cdn_check_report(client))   # CDN с этого сервера: не работает — хозяин узнает сразу
-    MAIN_LOOP.set_exception_handler(lambda loop, ctx: _log_line(
-        "ОШИБКА в фоновой задаче: " + str(ctx.get("message")) + " " + repr(ctx.get("exception"))))
+    MAIN_LOOP.set_exception_handler(lambda loop, ctx: _log_line(errors.line(
+        errors.classify(ctx.get("exception")), "ОШИБКА в фоновой задаче: " + str(ctx.get("message")) + " "
+        + repr(ctx.get("exception")))))
     await asyncio.to_thread(drop_webhooks)               # вебхук на токене глушит бота — снимаем до всего остального
     main_t = THEMES[0] if THEMES else None
     if main_t is not None and not HOST_MODE:             # одиночный режим: привязываем свой канал MAX
@@ -16177,8 +16355,9 @@ async def main():
                 save_cfg()
             else:
                 BIND["theme"] = main_t.id                # привяжем по первому сообщению/добавлению в канал
-                print("⚠️ Канал MAX по ссылке не нашёлся. Добавь бота АДМИНОМ своего канала MAX и напиши в канале "
-                      "любое сообщение — бот привяжет канал сам. Или задай MAX_CHAT_ID.")
+                print("⚠️ " + errors.line("ERR_MAX_NOT_BOUND", "Канал MAX по ссылке не нашёлся. Добавь бота АДМИНОМ "
+                                                              "своего канала MAX и напиши в канале любое сообщение — "
+                                                              "бот привяжет канал сам. Или задай MAX_CHAT_ID."))
     if HOST_MODE:
         host_adopt_orphans()
         host_clean_chats()

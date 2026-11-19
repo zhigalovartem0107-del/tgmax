@@ -21,7 +21,10 @@ def _license_gate():
     if secret and hmac.compare_digest(hashlib.sha256(secret.encode("utf-8")).hexdigest(), _SECRET_SHA256):
         return
     why = "нет переменной BOT_SECRET" if not secret else "BOT_SECRET не совпадает"
-    print(f"🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized copy detected. Неверный или отсутствующий BOT_SECRET — "
+    # коды и описания — как в reloader/core/errors.py (тест сверяет): main.py проверяет замок до загрузки бота
+    code = ("[ERR_LICENSE_MISSING] Не задан BOT_SECRET (Защита от копирования)" if not secret else
+            "[ERR_LICENSE_BAD] BOT_SECRET не подходит (Защита от копирования)")
+    print(f"{code}\n🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized copy detected. Неверный или отсутствующий BOT_SECRET — "
           f"бот остановлен. ({why})\n   Задай правильный BOT_SECRET в переменных окружения хостинга.", flush=True)
     sys.exit(3)
 

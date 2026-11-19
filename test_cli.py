@@ -45,8 +45,9 @@ tio.wfile(textwrap.dedent('''
             return [] if min_id >= 50 else [_Msg()]
 '''), f"{pk}/telethon/__init__.py", "w")
 tio.wfile("class SessionPasswordNeededError(Exception): pass\nclass PhoneCodeInvalidError(Exception): pass\nclass PhoneCodeExpiredError(Exception): pass\n", f"{pk}/telethon/errors.py", "w")
-env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8")
-script = ROOT + "/tg_to_max.py"
+LIC = tio.licensed_copy(ROOT)        # бот — процессом: копия с замком на тестовый секрет (настоящий не нужен)
+env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_SECRET=tio.TEST_SECRET)
+script = LIC + "/tg_to_max.py"
 
 # 1) первый запуск: нет config.json -> мастер спрашивает всё и сохраняет
 w1 = tempfile.mkdtemp()
@@ -65,7 +66,7 @@ print("c1 ok: первый запуск — мастер спросил толь
 # 1б) login.py: спрашивает ключи Telegram (номер с «+» исправлен) и входит
 wl = tempfile.mkdtemp()
 tio.wjson(cfg, f"{wl}/config.json", "w")
-p = subprocess.Popen([sys.executable, ROOT + "/login.py"], cwd=wl, env=env1, stdin=subprocess.PIPE,
+p = subprocess.Popen([sys.executable, LIC + "/login.py"], cwd=wl, env=env1, stdin=subprocess.PIPE,
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
 p.stdin.write("abc\n1234567\n0123456789abcdef0123456789abcdef\n79990001122\n"); p.stdin.flush()
 outl, _ = run_until(p, lambda out: "вход выполнен" in out)
@@ -113,7 +114,7 @@ print("c5 ok: нет консоли и настроек — пишет, каки
 # 6) хостинг (Bothost): main.py, токен и канал из переменных окружения, все файлы — в папке data
 w6 = tempfile.mkdtemp(); data = os.path.join(w6, "data")
 env6 = dict(env, BOT_TOKEN="TESTTOKEN", MAX_CHANNEL_LINK="https://max.ru/mychannel", MAX_API_URL=srv.url, TG_MAX_DIR=data)
-p = subprocess.Popen([sys.executable, ROOT + "/main.py"], cwd=w6, env=env6, stdin=subprocess.DEVNULL,
+p = subprocess.Popen([sys.executable, LIC + "/main.py"], cwd=w6, env=env6, stdin=subprocess.DEVNULL,
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
 out6, alive = run_until(p, lambda out: "отправь ему этот код" in out and os.path.exists(os.path.join(data, "bot.log"))
                        and os.path.exists(os.path.join(data, "channel_id.txt")))
@@ -136,7 +137,7 @@ print("c7 ok: вебхук хостинга на токене — бот сни�
 # 8) main.py сам берёт самую свежую версию бота, как бы файл ни назывался (телефон дописывает -1, -2 к именам)
 import shutil
 w8 = tempfile.mkdtemp()
-shutil.copy(ROOT + "/main.py", w8)
+shutil.copy(LIC + "/main.py", w8)
 tio.wfile('print("RAN old")\n', f"{w8}/tg_to_max.py", "w")                                   # старый, без номера
 tio.wfile('BOT_VERSION = 2026101801\nprint("RAN v1")\n', f"{w8}/tg_to_max-2.py", "w")
 tio.wfile('BOT_VERSION = 2026101901\nimport os\nprint("RAN v2", os.getcwd())\n', f"{w8}/tgmax_new3-1.py", "w")

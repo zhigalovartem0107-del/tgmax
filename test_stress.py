@@ -511,13 +511,14 @@ J4_MARKS = (("rsya", "Перехватчик РСЯ: в канале появи�
             ("ai", bot.AI_EXHAUSTED_LOG), ("backlog", "накопилось много новых постов"))
 
 
-def counting_journal(text):
-    """Журнал в памяти — кольцо на 300 строк (под нагрузкой переполняется): события считаем на входе."""
+def counting_journal(text, **kw):
+    """Журнал в памяти — кольцо на 300 строк (под нагрузкой переполняется): события считаем на входе. code=… (код
+    ошибки) — передаём как есть."""
     with J4_LOCK:
         for key, mark in J4_MARKS:
             if mark in str(text):
                 J4[key] += 1
-    return _real_journal(text)
+    return _real_journal(text, **kw)
 
 
 bot.journal = counting_journal

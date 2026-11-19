@@ -14,6 +14,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from reloader.core import errors as _errors
+
 from reloader.services.trends import text as T
 from reloader.services.trends.alerts import build_prompt, format_alert, parse_answer
 from reloader.services.trends.keywords import extract_keywords, make_queries, niche_stems
@@ -26,7 +28,12 @@ def _num(x):
 
 
 class NoAI(Exception):
-    """ИИ недоступен: нет ключей, все ключи исчерпаны или кончился дневной лимит на тренды."""
+    """ИИ недоступен: нет ключей, все ключи исчерпаны или кончился дневной лимит на тренды. code — код ошибки
+    (reloader/core/errors.py)."""
+
+    def __init__(self, msg="", code="ERR_AI_NO_KEYS"):
+        super().__init__(msg)
+        self.code = code
 
 
 @dataclass
@@ -106,6 +113,8 @@ def scan(job, *, search, ask, send, store, now=None, max_items=8):
     res["found"] = len(found)
     if not found:
         res.update(verdict="search-error" if errors else "empty", error=(errors[0] if errors else "")[:200])
+        if errors:
+            res["code"] = "ERR_SEARCH"
         return res
     if store.needs_warmup(job.scope):              # память об отправленном потеряна: эту проверку — молча
         store.warmed(job.scope, found)
@@ -125,10 +134,10 @@ def scan(job, *, search, ask, send, store, now=None, max_items=8):
     try:
         answer = ask(prompt)
     except NoAI as e:
-        res.update(verdict="no-ai", error=str(e)[:200])
+        res.update(verdict="no-ai", error=str(e)[:200], code=getattr(e, "code", "ERR_AI_NO_KEYS"))
         return res
     except Exception as e:
-        res.update(verdict="ai-error", error=f"{type(e).__name__}: {e}"[:200])
+        res.update(verdict="ai-error", error=f"{type(e).__name__}: {e}"[:200], code=_errors.classify(e, "ERR_AI_FAIL"))
         return res
     v = parse_answer(answer, shown)
     everything = [it for g in groups for it in [g["item"]] + g["others"]]
@@ -144,7 +153,7 @@ def scan(job, *, search, ask, send, store, now=None, max_items=8):
     except Exception as e:
         ok, res["error"] = False, f"{type(e).__name__}: {e}"[:200]
     if not ok:                                     # не дошло — ничего не помечаем: попробуем в следующий раз
-        res["verdict"] = "send-error"
+        res.update(verdict="send-error", code="ERR_MAX_SEND")
         return res
     store.mark_sent(job.scope, [it for g in chosen for it in [g["item"]] + g["others"]], v.alert, job.theme)
     store.mark_seen(job.scope, everything)
@@ -181,7 +190,7 @@ class TrendState:
 
     def record(self, tid, res):
         keep = ("verdict", "found", "new", "words", "queries", "item", "alert", "error", "t", "channel", "reason",
-                "score")
+                "score", "code")
         with self.lock:
             rec = self.themes.setdefault(str(tid), {})
             rec["last"] = res.get("t") or self.clock()
@@ -260,7 +269,8 @@ class TrendWorker:
                 res = self.run(tid) or {}
             except Exception as e:
                 self._report(f"тема {tid}", e)
-                res = {"verdict": "error", "error": f"{type(e).__name__}: {e}"[:200], "t": self.clock()}
+                res = {"verdict": "error", "error": f"{type(e).__name__}: {e}"[:200], "t": self.clock(),
+                       "code": _errors.classify(e)}
             self.state.record(tid, res)
             done.append((tid, res))
             try:

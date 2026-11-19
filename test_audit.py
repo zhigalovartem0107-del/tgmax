@@ -240,7 +240,8 @@ def a4():
         for k in list(bot.SPAM_MUTED):
             bot.SPAM_MUTED[k] = time.time() - 1
     took = time.perf_counter() - t0
-    assert len(ALERTS) == 5 and all(a == "⚠️ Канал @flood50 заблокирован на 1 час из-за флуда спамом." for a in ALERTS)
+    assert len(ALERTS) == 5 and all("⚠️ Канал @flood50 заблокирован на 1 час из-за флуда спамом." in a
+                                    and "[ERR_SPAM_FLOOD]" in a for a in ALERTS), ALERTS   # 🧾 с кодом ошибки
     assert not queued("flood50") and bot.LAST_IDS["flood50"] == 1049
     assert sum(1 for e in bot.SPAM_EATEN if e["ch"] == "flood50") == 50
     assert took < 6, took
@@ -259,7 +260,9 @@ def a5():
     async def all_at_once():
         await asyncio.gather(*(bot.process_channel(tg, ch, {}) for ch, tg in tgs.items()))
     asyncio.run(all_at_once())
-    assert sorted(ALERTS) == sorted(f"⚠️ Канал @flood_{i} заблокирован на 1 час из-за флуда спамом." for i in range(3))
+    flood_lines = sorted(next(x for x in a.split("\n") if x.startswith("⚠️ Канал @")) for a in ALERTS)
+    assert flood_lines == sorted(f"⚠️ Канал @flood_{i} заблокирован на 1 час из-за флуда спамом." for i in range(3))
+    assert all("[ERR_SPAM_FLOOD]" in a for a in ALERTS), ALERTS          # 🧾 с кодом ошибки
     assert all(bot.spam_muted(f"flood_{i}") for i in range(3)) and not bot.spam_muted("calm")
     assert len(queued("calm")) == 10 and not any(queued(f"flood_{i}") for i in range(3))
 

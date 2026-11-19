@@ -25,10 +25,12 @@ FULL_ERRORS = {"ChannelsTooMuchError"}            # аккаунт в лимит
 
 class SessionError(ValueError):
     """Файл входа не подходит (не .session или вход в нём не действует) — текст для хозяина."""
+    code = "ERR_TG_SESSION"
 
 
 class PoolBusy(RuntimeError):
     """Свободных аккаунтов нет: все отдыхают после FloodWait (seconds — через сколько освободится первый)."""
+    code = "ERR_TG_FLOOD"
 
     def __init__(self, seconds):
         super().__init__(f"все аккаунты пула отдыхают, ближайший освободится через {int(seconds)} с" if seconds else

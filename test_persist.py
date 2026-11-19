@@ -3,8 +3,8 @@
 папку данных можно вынести на постоянный диск (TG_MAX_DIR). Каждый «перезапуск» — отдельный процесс."""
 import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import json
+import re
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,12 +121,20 @@ print("p4 ok: 💾 испорченные или пропавшие settings/ten
 
 # 5) папку данных можно вынести на постоянный диск: TG_MAX_DIR (main.py запускает бота там)
 app = tempfile.mkdtemp()
-shutil.copy(os.path.join(ROOT, "main.py"), app)
+import hashlib  # noqa: E402
+# копия main.py с ЗАМКОМ НА ТЕСТОВЫЙ секрет: эта проверка — про папку данных, а не про лицензию (её проверяет
+# test_license); настоящий BOT_SECRET ей не нужен — в репозитории его нет
+src = tio.rfile(os.path.join(ROOT, "main.py"), encoding="utf-8")
+real_hash = re.search(r'_SECRET_SHA256 = "([0-9a-f]{64})"', src).group(1)
+tio.wfile(src.replace(real_hash, hashlib.sha256(b"persist-test-secret").hexdigest()), os.path.join(app, "main.py"), "w",
+          encoding="utf-8")
 tio.wfile("BOT_VERSION = 99\nimport os\nprint('CWD ' + os.getcwd())\n", os.path.join(app, "stub_bot.py"), "w")
 disk = tempfile.mkdtemp()
-r = subprocess.run([sys.executable, "main.py"], cwd=app, env=dict(BASE, TG_MAX_DIR=disk), capture_output=True, text=True)
+APP_ENV = dict(BASE, BOT_SECRET="persist-test-secret")
+r = subprocess.run([sys.executable, "main.py"], cwd=app, env=dict(APP_ENV, TG_MAX_DIR=disk), capture_output=True,
+                   text=True)
 assert f"CWD {os.path.realpath(disk)}" in r.stdout.replace(disk, os.path.realpath(disk)), r.stdout + r.stderr
-r = subprocess.run([sys.executable, "main.py"], cwd=app, env=BASE, capture_output=True, text=True)
+r = subprocess.run([sys.executable, "main.py"], cwd=app, env=APP_ENV, capture_output=True, text=True)
 assert f"CWD {os.path.join(os.path.realpath(app), 'data')}" in r.stdout.replace(app, os.path.realpath(app)), r.stdout
 print("p5 ok: 💾 TG_MAX_DIR — данные бота на постоянном диске; без неё — папка data рядом с ботом")
 

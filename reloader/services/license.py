@@ -9,6 +9,8 @@ import hmac
 import os
 import sys
 
+from reloader.core import errors as _errors
+
 # SHA-256 правильного BOT_SECRET. Сам секрет здесь НЕ хранится — только его хеш (поменять секрет: пересчитать хеш
 #   `python -c "import hashlib;print(hashlib.sha256(b'НОВЫЙ_СЕКРЕТ').hexdigest())"` и вписать сюда).
 EXPECTED_SHA256 = "2ce7077c94ee1b5c55f7ea2bda1308e0814fbf2696e2f3d4fadcc7c3294066d9"
@@ -40,12 +42,18 @@ def check(env=None, expected=EXPECTED_SHA256):
     return True, "ok"
 
 
+def error_code(env=None):
+    """Код отказа замка: секрета нет — ERR_LICENSE_MISSING, неверный — ERR_LICENSE_BAD."""
+    env = os.environ if env is None else env
+    return "ERR_LICENSE_MISSING" if not str(env.get(ENV_VAR) or "").strip() else "ERR_LICENSE_BAD"
+
+
 def enforce(env=None, expected=EXPECTED_SHA256, log=print, _exit=None):
     """Пускаем бота только с верным BOT_SECRET. Иначе — критическая ошибка в лог и немедленный выход (код 3),
     бот не стартует. Возвращает True, если секрет верный."""
     ok, why = check(env, expected)
     if ok:
         return True
-    (log or (lambda *_a: None))(f"{MESSAGE} ({why})")
+    (log or (lambda *_a: None))(f"{_errors.line(error_code(env))}\n{MESSAGE} ({why})")
     (_exit or sys.exit)(3)
     return False                                         # на случай, если _exit (в тестах) не завершает процесс

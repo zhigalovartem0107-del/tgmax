@@ -22,9 +22,10 @@ tio.wfile("class SessionPasswordNeededError(Exception): pass\n", f"{pk}/telethon
 
 def start(srv, workdir, **extra):
     """Как на Bothost: файл бота лежит под именем main.py, токен в BOT_TOKEN, вывод идёт в трубу (не в терминал)."""
-    shutil.copy(ROOT + "/tg_to_max.py", f"{workdir}/main.py")
-    shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{workdir}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
-    env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_TOKEN="TESTTOKEN",
+    lic = tio.licensed_copy(ROOT)      # копия бота с замком на тестовый секрет: настоящий BOT_SECRET не нужен
+    shutil.copy(lic + "/tg_to_max.py", f"{workdir}/main.py")
+    shutil.copytree(lic + "/reloader", os.path.join(os.path.dirname(f"{workdir}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
+    env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_TOKEN="TESTTOKEN", BOT_SECRET=tio.TEST_SECRET,
                MAX_CHANNEL_LINK="https://max.ru/mychannel", MAX_API_URL=srv.url,
                HTTPS_PROXY="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9")
     env.update(extra)
@@ -135,9 +136,9 @@ print("h5 ok: ссылка «@канал» и MAX_CHAT_ID из переменн�
 
 # 6) нет токена на хостинге — понятное сообщение и выход, без вопросов в пустую консоль
 w6 = tempfile.mkdtemp()
-shutil.copy(ROOT + "/tg_to_max.py", f"{w6}/main.py")
-shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{w6}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
-env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_ID="bot_1")
+shutil.copy(tio.licensed_copy(ROOT) + "/tg_to_max.py", f"{w6}/main.py")
+shutil.copytree(tio.licensed_copy(ROOT) + "/reloader", os.path.join(os.path.dirname(f"{w6}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
+env = dict(os.environ, BOT_SECRET=tio.TEST_SECRET, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_ID="bot_1")
 for k in ("BOT_TOKEN", "MAX_TOKEN", "MAX_CHANNEL_LINK"):
     env.pop(k, None)
 r = subprocess.run([sys.executable, "main.py"], cwd=w6, env=env, stdin=subprocess.DEVNULL, capture_output=True,
@@ -147,10 +148,10 @@ print("h6 ok: на хостинге без токена — понятная п�
 # 7) файл бота назван main.py, но рядом config.json (телефон) — это не хостинг: настройки берутся из config.json
 srv = FakeMax()
 w7 = tempfile.mkdtemp()
-shutil.copy(ROOT + "/tg_to_max.py", f"{w7}/main.py")
-shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{w7}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
+shutil.copy(tio.licensed_copy(ROOT) + "/tg_to_max.py", f"{w7}/main.py")
+shutil.copytree(tio.licensed_copy(ROOT) + "/reloader", os.path.join(os.path.dirname(f"{w7}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
 tio.wjson({"max_token": "TESTTOKEN", "max_channel_link": "https://max.ru/mychannel", "max_api": srv.url}, f"{w7}/config.json", "w")
-env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8")
+env = dict(os.environ, BOT_SECRET=tio.TEST_SECRET, PYTHONPATH=pk, PYTHONIOENCODING="utf-8")
 for k in ("BOT_TOKEN", "MAX_TOKEN", "MAX_CHANNEL_LINK", "BOT_ID", "TG_MAX_DIR"):
     env.pop(k, None)
 p = subprocess.Popen([sys.executable, "main.py"], cwd=w7, env=env, stdin=subprocess.DEVNULL,
@@ -163,11 +164,11 @@ print("h7 ok: main.py рядом с config.json (телефон) работае�
 # 8) на хостинге часы по Москве (сервер в UTC), если TZ не задан; заданный TZ не трогаем
 for tz, expect in ((None, "MSK"), ("UTC0", "UTC")):
     w8 = tempfile.mkdtemp()
-    shutil.copy(ROOT + "/tg_to_max.py", f"{w8}/main.py")
-    shutil.copytree(ROOT + "/reloader", os.path.join(os.path.dirname(f"{w8}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
+    shutil.copy(tio.licensed_copy(ROOT) + "/tg_to_max.py", f"{w8}/main.py")
+    shutil.copytree(tio.licensed_copy(ROOT) + "/reloader", os.path.join(os.path.dirname(f"{w8}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
     tio.wfile("import runpy, sys, time\nsys.argv=['main.py','--tzprobe']\n"
         "try:\n    runpy.run_path('main.py', run_name='not_main')\nexcept SystemExit: pass\nprint('TZNAME', time.tzname[0])\n", f"{w8}/probe.py", "w")
-    env = dict(os.environ, PYTHONPATH=pk, BOT_ID="bot_1", BOT_TOKEN="T", MAX_CHANNEL_LINK="https://max.ru/x")
+    env = dict(os.environ, BOT_SECRET=tio.TEST_SECRET, PYTHONPATH=pk, BOT_ID="bot_1", BOT_TOKEN="T", MAX_CHANNEL_LINK="https://max.ru/x")
     env.pop("TZ", None)
     if tz:
         env["TZ"] = tz

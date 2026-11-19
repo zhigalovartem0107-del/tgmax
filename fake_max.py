@@ -8,6 +8,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 
+class _QuietServer(ThreadingHTTPServer):
+    """Бот не дождался ответа (свой тайм-аут) и закрыл соединение — это не сбой сервера: без трассировки в вывод."""
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class FakeMax:
     def __init__(self, token="TESTTOKEN", channel_slug="mychannel", channel_id=5000):
         self.token, self.slug, self.channel_id = token, channel_slug, channel_id
@@ -325,7 +335,7 @@ class FakeMax:
             def do_DELETE(self): self.handle_any("DELETE")
             def do_PATCH(self): self.handle_any("PATCH")
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.httpd = _QuietServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 

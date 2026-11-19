@@ -259,7 +259,8 @@ def s6():
     assert not ALERTS and not bot.spam_muted("flood")
     tg.msgs += [Msg(105 + i, f"Казино бонус {i} 🎰 забирай") for i in range(5)]
     read(tg, "flood")
-    assert ALERTS == ["⚠️ Канал @flood заблокирован на 1 час из-за флуда спамом."], ALERTS
+    assert len(ALERTS) == 1 and "⚠️ Канал @flood заблокирован на 1 час из-за флуда спамом." in ALERTS[0] \
+        and "[ERR_SPAM_FLOOD]" in ALERTS[0], ALERTS                    # 🧾 с кодом ошибки (админу — с подробностями)
     assert bot.spam_muted("flood") and any("заблокирован на 1 час" in j for j in bot.JOURNAL)
     tg.msgs.append(Msg(110, "Обычная новость про игру"))
     reads = tg.reads

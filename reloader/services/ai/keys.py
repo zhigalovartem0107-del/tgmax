@@ -39,9 +39,28 @@ class KeyRejected(Exception):
 
 
 class AllKeysExhausted(RuntimeError):
-    def __init__(self, provider, detail):
+    """Ни один ключ провайдера не сработал. kinds — причина по каждому ключу: «429», «timeout», «key» (не принят),
+    «error»; ключей нет — пусто. По ним — код ошибки (reloader.core.errors.ai_code)."""
+
+    def __init__(self, provider, detail, kinds=()):
         super().__init__(f"{provider}: {detail}")
-        self.provider = provider
+        self.provider, self.kinds = provider, list(kinds)
+
+    @property
+    def code(self):
+        from reloader.core.errors import ai_code
+        return ai_code(self.kinds)
+
+
+def failure_kind(e):
+    """Причина отказа одного ключа: «429», «key» (не принят), «timeout» или «error»."""
+    if isinstance(e, RateLimited):
+        return "429"
+    if isinstance(e, KeyRejected):
+        return "key"
+    if isinstance(e, TimeoutError) or "Timeout" in type(e).__name__ or "timed out" in str(e).lower():
+        return "timeout"
+    return "error"
 
 
 class KeyRotator:
@@ -68,25 +87,29 @@ class KeyRotator:
             raise AllKeysExhausted(self.provider, "ключей нет")
         with self._lock:
             start = keys.index(self._current) if self._current in keys else 0
-        reasons = []
+        reasons, kinds = [], []
         for key in keys[start:] + keys[:start]:
             if self._rest.get(key, 0) > self.clock():
                 reasons.append(f"{mask_key(key)}: отдыхает после лимита")
+                kinds.append("429")
                 continue
             try:
                 result = call(key)
             except RateLimited as e:
                 self._rest[key] = self.clock() + (e.retry_after or self.cooldown)
                 reasons.append(f"{mask_key(key)}: 429")
+                kinds.append("429")
                 continue
             except KeyRejected as e:
                 self._rest[key] = self.clock() + self.bad_cooldown
                 reasons.append(f"{mask_key(key)}: ключ не принят ({str(e)[:80]})")
+                kinds.append("key")
                 continue
             except Exception as e:
                 reasons.append(f"{mask_key(key)}: {type(e).__name__}: {str(e)[:80]}")
+                kinds.append(failure_kind(e))
                 continue
             with self._lock:
                 self._current = key
             return result
-        raise AllKeysExhausted(self.provider, "; ".join(reasons))
+        raise AllKeysExhausted(self.provider, "; ".join(reasons), kinds)
