@@ -172,8 +172,8 @@ bot.QUEUE.clear(); bot.LAST_IDS["v"] = 20; NOTES.clear()
 asyncio.run(bot.process_channel(web, "v", {})); MONO[0] += 10
 asyncio.run(bot.process_channel(web, "v", {}))
 q = {x["id"]: x for x in bot.QUEUE}
-assert set(q) == {"v:23", "v:24"}, list(q)                # PDF без прямой ссылки пропущен; .mcaddon с ссылкой — в очереди
-assert any("нужен аккаунт Telegram (API)" in j for j in bot.JOURNAL), "файл пропущен — с точной причиной в журнале"
+assert set(q) == {"v:23", "v:24"}, list(q)                # PDF ждёт аккаунта; .mcaddon с ссылкой — в очереди
+assert any("нужен аккаунт Telegram (API)" in j for j in bot.JOURNAL), "причина отсрочки есть в журнале"
 assert not [n for n in NOTES if "PDF" in n], NOTES           # ни текста без PDF, ни сообщения
 assert asyncio.run(bot.publish_item(web, 5, q["v:24"])) == "ok"          # .mcaddon скачан по прямой ссылке t.me
 bmc = srv.messages[-1]["body"]; tokmc = bmc["attachments"][0]["payload"]["token"]
@@ -183,7 +183,28 @@ n0 = len(srv.messages)
 assert asyncio.run(bot.publish_item(web, 5, q["v:23"])) == "ok"
 b = srv.messages[-1]["body"]
 assert srv.files[b["attachments"][0]["payload"]["token"]] == ("voice_23.ogg", b"OggS"), b
-print("f3 ok: без входа: PDF без ссылки пропущен с точной причиной; .mcaddon с прямой ссылкой t.me и голосовое переносятся")
+print("f3 ok: PDF без ссылки отложен; .mcaddon с прямой ссылкой t.me и голосовое переносятся")
+
+# 3б) отдельный PDF без ссылок не теряется после перехода с t.me на аккаунт Telegram и перезапуска.
+old = bot.THEMES[0]
+reloaded = bot.Theme(old.id, old.name, old.link, legacy=True)
+reloaded.last_ids.update(old.last_ids)
+auth_tg = TG([Msg(21, "Схема пуловера", Doc(len(PDF)), "Пуловер.pdf", PDF),
+              Msg(22, "", Doc(len(PDF)), "только_файл.pdf", PDF)])
+with bot.theme_ctx(reloaded):
+    for _ in range(3):
+        asyncio.run(bot.process_channel(auth_tg, "v", {}))
+        MONO[0] += 10
+    item = next((x for x in bot.QUEUE if x["id"] == "v:22"), None)
+    assert item is not None and not item["text"], bot.QUEUE
+    assert bot.LAST_IDS["v"] == 24, bot.LAST_IDS
+    assert asyncio.run(bot.publish_item(auth_tg, 5, item)) == "ok"
+    attachment = srv.messages[-1]["body"]["attachments"][0]
+    assert attachment["type"] == "file"
+    assert srv.files[attachment["payload"]["token"]] == ("только_файл.pdf", PDF)
+    asyncio.run(bot.process_channel(auth_tg, "v", {}))
+    assert sum(x["id"] == "v:22" for x in bot.QUEUE) == 1
+print("f3б ok: отдельный PDF после перехода с веб-режима на аккаунт Telegram")
 
 # 4) пересланное боту сообщение: текст и файл (имя, токен, ссылка) достаются из вложенного сообщения
 msg = {"body": {"text": "", "attachments": []}, "link": {"type": "forward", "message": {

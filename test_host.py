@@ -649,8 +649,8 @@ assert "mid-A" in srv.deleted and "mid-B" in srv.deleted, srv.deleted
 with bot.theme_ctx(pt):
     assert not bot.PUB["autodel"]
     bot.CFG["pin_new"] = False; bot.CFG["autodel_h"] = 0
-press(5001, 62000, "m:more")                                   # закреп — в «⚙️ Настройках» (главное меню — 6 кнопок)
-assert "m:pinset" in shown(), shown()                          # у покупателя кнопка тоже есть
+press(5001, 62000, "m:q")                                      # общие правила закрепа — в расписании
+assert "m:pinset" in shown(), shown()
 print("h33 ok: 🎁 пробный период при «Старте»; 💬 личная ссылка на покупателя; 📌 закреп и 🗑 автоудаление постов")
 
 # 34) личка: в нажатии кнопки message.sender — сам бот; имя/ник покупателя не затираются ботом
@@ -1012,8 +1012,8 @@ assert "5001" not in bot.ANL_BUSY, "после подсчёта отметка �
 bot.analytics_send = real_send
 press(5001, 62000, "m:main")
 assert "Что делают кнопки" not in OUT[-1][0] and len(buttons_of(OUT[-1][1])) == 6, OUT[-1]   # главное меню — 6 кнопок
-press(5001, 62000, "m:more")                                 # в «⚙️ Настройках» — закреп и пауза
-assert "a:pause" in shown() and "m:pinset" in shown(), shown()
+press(5001, 62000, "m:more")
+assert "a:pause" in shown() and "m:adposts" in shown() and "m:pinset" not in shown(), shown()
 print("h45 ok: аналитика — «подожди 1–2 минуты», без повторного запуска; главное меню — 6 кнопок, остальное в настройках")
 
 # 46) фильтр рекламы на реальных постах: розыгрыш «подпишись на чужие каналы» и «код, успей — активации ограничены» —
@@ -2617,10 +2617,15 @@ assert [b_.get("payload") for b_ in b90[:5]] == ["m:th", "m:q", "m:more", "m:sr"
 assert b90[4].get("intent") == "positive" and b90[5]["type"] == "link" and b90[5]["url"] == "https://max.ru/reloader_admin", b90
 press(9100, 91000, "m:more")
 st90 = {b_["text"]: b_.get("payload") for b_ in buttons_of(OUT[-1][1])}
-assert st90.get("🛡 Фильтр рекламы") == "m:fl" and st90.get("✍️ Подпись под постами") == "m:sg", st90
+assert st90.get("📣 Рекламные публикации") == "m:adposts" and st90.get("✍️ Подпись под постами") == "m:sg", st90
+assert "m:fl" not in st90.values(), st90
 assert not {"m:iv", "m:ts", "m:st", "m:rp"} & set(st90.values()), st90
 assert "🧹 Реклама" not in st90 and "Проверка каналов" not in OUT[-1][0] \
     and "🧪 Тест" not in OUT[-1][0], OUT[-1][0]
+press(9100, 91000, "m:ch")
+assert "m:copyrules" in shown(), shown()
+press(9100, 91000, "m:copyrules")
+assert all(x in shown() for x in ("m:vid", "m:fl", "m:ai")), shown()
 press(9100, 91000, "m:sr")
 assert "📊 Статистика и Отчеты" in OUT[-1][0] and "Опубликовано" in OUT[-1][0] and "Ежедневный отчёт" in OUT[-1][0], OUT[-1][0]
 assert "a:rep" in shown() and "a:repnow" in shown(), shown()

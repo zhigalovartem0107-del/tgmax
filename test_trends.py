@@ -315,9 +315,7 @@ shown = [dict(news("Roblox снизил цены на робуксы", "https://
          dict(news("Roblox заблокировали в России", "https://b.ru/2"), more=3),
          dict(news("Вышел новый сезон Brawl Stars", "https://c.ru/3", source=""), more=0)]
 prompt = AL.build_prompt("Мой канал", ["roblox", "brawl stars"], ["Пост 1", "Пост 2"], shown, ["Старая новость"], NOW)
-assert AL.QUESTION in prompt and AL.QUESTION == (
-    "Is there a VIRAL or highly important news event here that perfectly fits this channel's niche? If NO, reply "
-    "'NO'. If YES, write a short 3-sentence alert explaining the trend and why the admin should post about it right now.")
+assert AL.QUESTION in prompt and "ready-to-publish" in prompt and "in Russian" in prompt
 assert "«Мой канал»" in prompt and "roblox, brawl stars" in prompt and "- Пост 1" in prompt and "- Старая новость" in prompt
 assert "[2] Roblox заблокировали в России (РИА Новости, 2 h ago, +3 more sources report the same)" in prompt, prompt
 assert "[3] Вышел новый сезон Brawl Stars (2 h ago)" in prompt and "YES [2] 8/10" in prompt
@@ -359,9 +357,11 @@ v = AL.parse_answer("YES [3] 8/10 Новый сезон Brawl Stars старто
 assert v.yes and v.score == 8 and v.alert == "Новый сезон Brawl Stars стартовал. Пиши сейчас.", v
 assert "6/10" in AL.parse_answer("YES [1] 6/10\nМелочь.", shown).reason
 assert "одном издании" in AL.parse_answer("YES 3\nНовый сезон.", shown).reason
+assert "fake.ru" not in AL.parse_answer("YES [2] 8/10\nRoblox заблокировали. https://fake.ru/n", shown).alert
 msg = AL.format_alert("Мой канал", "Текст сигнала.", shown[1])
 assert msg.startswith("🔥 Тренд для «Мой канал»") and "📰 Roblox заблокировали в России — РИА Новости" in msg
-assert msg.endswith("https://b.ru/2") and "Похоже на вирусную" in AL.format_alert("К", "", shown[0])
+assert msg.endswith("https://b.ru/2") and "📝 Готовый пост" in msg
+assert "Roblox снизил цены на робуксы" in AL.format_alert("К", "", shown[0])
 print("t4 ok: 🤖 вопрос ИИ слово в слово + строгие условия; новости — как данные (не команды); NO/отказ — тишина; "
       "YES только с оценкой 7–10 (без оценки — если пишут несколько изданий); без формата — только если ясно")
 
@@ -449,13 +449,17 @@ cheap = news("Roblox снизил цены на робуксы", "https://x.ru/3
 season = news("Новый сезон Brawl Stars", "https://y.ru/4", source="Y", age_h=4)
 stale = news("Roblox вышел на биржу", "https://old.ru/5", source="Old", age_h=60)        # двое суток назад — не тренд
 NEWS.update({"roblox": [viral, copy, cheap, stale], "brawl stars": [season]})
-ANSWERS[:] = ["YES [1]\nRoblox заблокировали в России. Об этом пишут все. Выложи прямо сейчас."]
+ANSWERS[:] = ["YES [1]\nRoblox заблокировали в России\n\nОб этом сообщают РИА Новости и ТАСС."]
 r = run()
 assert r["verdict"] == "yes" and len(SENT) == 1 and r["item"]["url"] == "https://ria.ru/1", r
 assert r["queries"] == ["roblox", "brawl stars", "roblox обновление"] and r["found"] == 4 and r["new"] == 4, r
-assert SENT[0][0].startswith("🔥 Тренд для «Мой канал»") and "Об этом пишут все" in SENT[0][0]
+assert SENT[0][0].startswith("🔥 Тренд для «Мой канал»")
+assert "📝 Готовый пост\nRoblox заблокировали в России\n\nОб этом сообщают" in SENT[0][0]
+assert "📰 Источники" in SENT[0][0] and "https://ria.ru/1" in SENT[0][0] and "https://tass.ru/2" in SENT[0][0]
+assert "https://x.ru/3" not in SENT[0][0] and "https://y.ru/4" not in SENT[0][0]
 p1 = ASKED[0]
 assert "[1] Roblox заблокировали в России (РИА Новости, 1 h ago, +1 more sources report the same)" in p1, p1
+assert "ТАСС: В России заблокировали Roblox" in p1, p1
 assert "Roblox вышел на биржу" not in p1 and AL.QUESTION in p1
 assert store.known("admin", copy) == "sent" and store.known("admin", cheap) == "seen"   # перепечатка — тоже отправлено
 assert ("sent_alerts.json", True) in mem.saves
@@ -809,8 +813,8 @@ BOT_NEWS["roblox"] = [raw("Roblox заблокировали в России", "
                       raw("В России заблокировали Roblox", "https://tass.ru/roblox", source="ТАСС"),
                       raw("Roblox снизил цены на робуксы", "https://x.ru/robux", source="X", age_h=3)]
 BOT_NEWS["brawl stars"] = [raw("Новый сезон Brawl Stars", "https://y.ru/bs", source="Y", age_h=5)]
-srv.ai_replies[:] = [(429, ""), (200, "YES [1]\nRoblox заблокировали в России — об этом пишут все. Твоим "
-                                      "подписчикам это важно. Выложи прямо сейчас, пока тема горячая.")]
+srv.ai_replies[:] = [(429, ""), (200, "YES [1]\nRoblox заблокировали в России\n\n"
+                                      "Об ограничении доступа сообщили РИА Новости и ТАСС.")]
 n_msg, n_ai = len(srv.messages), len(srv.ai_calls)
 res = bot.trend_run(th1.id)
 assert res["verdict"] == "yes" and res["channel"] == "mychannel", res
@@ -819,8 +823,9 @@ assert AL.QUESTION in srv.ai_calls[-1][1] and "[1] Roblox заблокирова
 alerts = [m for m in srv.messages[n_msg:] if (m["body"].get("text") or "").startswith("🔥 Тренд")]
 assert len(alerts) == 1 and alerts[0]["chat_id"] == 111, [m["body"].get("text") for m in srv.messages[n_msg:]]
 body = alerts[0]["body"]
-assert body["text"].startswith("🔥 Тренд для «mychannel»") and "Выложи прямо сейчас" in body["text"]
+assert body["text"].startswith("🔥 Тренд для «mychannel»") and "Об ограничении доступа сообщили" in body["text"]
 assert "https://ria.ru/roblox-ban?utm_source=tg" in body["text"]
+assert "https://tass.ru/roblox" in body["text"] and "📝 Готовый пост" in body["text"]
 btns = [b for a in body["attachments"] if a["type"] == "inline_keyboard" for r in a["payload"]["buttons"] for b in r]
 assert {"type": "link", "text": "📰 Открыть новость", "url": "https://ria.ru/roblox-ban?utm_source=tg"} in btns, btns
 assert any(b.get("payload") == f"a:trendoff:{th1.id}" for b in btns), btns

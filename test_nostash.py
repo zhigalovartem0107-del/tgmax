@@ -185,13 +185,14 @@ def n1():
 
 @check
 def n2():
-    """«⚙️ Ещё настройки» покупателя — без «🎭 Темы» (и без строки о ней); всё остальное на месте"""
+    """«⚙️ Ещё настройки» покупателя — с рекламным постером и без дублирующих настроек"""
     press(BUYER, BC, "m:more")
     _, text, rows = last(BC)
     assert text.startswith("⚙️ Ещё настройки"), text
     assert "m:th" not in payloads(rows) and not any("Темы" in (b.get("text") or "") for b in buttons(rows)), rows
     assert "🎭 Темы" not in text, text
-    for keep in ("m:vid", "m:dd", "m:fl", "m:ad", "m:lg", "m:ai", "m:hp", "m:sg", "m:q", "m:ap", "m:gd", "m:terms",
+    assert not {"m:vid", "m:fl", "m:ai", "m:pinset"} & set(payloads(rows))
+    for keep in ("m:adposts", "m:dd", "m:ad", "m:lg", "m:hp", "m:sg", "m:q", "m:ap", "m:gd", "m:terms",
                  "a:pause", "m:main"):
         assert keep in payloads(rows), (keep, payloads(rows))
 

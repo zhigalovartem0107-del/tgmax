@@ -129,7 +129,7 @@ def scan(job, *, search, ask, send, store, now=None, max_items=8):
     if not groups:
         res["verdict"] = "off-topic" if fresh else "nothing-new"
         return res
-    shown = [dict(g["item"], more=len(g["others"])) for g in groups]
+    shown = [dict(g["item"], more=len(g["others"]), coverage=g["others"][:3]) for g in groups]
     prompt = build_prompt(job.channel, res["words"], snippets(job.texts), shown, store.recent_titles(job.scope), now)
     try:
         answer = ask(prompt)
@@ -141,21 +141,21 @@ def scan(job, *, search, ask, send, store, now=None, max_items=8):
         return res
     v = parse_answer(answer, shown)
     everything = [it for g in groups for it in [g["item"]] + g["others"]]
-    if not v.yes:
+    if not v.yes or len(v.picks) != 1:
         store.mark_seen(job.scope, everything)     # эти уже показали ИИ — в следующий раз не спрашиваем
         store.save()
-        res.update(verdict="no", reason=v.reason)
+        res.update(verdict="no", reason=v.reason or "ИИ не выбрал одно событие")
         return res
-    chosen = [groups[i] for i in v.picks]
-    main = chosen[0]["item"]
+    chosen = groups[v.picks[0]]
+    main, coverage = chosen["item"], chosen["others"]
     try:
-        ok = bool(send(format_alert(job.channel, v.alert, main), main))
+        ok = bool(send(format_alert(job.channel, v.alert, main, coverage[:3]), main))
     except Exception as e:
         ok, res["error"] = False, f"{type(e).__name__}: {e}"[:200]
     if not ok:                                     # не дошло — ничего не помечаем: попробуем в следующий раз
         res.update(verdict="send-error", code="ERR_MAX_SEND")
         return res
-    store.mark_sent(job.scope, [it for g in chosen for it in [g["item"]] + g["others"]], v.alert, job.theme)
+    store.mark_sent(job.scope, [main, *coverage], v.alert, job.theme)
     store.mark_seen(job.scope, everything)
     store.save()
     res.update(verdict="yes", alert=v.alert, score=v.score,

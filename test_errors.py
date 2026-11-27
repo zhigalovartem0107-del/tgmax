@@ -16,6 +16,7 @@ import errno
 import glob
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,7 @@ import threading
 import time
 import traceback
 import types
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
@@ -655,6 +657,62 @@ def d12():
     with contextlib.redirect_stdout(out):
         assert load_json_safe(p, {}) == {"a": 1}
     assert "[ERR_DATA_RESTORED]" in out.getvalue(), out.getvalue()
+
+
+def response(status, payload):
+    r = bot.requests.Response()
+    r.status_code = status
+    r._content = json.dumps(payload).encode("utf-8")
+    return r
+
+
+@check
+def d13():
+    """Проверочная публикация отличает успешное удаление, отказ в JSON, HTTP 403, отсутствие номера и сетевой сбой."""
+    denied = {"success": False, "code": "chat.denied", "message": "no delete permission"}
+    for status in (200, 403):
+        with patch.object(bot.S, "delete", return_value=response(status, denied)):
+            text = bot.channel_test(TB.chat_id, for_staff=True)
+            assert "опубликовал" in text and "ERR_MAX_DELETE" in text and "chat.denied" in text, text
+            buyer = bot.channel_test(TB.chat_id, for_staff=False)
+            assert "опубликовал" in buyer and "ERR_MAX_DELETE" in buyer and "chat.denied" not in buyer, buyer
+
+    with (patch.object(bot.S, "post", return_value=response(200, {})),
+          patch.object(bot.S, "delete") as delete):
+        text = bot.channel_test(TB.chat_id)
+        assert "не вернул номер" in text and "ERR_MAX_DELETE" in text, text
+        delete.assert_not_called()
+
+    with patch.object(bot.S, "delete", side_effect=bot.requests.Timeout("timeout")):
+        text = bot.channel_test(TB.chat_id)
+        assert "ERR_MAX_DELETE" in text and "Timeout" in text, text
+
+    text = bot.channel_test(TB.chat_id)
+    assert "Проверка пройдена" in text and "удалил" in text and srv.deleted[-1], text
+
+
+@check
+def d14():
+    """Автоудаление повторяет только оставшиеся части поста после отказа MAX с HTTP 200."""
+    calls = []
+
+    def delete(_url, *, params, **_):
+        mid = params["message_id"]
+        calls.append(mid)
+        ok = mid != "retry" or calls.count(mid) > 1
+        return response(200, {"success": ok, "code": "chat.denied" if not ok else None})
+
+    t = bot.Theme("delete-check", "Тест автоудаления", "", chat_id=TB.chat_id)
+    now = time.time()
+    t.pub["autodel"] = [{"mids": ["ok", "retry"], "at": now}]
+    with patch.object(bot, "THEMES", [t]), patch.object(bot.S, "delete", side_effect=delete):
+        bot.channel_autodel_due(now)
+        left = t.pub["autodel"]
+        assert len(left) == 1 and left[0]["mids"] == ["retry"], left
+        bot.channel_autodel_due(now + 1)
+        assert calls == ["ok", "retry"], calls
+        bot.channel_autodel_due(left[0]["retry_at"])
+        assert calls == ["ok", "retry", "retry"] and not t.pub["autodel"], calls
 
 
 if FAILS:
