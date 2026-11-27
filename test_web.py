@@ -250,11 +250,12 @@ assert bot.post_quality("", False) < 4 and bot.post_quality("Большой по
 # умное время: мало данных — не придерживаем
 bot.PUB["day_posts"] = []
 assert bot.hot_hours() is None
-import time as _t
-now = _t.time()
-for h in range(0, 24):                                  # 18:00 — просмотров много, остальное мало
+from datetime import date, datetime, time as clock_time, timedelta
+yesterday = date.today() - timedelta(days=1)
+for h in range(24):                                     # 18:00 по местному времени — пик просмотров
+    stamp = datetime.combine(yesterday, clock_time(h)).timestamp()
     for _ in range(2):
-        bot.PUB["day_posts"].append({"t": now - 3600 * ((now//3600 % 24 - h) % 24) , "views": 500 if h == 18 else 10, "ch": "c"})
+        bot.PUB["day_posts"].append({"t": stamp, "views": 500 if h == 18 else 10, "ch": "c"})
 hh = bot.hot_hours()
 assert hh is not None and 18 in hh
 # строгие дубли: та же картинка с разной подписью

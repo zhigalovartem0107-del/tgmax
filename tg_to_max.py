@@ -26,7 +26,6 @@ import traceback
 import types
 import zlib
 from collections import Counter, deque
-from difflib import SequenceMatcher
 
 for _k in [k for k in sys.modules if k == "reloader" or k.startswith("reloader.")]:
     del sys.modules[_k]                   # каждая загрузка файла — свой, свежий пакет reloader
@@ -111,9 +110,12 @@ from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
 from reloader.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402
 from reloader.core import errors  # noqa: E402   🧾 коды ошибок: «[ERR_…] Описание — подробности»
 from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
+from reloader.services.telegram.session import connect_account  # noqa: E402
 from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
 from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
 from reloader.services.billing.catalog import over_limit  # noqa: E402
+from reloader.services.filters import duplicates  # noqa: E402
+from reloader.services.filters.duplicates import GENERIC, STOP_WORDS, norm, terms  # noqa: E402
 from reloader.services.media.policy import MAX_MEDIA_MB, size_skip_reason  # noqa: E402
 from reloader.services.ai.keys import KeyRotator, mask_keys, parse_keys  # noqa: E402
 from reloader.services.ai.rewrite import AiUnavailable, DEFAULTS as AI_DEFAULTS, rewrite as ai_rewrite_text  # noqa: E402
@@ -138,11 +140,8 @@ def tg_client(name, api_id, api_hash):
 async def _authorized(session_name):
     """True — вход рабочий, False — нет, None — не удалось проверить (например, нет интернета)."""
     try:
-        c = tg_client(session_name, API_ID, API_HASH)
-        await c.connect()
-        ok = await c.is_user_authorized()
-        await c.disconnect()
-        return bool(ok)
+        _, authorized = await connect_account(tg_client(session_name, API_ID, API_HASH), keep_open=False)
+        return authorized
     except Exception as e:
         print("  проверка входа не удалась:", e)
         return None
@@ -159,6 +158,10 @@ def setup_data_dir(base=None, extra_roots=None, check=None):
     os.chdir(base)
     check = check or (lambda name: asyncio.run(_authorized(name)))
     print(f"Бот версии {BOT_VERSION}. Папка данных бота:", os.getcwd())
+    if not LOGIN and os.path.exists(WEB_FLAG):
+        return
+    if configured_string_session():
+        return
     if not TG_READY:
         print("Telegram-аккаунт не подключён — работаю без входа (это нормально).")
         return
@@ -214,6 +217,13 @@ CONFIG_FIELDS = [
 
 TG_FIELDS = ("api_id", "api_hash", "phone")    # нужны только для входа в аккаунт Telegram (login.py)
 LOGIN = "--login" in sys.argv                  # запуск через login.py: войти в аккаунт Telegram
+WEB_FLAG = "web_mode.flag"                     # владелец выбрал режим без входа в Telegram
+
+
+def configured_string_session():
+    if NO_TG or os.path.exists(WEB_FLAG):
+        return ""
+    return (os.environ.get("SESSION_STRING") or "").strip()
 
 
 FIELD_HINTS = {
@@ -1997,98 +2007,18 @@ def clean_text(text: str, with_signature: bool = True) -> str:
 
 
 # ---------- защита от дублей ----------
-def norm(text: str) -> str:
-    """Текст без ссылок, знаков и эмодзи — для сравнения постов."""
-    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    text = re.sub(r"https?://\S+", "", text)
-    text = text.lower().replace("ё", "е")
-    return " ".join(re.findall(r"\w+", text))[:1000]
-
-
-STOP_WORDS = set("""и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по
-только ее мне было вот от меня еще нет о из ему теперь когда даже ну вдруг ли если уже или ни быть был
-него до вас нибудь опять уж вам ведь там потом себя ничего ей может они тут где есть надо ней для мы
-тебя их чем была сам чтоб без будто чего раз тоже себе под будет ж тогда кто этот того потому этого
-какой совсем ним здесь этом один почти мой тем чтобы нее сейчас были куда зачем всех никогда можно при
-наконец два об другой хоть после над больше тот через эти нас про всего них какая много разве три эту
-моя впрочем хорошо свою этой перед иногда лучше чуть том нельзя такой им более всегда конечно всю между
-это стали стал будут будет также уже пока ещё новый новая новые the a an of to in is are for on and
-with at by from that this it be как вам такой список""".split())
-# слишком общие для темы слова: учитываются, но с малым весом
-GENERIC = {"roblox", "роблокс", "robux", "робукс", "офици", "новос", "обнов", "добав",
-           "игра", "игр", "игры", "ивент", "событ", "анонс", "стало", "извес"}
-
-
-@functools.lru_cache(maxsize=4096)
-def terms(text: str):
-    """Смысловые слова поста: без мусора, с грубой обрезкой окончаний (результат кэшируется)."""
-    out = set()
-    for w in re.findall(r"[a-zа-я0-9]+", text.lower().replace("ё", "е")):
-        if w in STOP_WORDS or (len(w) < 2 and not w.isdigit()):
-            continue
-        if "а" <= w[0] <= "я":
-            w = w[:5]              # "хэллоуинском" и "хэллоуинскую" -> "хэллоу"
-        out.add(w)
-    return frozenset(out)
-
-
 def meaning_match(a: str, b: str, df, n_hist) -> bool:
-    """Два поста про одно и то же? Сравниваем веса общих редких слов.
-    df — Counter: в скольких постах истории встречается слово; n_hist — размер истории."""
-    ta, tb = terms(a), terms(b)
-    if len(ta) < 3 or len(tb) < 3:
-        return False
-    n = n_hist + 2
-
-    def weight(w):
-        d = df.get(w, 0) + (w in ta) + (w in tb)
-        idf = math.log((n + 1) / (d + 0.5)) + 1
-        return idf * (0.3 if w in GENERIC else 1.0)
-
-    shared = ta & tb
-    if len([w for w in shared if w not in GENERIC]) < 2:
-        return False               # нужно минимум 2 общих "не общих" слова
-    small = ta if len(ta) <= len(tb) else tb
-    total = sum(weight(w) for w in small)
-    common = sum(weight(w) for w in shared)
-    return total > 0 and common / total >= CFG["meaning"]
+    return duplicates.meaning_match(a, b, df, n_hist, CFG["meaning"])
 
 
 def similar(a: str, b: str) -> bool:
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    if min(len(a), len(b)) < 25:        # слишком короткие — только точное совпадение
-        return False
-    sm = SequenceMatcher(None, a, b)
-    if sm.real_quick_ratio() >= CFG["similarity"] and sm.quick_ratio() >= CFG["similarity"] \
-            and sm.ratio() >= CFG["similarity"]:
-        return True
-    wa, wb = set(a.split()), set(b.split())
-    return len(wa & wb) / max(1, len(wa | wb)) >= 0.7
+    return duplicates.similar(a, b, CFG["similarity"])
 
 
 def find_duplicate(entry, history):
     """Возвращает запись истории, на которую похож пост, либо None."""
-    norms = [x.get("norm", "") for x in history]
-    df = None
-    for h in history:
-        if entry["fwd"] and set(entry["fwd"]) & set(h.get("fwd", [])):
-            return h                     # один и тот же пост переслан из одного оригинала
-        # посты почти без текста сравниваем по самой картинке/видео
-        img_cut = 120 if CFG.get("dedupe_strict") else 25   # 🧠 строже: та же картинка = дубль даже с подписью
-        if len(entry["norm"]) < img_cut and entry["img"] and set(entry["img"]) & set(h.get("img", [])):
-            return h
-        # "alts" — как другие каналы пересказывали тот же пост (бот их запоминает)
-        for text in [h.get("norm", "")] + h.get("alts", []):
-            if similar(entry["norm"], text):
-                return h
-            if df is None:               # считаем один раз на пост, а не на каждую пару
-                df = Counter(w for n in norms for w in terms(n))
-            if meaning_match(entry["norm"], text, df, len(norms)):
-                return h
-    return None
+    return duplicates.find_duplicate(entry, history, strict=CFG.get("dedupe_strict"),
+                                     similarity=CFG["similarity"], meaning=CFG["meaning"])
 
 
 def is_duplicate(entry, history):
@@ -2497,20 +2427,31 @@ def pick_channels(uid):
 
 
 def channel_test(chat_id, for_staff=True):
-    """Пробуем по-настоящему опубликовать в канал проверочное сообщение (и сразу удаляем). Текст — что вышло.
-    Не вышло — с кодом ошибки; ответ MAX (технические подробности) — только админу (for_staff)."""
+    """Проверяет публикацию и удаление тестового поста. Подробности ответа MAX видит администратор."""
     if not chat_id:
         return err_text("ERR_MAX_NOT_BOUND", "Канал MAX ещё не привязан — сначала выбери его.", for_staff=for_staff)
     try:
         r = S.post(f"{MAX_API}/messages", params={"chat_id": chat_id}, headers=HEADERS, timeout=30,
-                   json={"text": "✅ Проверка: бот может публиковать в этот канал. (сообщение сейчас удалится)"})
+                   json={"text": "Проверка публикации Reloader."})
     except Exception as e:
         return err_text("ERR_MAX_NET", "⚠️ Нет связи с MAX. Попробуй через минуту.", f"{type(e).__name__}: {e}",
                         for_staff)
     if r.status_code == 200:
-        with contextlib.suppress(Exception):
-            delete_msg(((r.json().get("message") or {}).get("body") or {}).get("mid"))
-        return "✅ Проверка пройдена: бот может публиковать в этот канал. Посты будут выходить."
+        try:
+            mid = ((r.json().get("message") or {}).get("body") or {}).get("mid")
+        except (AttributeError, ValueError):
+            mid = None
+        if not mid:
+            return err_text("ERR_MAX_DELETE", "⚠️ MAX не вернул номер проверочного поста. Если пост появился в канале, "
+                            "удали его вручную.", "В ответе на публикацию нет message.body.mid.", for_staff)
+        try:
+            deleted, details = _delete_msg_result(mid)
+        except requests.RequestException as e:
+            deleted, details = False, f"{type(e).__name__}: {e}"
+        if deleted:
+            return "✅ Проверка пройдена: бот опубликовал и удалил тестовый пост."
+        return err_text("ERR_MAX_DELETE", "⚠️ Бот опубликовал тестовый пост, но MAX не подтвердил удаление. "
+                        "Удали пост вручную и проверь право бота «Удалять сообщения» в канале.", details, for_staff)
     why = r.text[:200]
     rights = bot_rights(chat_id)
     if r.status_code == 403 or rights is False:
@@ -2602,7 +2543,7 @@ STREAM_FROM = 40 * 1024 * 1024           # файлы больше — груз�
 
 # Без аккаунта Telegram (API) бот не читает файлы и закрытые каналы — t.me их не отдаёт. Этой же фразой
 # объясняем пропуск файла в журнале: пост не исчезает молча, всегда видно точную причину.
-FILE_NEEDS_API = "Не удалось скачать файл: нужен аккаунт Telegram (API) для чтения закрытых каналов"
+FILE_NEEDS_API = "Веб-версия не отдаёт прямую ссылку на файл: нужен аккаунт Telegram (API)"
 
 
 def file_mime(path):
@@ -2694,7 +2635,7 @@ def _lost_attachments(r, chat_id, mid, expected):
     return (got, expected) if got < expected else None
 
 
-def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
+def send_max(chat_id, text, image_paths, video_path=None, file_path=None, *, extra_attachments=()):
     attachments = []
     for p in image_paths:                 # путь к файлу или {"token": ...} (уже загружено в MAX)
         token = p["token"] if isinstance(p, dict) else upload_image(p)
@@ -2707,12 +2648,14 @@ def send_max(chat_id, text, image_paths, video_path=None, file_path=None):
             attachments.append({"type": file_path.get("kind") or "file", "payload": {"token": file_path["token"]}})
         else:
             attachments.append({"type": "file", "payload": {"token": upload_file(file_path)}})
+    attachments.extend(extra_attachments)
     body = {"format": "markdown"}
     if text:
         body["text"] = text
     if attachments:
         body["attachments"] = attachments
-    tries = 100 if video_path or file_path else 8      # видео и файлы MAX обрабатывает дольше (до ~5 минут)
+    slow = video_path or file_path or any(a["type"] in ("video", "file") for a in extra_attachments)
+    tries = 100 if slow else 8      # видео и файлы MAX обрабатывает дольше (до ~5 минут)
     for _ in range(tries):
         try:
             r = S.post(f"{MAX_API}/messages", params={"chat_id": chat_id},
@@ -3014,53 +2957,74 @@ def pin_post(chat, mid):
         print(errors.line("ERR_MAX_PIN", f"закреп: {type(e).__name__}: {e}"))
 
 
-def post_extras(mids):
+CHANNEL_AUTODEL_LOCK = threading.Lock()
+CHANNEL_AUTODEL_RETRY = 600
+
+
+def post_extras(mids, options=None):
     """После публикации: 📌 закрепить пост и/или 🗑 поставить его на автоудаление (бесплатно, во всех тарифах)."""
     mids = [m for m in (mids or []) if m]
     chat = cur().chat_id
     if not mids or not chat:
         return
-    if CFG.get("pin_new"):
+    options = options or {}
+    if options.get("pin", CFG.get("pin_new")):
         in_background(pin_post, chat, mids[0], name="pin")    # из публикации (корутина) — не держим цикл
-    h = int(CFG.get("autodel_h") or 0)
+    h = int(options.get("delete_h", CFG.get("autodel_h")) or 0)
     if h > 0:
-        lst = list(PUB.get("autodel") or [])
-        lst.append({"mids": mids, "at": time.time() + h * 3600})
-        PUB["autodel"] = lst
-        save_pub()
+        with CHANNEL_AUTODEL_LOCK:
+            tasks = list(PUB.get("autodel") or [])
+            tasks.append({"mids": mids, "at": time.time() + h * 3600})
+            PUB["autodel"] = tasks
+            save_pub()
 
 
 def channel_autodel_due(now=None):
-    """🗑 Посты, у которых вышел срок, удаляем из канала (по всем темам)."""
+    """Удаляет посты по таймеру и сохраняет на повтор части, удаление которых MAX ещё не подтвердил."""
     now = now or time.time()
     for t in list(THEMES):
         with theme_ctx(t):
-            lst = list(PUB.get("autodel") or [])
-            due = [x for x in lst if x["at"] <= now]
+            with CHANNEL_AUTODEL_LOCK:
+                due = [x for x in PUB.get("autodel") or [] if x.get("retry_at", x["at"]) <= now]
             if not due:
                 continue
-            for x in due:
-                for m in x["mids"]:
-                    with contextlib.suppress(Exception):
-                        delete_msg(m)
-            PUB["autodel"] = [x for x in lst if x["at"] > now]
-            save_pub()
-            journal(f"🗑 Автоудаление: убрал из канала постов — {len(due)}")
+            removed = 0
+            for task in due:
+                pending = []
+                for mid in task["mids"]:
+                    try:
+                        if delete_msg(mid):
+                            continue
+                    except Exception as e:
+                        print(errors.line("ERR_MAX_DELETE", f"сообщение {mid}: {type(e).__name__}: {e}"))
+                    pending.append(mid)
+                with CHANNEL_AUTODEL_LOCK:
+                    if pending:
+                        task.update(mids=pending, retry_at=now + CHANNEL_AUTODEL_RETRY)
+                    else:
+                        PUB["autodel"].remove(task)
+                        removed += 1
+            with CHANNEL_AUTODEL_LOCK:
+                save_pub()
+            if removed:
+                journal(f"🗑 Автоудаление: убрал из канала постов — {removed}")
 
 
-def record_pub(mid, ch, text, raw=None, buttons=0, mids=None):
+def record_pub(mid, ch, text, raw=None, buttons=0, mids=None, *, options=None):
     """Что вышло в канал: для отчёта за день (просмотры, лучший пост, источники). Храним неделю.
     Полный текст — только у последних 30 (для кнопки «🚫 Реклама» в обучении фильтра)."""
     now = time.time()
     posts = [p for p in PUB.get("day_posts", []) if now - p["t"] < 8 * 86400]
     posts.append({"mid": mid, "t": now, "ch": ch, "text": plain_snip(text, 90),
                   "raw": (raw if raw is not None else text or "")[:1500], "buttons": buttons})
+    if options is not None:
+        posts[-1]["ad_chat"] = options["chat"]
     for p in posts[:-30]:
         p.pop("raw", None)
     PUB["day_posts"] = posts
     save_pub()
     with contextlib.suppress(Exception):
-        post_extras(mids or [mid])
+        post_extras(mids or [mid], options)
 
 
 def ask_ad(item):
@@ -3838,13 +3802,26 @@ def drop_card(ref, chat):
         save_json(CARDS_FILE, CARDS)
 
 
-def delete_msg(mid):
-    if mid:
-        BOT_DELETED.append(str(mid))                   # это удалил сам бот — не «админ удалил спам»
+def _delete_msg_result(mid):
+    if not mid:
+        return False, "Нет номера сообщения."
+    BOT_DELETED.append(str(mid))                   # это удалил сам бот — не «админ удалил спам»
     r = S.delete(f"{MAX_API}/messages", params={"message_id": mid}, headers=HEADERS, timeout=30)
-    if r.status_code != 200:
-        print(errors.line("ERR_MAX_DELETE", f"сообщение {mid}: MAX ответил {r.status_code} {r.text[:100]}"))
-    return r.status_code == 200
+    if r.status_code == 200:
+        try:
+            data = r.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("success") is True:
+            return True, ""
+    details = f"MAX ответил HTTP {r.status_code}: {r.text[:200]}"
+    print(errors.line("ERR_MAX_DELETE", f"сообщение {mid}: {details}"))
+    return False, details
+
+
+def delete_msg(mid):
+    deleted, _ = _delete_msg_result(mid)
+    return deleted
 
 
 def purge_cards():
@@ -4092,6 +4069,8 @@ def drop_source(i):
     gone = CFG["channels"].pop(i)
     LAST_IDS.pop(gone, None)
     cur().saved_ids.pop(gone, None)
+    if PUB.get("web_documents", {}).pop(gone, None):
+        save_pub()
     return gone
 
 
@@ -4251,6 +4230,13 @@ def _screen(name, uid=None):
         if got is not None:
             return got
         name = "main"
+    if name == "adposts":
+        return ad_poster_screen(uid)
+    if name == "copyrules":
+        return "📡 Правила переноса из источников", [
+            [B("🎬 Медиа и размер файлов", "m:vid")],
+            [B("🛡 Фильтр рекламы", "m:fl"), B("🧠 Обработка постов", "m:ai")],
+            [B("◀️ Источники", "m:ch")]]
     if name == "ch":
         chs = CFG["channels"]
         text = "📡 Каналы-источники\n\n" + sources_list(chs, empty="список пуст") \
@@ -4260,7 +4246,7 @@ def _screen(name, uid=None):
         rows = source_rows(chs, lambda i: f"a:chdel:{i}")
         if feature_on("social"):
             text += "\n\n🌐 Можно и соцсети: пришли ссылку на аккаунт TikTok, VK, YouTube, Rutube или сайт с RSS."
-        rows += [[B("➕ Добавить канал", "p:chadd")], back]
+        rows += [[B("➕ Добавить канал", "p:chadd")], [B("⚙️ Правила переноса", "m:copyrules")], back]
     elif name == "vid":
         text = (f"🎬 Видео и GIF: {on_off(CFG['video_on'])}\n"
                 f"Максимальный размер: {media_cap_mb()} МБ\n\n"
@@ -4395,6 +4381,8 @@ def _screen(name, uid=None):
                     [B("30 мин", "a:gapset:30"), B("1 час", "a:gapset:60"), B("2 часа", "a:gapset:120")],
                     [B("🌙 Ночь", "m:nt")],
                     [B("📋 Очередь", "m:ql"), B("⏩ Выложить сейчас", "a:qnow")],
+                    [B("📣 Рекламные публикации", "m:adposts")],
+                    *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
                     [B("Далее ➡️", "m:q:1")], back]
         else:
             rows = [[B("⏰ «Через…» −15", "a:later:-15"), B("+15", "a:later:15")],
@@ -4672,26 +4660,22 @@ def _screen(name, uid=None):
         text, rows = RIGHTS_TEXT, rights_rows(uid)
     elif name == "more" and simple_menu(uid):
         text = ("⚙️ Ещё настройки\n\n"
-                "🎬 Видео — выкладывать ли видео и до какого размера\n"
                 "🔁 Повторы — не выкладывать один и тот же пост дважды\n"
-                "🛡 Фильтр рекламы — слова: строки с ними бот вырезает из постов\n"
                 "✍️ Подпись под постами — текст в конце каждого поста\n"
                 f"👥 Админы — дать управлять ботом ещё кому-то (до {LIMIT_ADMINS})\n"
                 + ("" if HOST_MODE else "🎭 Темы — несколько каналов MAX, у каждого свои источники\n")
                 + "📜 Журнал — что бот сделал с каждым постом\n"
                 + ("" if not show_tg(uid) else "🔑 Telegram — твой аккаунт Telegram: файлы, закрытые каналы, большие видео\n")
-                + "🧠 Умное — умное время, хэштеги, авто-оценка, строгие дубли и реклама\n"
                 + "❓ Команды — быстрые команды через /\n"
                 + "📄 Условия — правила использования бота")
-        rows = [[B("🎬 Видео", "m:vid"), B("🔁 Повторы", "m:dd")],
-                [B("🛡 Фильтр рекламы", "m:fl"), B("👥 Админы", "m:ad")],
+        rows = [[B("📣 Рекламные публикации", "m:adposts")],
+                [B("🔁 Повторы", "m:dd"), B("👥 Админы", "m:ad")],
                 ([] if HOST_MODE else [B("🎭 Темы", "m:th")]) + [B("📜 Журнал", "m:lg")],   # у покупателя — «🎭 Мои каналы»
                 *([[B("🔑 Telegram", "tg:menu")]] if show_tg(uid) else []),
-                [B("🧠 Умное", "m:ai"), B("❓ Команды", "m:hp")],
+                [B("❓ Команды", "m:hp")],
                 [B("✍️ Подпись под постами", "m:sg"), B("⏳ Расписание", "m:q")],
                 [B("✋ Проверка постов", "m:ap")],
                 [B("📖 Инструкция", "m:gd")],
-                *([] if on_free() else [[B("📌 Закреп и автоудаление", "m:pinset")]]),
                 *([[B("📢 Кросс-промо", "m:xp")]] if xp_allowed(uid) else []),
                 [B("▶️ Продолжить" if CFG["paused"] else "⏸ Пауза", "a:pause")],
                 [B("📄 Условия", "m:terms")], back]
@@ -4713,7 +4697,7 @@ def _screen(name, uid=None):
                 [B("⏱ Интервал", "m:iv"), B("👥 Админы", "m:ad")],
                 [B("✋ Одобрение", "m:ap"), B("📈 Отчёт", "m:rp")],
                 [B("📊 Статус", "m:st"), B("🧪 Тест", "m:ts")],
-                [B("❓ Команды", "m:hp")],
+                [B("📣 Рекламные публикации", "m:adposts"), B("❓ Команды", "m:hp")],
                 [B("📌 Закреп и автоудаление", "m:pinset")],
                 *([[B("📢 Кросс-промо", "m:xp")]] if xp_allowed(uid) else []),
                 [B("🎭 Темы", "m:th"), B("📜 Журнал", "m:lg")],
@@ -5439,6 +5423,8 @@ def handle_callback(cb):
         if uid in CODE_EXPORT and cb.get("_chat"):           # 📄 экспорт кодов — файлом в чат хозяина
             send_max(cb["_chat"], "📄 Активные коды — по одному в строке. Не пересылай их покупателям.", [],
                      file_path=CODE_EXPORT.pop(uid))
+    elif kind == "adv":
+        text, rows = ad_poster_callback(rest, uid, cb.get("_chat"))
     elif kind == "ap":
         text, rows = approve(rest, uid, cb.get("_chat"))
     elif kind == "tg" and (NO_TG or (HOST_MODE and not is_host(uid))):   # общий аккаунт Telegram — только у хозяина
@@ -5718,7 +5704,7 @@ def guide_text():
             + ("" if NO_TG else "🔑 Telegram (в «⚙️ Ещё настройки») — подключи свой аккаунт Telegram, чтобы "
                "переносились файлы (PDF и т.п.), большие видео и посты закрытых каналов. Нужны только номер и код.\n")
             + 
-            "⚙️ Ещё настройки — видео, повторы, удаление рекламы, админы, журнал, 📄 условия.\n\n"
+            "⚙️ Ещё настройки — повторы, админы, журнал и рекламные публикации.\n\n"
             "⚖️ Добавляй только свои каналы или те, на копирование которых у тебя есть разрешение владельца. "
             "Перед первым добавлением бот попросит это подтвердить.\n\n"
             "❓ Посты не выходят? Напиши продавцу — контакт ниже.\n"
@@ -5765,7 +5751,7 @@ def client_main(uid=None):
              + ("" if free else
                 "📌 Закреп и автоудаление — закреплять новый пост, удалять старые через N часов\n")
              + ("📊 Аналитика — в какие дни и часы у канала больше просмотров\n" if adv_stats else "")
-             + "⚙️ Ещё настройки — фильтр рекламы, видео, повторы, отчёт, темы\n"
+             + "⚙️ Ещё настройки — рекламные публикации, повторы и журнал\n"
              + ("💳 Продлить доступ — добавить дни подписки\n" if HOST_MODE else "💳 Тариф и оплата — продлить или сменить тариф\n")
              + "⏸ Пауза — остановить выход постов (всё сохранится)\n"
              + ("💬 Написать мне лично — откроет личный чат с продавцом в MAX\n" if me else "") + "\n"
@@ -6325,6 +6311,9 @@ def handle_message(uid, chat_id, name, text, msg=None):
             ref_input(uid, chat_id, msg, t)
         else:
             PENDING.pop(uid, None)
+        return
+    if action and action.startswith("adposter:"):
+        ad_poster_input(uid, chat_id, action, content, atts)
         return
     if action in ("xpost", "xpiv"):                        # 📢 кросс-промо: рекламный пост или интервал
         PENDING.pop(uid, None)
@@ -7330,13 +7319,16 @@ async def download_doc(client, ch, d):
             elif not getattr(msg, "document", None):
                 err = "в посте нет файла"
                 break
-            elif have_whole(dest, getattr(msg.document, "size", 0)):
-                return dest, None
             else:
+                expected_size = getattr(msg.document, "size", 0) or d.get("size", 0)
+                if have_whole(dest, expected_size):
+                    return dest, None
                 path = await tg_fetch(msg, dest, ch, f"[{ch}] файл {d['name']}")
-                if path and os.path.exists(path) and os.path.getsize(path) > 0:
+                received = os.path.getsize(path) if path and os.path.isfile(path) else 0
+                if received and (not expected_size or received == expected_size):
                     return path, None
-                err = "Telegram отдал пустой файл"
+                err = (f"Telegram отдал неполный файл ({received} из {expected_size} байт)"
+                       if received else "Telegram отдал пустой файл")
         except WebMediaUnavailable as e:
             err = str(e)
             break
@@ -7499,6 +7491,8 @@ async def _publish_item(client, chat_id, it):
             it.setdefault("mids", []).append(mid)      # все части поста — чтобы автоудаление убрало его целиком
         return mid
     try:
+        if it.get("ad_post"):
+            return await publish_ad_post(chat_id, it)
         if it.get("sent") and isinstance(it.get("final"), str):
             full = it["final"]                         # часть поста уже вышла — продолжаем ТЕМ ЖЕ текстом
         else:
@@ -7647,15 +7641,17 @@ async def publish_due(client, chat_id):
     # 1) посты с кнопок «Сейчас» / «Через …»: выходят в своё время, без паузы и ночного режима.
     #    Просрочились больше чем на 10 минут (бот был выключен или обновлялся) — в обычную очередь по одному.
     for x in ready:
-        if x.get("manual") and x.get("at") and now - x["at"] > MISSED_SEC:
+        if x.get("manual") and not x.get("ad_post") and x.get("at") and now - x["at"] > MISSED_SEC:
             x["manual"] = False
-    for x in sorted([x for x in ready if x.get("manual")], key=lambda x: (x.get("at", 0), x["date"])):
+    for x in sorted((x for x in ready if x.get("manual")), key=lambda x: (x.get("at", 0), x["date"])):
         res = await publish_item(client, chat_id, x)
         if res == "retry":
             break
         if res == "ok":
             mark_published(x)
-    ready = [x for x in ready if x in QUEUE and not x.get("manual")]
+    # Пока отправлялись ручные посты, очередь могла измениться.
+    remaining = {id(x) for x in QUEUE}
+    ready = [x for x in ready if not x.get("manual") and id(x) in remaining]
 
     if in_night() and not force:
         return                                       # ночью ничего не выходит
@@ -7866,6 +7862,8 @@ async def process_channel(client, ch, fails):
     fresh, t0 = [], time.perf_counter()
     try:
         await _process_channel(client, ch, fails, fresh)
+        if not is_web_client(client) and not on_free() and ch in LAST_IDS and not CFG["paused"]:
+            await recover_web_document(client, ch, fails, fresh)
     finally:
         perf_add("tg", "чтение канала Telegram", time.perf_counter() - t0)
         if SPAM_STATE["log_dirty"]:                     # «съеденное» за это чтение — на диск одним разом
@@ -7874,17 +7872,45 @@ async def process_channel(client, ch, fails):
             await asyncio.to_thread(send_previews, fresh)
 
 
-async def _process_channel(client, ch, fails, fresh):
-    """Читает новые посты канала, чистит и ставит в очередь на публикацию."""
+async def recover_web_document(client, ch, fails, fresh):
+    """Повтор одного поста с файлом после подключения аккаунта. Храним только номера сообщений."""
+    waiting = PUB.get("web_documents", {}).get(ch)
+    if not waiting or spam_muted(ch):
+        return
+    cutoff = time.time() - CFG["max_age_h"] * 3600
+    old = [key for key, ref in waiting.items() if ref["at"] < cutoff]
+    for key in old:
+        del waiting[key]
+    entry = next(((key, ref["ids"]) for key, ref in waiting.items() if ref["ids"][-1] <= LAST_IDS[ch]), None)
+    if entry:
+        key, ids = entry
+        saved_id = f"{cur().prefix}{ch}:{ids[0]}"
+        known = any(it["id"] == saved_id for it in (*QUEUE, *ADHELD))
+        msgs = [] if known else [await client.get_messages(ch, ids=mid) for mid in ids]
+        async with cur().lock or asyncio.Lock():
+            if not known and not all(msgs):
+                journal(f"[{ch}] пост {ids[0]} недоступен после входа в Telegram", code="ERR_TG_DOWNLOAD")
+            if known or not all(msgs) or await _process_channel(client, ch, fails, fresh, replay=msgs):
+                waiting.pop(key, None)
+                await asyncio.to_thread(save_pub)
+                return
+    if old:
+        await asyncio.to_thread(save_pub)
+
+
+async def _process_channel(client, ch, fails, fresh, replay=None):
+    """Читает новые посты либо повторяет отложенный пост, чистит и ставит в очередь."""
     t = cur()
     history = t.history
-    if spam_muted(ch):                                 # 🗑 канал флудит спамом — час его не читаем
+    if spam_muted(ch):
         return
-    msgs = await client.get_messages(ch, min_id=LAST_IDS[ch], limit=30)
-    msgs = sorted(msgs, key=lambda m: m.id)
-    rkey = (t.id, ch.lower())
-    idle = time.time() - READ_OK.get(rkey, 0) > BACKLOG_GAP   # первое чтение после запуска или долгий простой
-    READ_OK[rkey] = time.time()
+    if replay is None:
+        msgs = sorted(await client.get_messages(ch, min_id=LAST_IDS[ch], limit=30), key=lambda m: m.id)
+        rkey = (t.id, ch.lower())
+        idle = time.time() - READ_OK.get(rkey, 0) > BACKLOG_GAP
+        READ_OK[rkey] = time.time()
+    else:
+        msgs, idle = replay, False
     if len(msgs) >= 30 and msgs[0].grouped_id:         # самый старый альбом обрезан лимитом — без начала
         gid = msgs[0].grouped_id                       # (а текст на первом фото) его не публикуем калекой
         msgs = [m for m in msgs if m.grouped_id != gid]
@@ -7922,7 +7948,7 @@ async def _process_channel(client, ch, fails, fresh):
             return
         grp = groups[key]
         skey = (t.id, ch, key)
-        if now_m - SEEN[skey][0] < FRESH_SEC:
+        if replay is None and now_m - SEEN[skey][0] < FRESH_SEC:
             RECHECK.add(ch.lower())       # ещё «устаканивается» — перечитаем через пару секунд
             return
         last = grp[-1].id
@@ -7932,7 +7958,7 @@ async def _process_channel(client, ch, fails, fresh):
             if sp[0]:                                  # 🗑 спам: съедаем сразу — без фото, без очереди и без ИИ
                 muted = await asyncio.to_thread(eat_spam, ch, grp[0].id, sp[1], sp[2])
                 SEEN.pop(skey, None)
-                if ch in LAST_IDS:
+                if replay is None and ch in LAST_IDS:
                     LAST_IDS[ch] = max(LAST_IDS[ch], last)
                     await save_last_ids_async()
                 if muted:
@@ -7969,7 +7995,7 @@ async def _process_channel(client, ch, fails, fresh):
                         vids.append((m, vi))
                         hashes.append(f"v{vi[0]}-{vi[1]}")
             # файлы (PDF, архивы, музыка, голосовые): качаем при публикации.
-            # Строгое правило: файл больше лимита или без входа в Telegram не скачать — пост пропускается целиком.
+            # Файл без прямой ссылки ждёт аккаунта Telegram. Слишком большие файлы пропускаются.
             docs, skip, skip_code = [], None, None
             for m in media:
                 di = doc_info(m)
@@ -7993,7 +8019,14 @@ async def _process_channel(client, ch, fails, fresh):
             has_media = bool(img_paths or vids or docs)
             dup = (await asyncio.to_thread(find_duplicate, entry, list(history))   # сравнение с историей —
                    if CFG["dedupe_on"] else None)                                  # не в цикле: тяжёлое для CPU
-            if skip:                                     # пост пропущен целиком: в журнале причина и код, молча
+            if skip_code == "ERR_TG_API_NEEDED":
+                waiting = PUB.setdefault("web_documents", {}).setdefault(ch, {})
+                waiting[str(grp[0].id)] = {"ids": [m.id for m in grp], "at": time.time()}
+                while len(waiting) > 30:
+                    waiting.pop(next(iter(waiting)))
+                await asyncio.to_thread(save_pub)
+                journal(f"[{ch}] пост {last} отложен до входа в Telegram: {skip}", code=skip_code)
+            elif skip:
                 journal(f"[{ch}] пост {last}: {skip if skip.startswith('Skipped') else 'Skipped: ' + skip}",
                         code=skip_code)
             elif not body and not has_media:
@@ -8071,9 +8104,10 @@ async def _process_channel(client, ch, fails, fresh):
                     if p and os.path.exists(p):
                         os.remove(p)
         SEEN.pop(skey, None)
-        if ch in LAST_IDS:
+        if replay is None and ch in LAST_IDS:
             LAST_IDS[ch] = max(LAST_IDS[ch], last)
             await save_last_ids_async()
+    return True
 
 
 DOWN_REMIND = 86400            # «не открывается» про один источник — не чаще раза в сутки, и после перезапуска тоже
@@ -8250,9 +8284,10 @@ async def auth_dead(client, e):
     box.cur = WebClient()
     with contextlib.suppress(Exception):
         await dead.disconnect()
-    for f in ("session.session", "session.session-journal"):
-        with contextlib.suppress(OSError):
-            os.remove(f)
+    if not uses_string_session(dead):
+        for f in ("session.session", "session.session-journal"):
+            with contextlib.suppress(OSError):
+                os.remove(f)
     name = type(e).__name__
     why = ("Telegram заблокировал аккаунт" if "Ban" in name or "Deactivated" in name else
            "Telegram завершил вход бота (сеанс завершили в «Устройствах» или Telegram отозвал его сам)")
@@ -8302,7 +8337,6 @@ import html as _html
 from datetime import datetime as _dt
 from datetime import timezone as _tz
 
-WEB_FLAG = "web_mode.flag"             # есть этот файл — бот работает без входа в Telegram
 WEB_UA = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Chrome/120.0 Mobile Safari/537.36", "Accept-Language": "ru,en;q=0.8"}
 
@@ -8534,7 +8568,7 @@ BETA_FEATURES = {   # ключ: (название, что делает, где �
            "меню → «⚙️ Ещё настройки» → «🧠 Умное» → «🪄 ИИ-редактор»"),
     "trends": ("🔥 Тренды",
                "Бот сам следит за новостями по теме канала покупателя и присылает сигнал, только когда случилось "
-               "что-то вирусное: что произошло и почему стоит выложить прямо сейчас. Тратит твои ключи ИИ, поэтому "
+               "что-то вирусное: готовый текст поста и ссылки на источники. Тратит твои ключи ИИ, поэтому "
                "всем сама не включается — включай нужным покупателям.",
                "меню → «📊 Статистика и Отчеты» → «📊 Статистика просмотров» → «🔥 Тренды» или команда /trends"),
     "mytariff": ("🧩 Свой тариф",
@@ -11591,6 +11625,14 @@ def is_web_client(client):
     return isinstance(getattr(client, "cur", client), WebClient)
 
 
+def uses_string_session(client):
+    session = getattr(client, "session", None)
+    if session is None or isinstance(session, str):
+        return False
+    from telethon.sessions import StringSession
+    return isinstance(session, StringSession)
+
+
 def mask_phone(p):
     p = str(p or "")
     return p[:2] + "•" * max(0, len(p) - 6) + p[-4:] if len(p) > 6 else p
@@ -12068,6 +12110,7 @@ async def tg_logout():
     box = TG_CLIENT
     cur = getattr(box, "cur", box)
     shared = SHARED["on"]
+    local_session = not uses_string_session(cur)
     if cur is not None and not is_web_client(cur) and not shared:
         with contextlib.suppress(Exception):
             await cur.log_out()
@@ -12076,7 +12119,7 @@ async def tg_logout():
             await cur.disconnect()
     if shared:
         open(NO_SHARED_FLAG, "w").close()
-    else:
+    elif local_session:
         for f in ("session.session", "session.session-journal"):
             with contextlib.suppress(OSError):
                 os.remove(f)
@@ -12552,7 +12595,8 @@ def ad_broadcast(d):
 # постов из источников: не занимает её мест (очередь, пауза между постами и счётчики темы не меняются), не ждёт её и не
 # зависит от того, пуста ли она и на паузе ли бот. Каналы — ТОЛЬКО своего кабинета: чужие не показываем, кнопку с чужой
 # темой отклоняем, и при выкладке ещё раз сверяем владельца (ID в кнопке — не пропуск).
-from reloader.services import xpromo  # noqa: E402
+from reloader.services import ad_poster, xpromo  # noqa: E402
+from reloader.services.ad_poster import ad_poster_attachments, ad_poster_editor, ad_poster_text  # noqa: E402
 
 XP_FILE = "xpromo.json"
 XP = xpromo.Campaigns(XP_FILE, save=lambda path, data: save_json(path, data, private=True, backup=True),
@@ -12627,7 +12671,7 @@ def xp_title(c):
     return (cut if len(cut) >= 20 else line[:45]).rstrip(" ,.:;—-") + "…"
 
 
-def xp_media(atts):
+def xp_media(atts, *, label="Кросс-промо"):
     """Фото и видео из сообщения -> [{"kind", "token"}] (MAX разрешает слать вложение повторно по токену). Токена
     нет — скачиваем и загружаем в MAX сами. Файлы, музыку и голосовые не берём. Сбой — исключение."""
     out = []
@@ -12639,7 +12683,7 @@ def xp_media(atts):
             os.makedirs(MEDIA_DIR, exist_ok=True)
             path = fetch_file(a["url"], f"{MEDIA_DIR}/xp_{secrets.token_hex(4)}", ".jpg" if a["kind"] == "image" else ".mp4")
             try:
-                tok = upload_retry(a["kind"], path, f"Кросс-промо: {'фото' if a['kind'] == 'image' else 'видео'}")
+                tok = upload_retry(a["kind"], path, f"{label}: {'фото' if a['kind'] == 'image' else 'видео'}")
             finally:
                 with contextlib.suppress(OSError):
                     os.remove(path)
@@ -12647,6 +12691,179 @@ def xp_media(atts):
             raise ValueError("у вложения нет токена MAX")
         out.append({"kind": a["kind"], "token": tok})
     return out[:xpromo.MAX_MEDIA]
+
+
+# ---------- РЕКЛАМНЫЕ ПУБЛИКАЦИИ В СВОЙ КАНАЛ MAX ----------
+AD_POST_DRAFTS = {}
+
+
+def ad_poster_theme(uid, tid=None):
+    t = theme_by_id(tid) if tid is not None else cur()
+    return t if is_admin(uid) and t in my_themes(uid) and theme_live(t) else None
+
+
+def ad_poster_screen(uid):
+    back = [B("◀️ Расписание", "m:q")]
+    t = ad_poster_theme(uid)
+    if t is None or not t.chat_id:
+        return "📣 Рекламные публикации\n\nВыбери свою тему с подключённым каналом MAX.", [
+            [B("🎭 Мои каналы", "m:th")], back]
+    with theme_ctx(t):
+        queued = sum(bool(it.get("ad_post")) for it in QUEUE)
+    rows = [[B("➕ Новый рекламный пост", "adv:new")]]
+    d = AD_POST_DRAFTS.get(uid)
+    if d and d["theme"] == t.id and d["chat"] == t.chat_id:
+        rows.append([B("✏️ Продолжить черновик", f"adv:edit:{d['ref']}")])
+    rows += [[B("📊 Просмотры рекламы", "adv:stats"), B("📋 Очередь", "m:ql")], back]
+    return f"📣 Рекламные публикации · {t.name}\n\nВ очереди: {queued}", rows
+
+
+def ad_poster_context(uid, dialog, ref):
+    draft = AD_POST_DRAFTS.get(uid)
+    if draft and draft["ref"] == ref and same_uid(draft["dialog"], dialog):
+        theme = ad_poster_theme(uid, draft["theme"])
+        if theme is not None and theme.chat_id == draft["chat"]:
+            return draft, theme
+    return None, None
+
+
+def ad_poster_callback(rest, uid, dialog):
+    action, _, ref = rest.partition(":")
+    if not dialog:
+        return ad_poster_screen(uid)
+    if action in ("new", "stats"):
+        t = ad_poster_theme(uid)
+        if t is None or not t.chat_id:
+            return ad_poster_screen(uid)
+        if action == "stats":
+            in_background(ad_poster_report, t, dialog, name="ad-poster-views")
+            return ad_poster_screen(uid)
+        d = AD_POST_DRAFTS[uid] = {"ref": secrets.token_hex(5), "theme": t.id, "chat": t.chat_id,
+                                  "name": t.name, "dialog": dialog, "text": "", "media": [],
+                                  "link": None, "at": 0, "pin": False, "delete_h": 0}
+        action, ref = "text", d["ref"]
+    d, t = ad_poster_context(uid, dialog, ref)
+    if d is None:
+        return ad_poster_screen(uid)
+    PENDING.pop(uid, None)
+    prompt = ad_poster.prompt(action)
+    if prompt:
+        PENDING[uid] = f"adposter:{action}:{ref}"
+        return ad_poster_editor(d, prompt)
+    if action == "discard":
+        AD_POST_DRAFTS.pop(uid, None)
+        return ad_poster_screen(uid)
+    if action == "pin":
+        d["pin"] = not d["pin"]
+    elif action == "nomedia":
+        d["media"] = []
+    elif action in ("preview", "save") and (d["text"] or d["media"]):
+        if action == "preview":
+            mid = send_max(dialog, ad_poster_text(d["text"]), [], extra_attachments=ad_poster_attachments(d))
+            if not mid:
+                return ad_poster_editor(d, "MAX не подтвердил предпросмотр. Черновик сохранён.")
+        else:
+            now = time.time()
+            if d["at"] and d["at"] <= now:
+                return ad_poster_editor(d, "Выбранное время уже прошло. Укажи новое или выбери «на сейчас».")
+            ad = {k: d[k] for k in ("chat", "media", "link", "pin", "delete_h")}
+            ad["owner"] = t.owner
+            item = {"id": f"{t.prefix}ad:{ref}", "ch": "реклама", "date": now, "enq": now,
+                    "text": d["text"], "status": "ok", "manual": True, "at": d["at"] or now, "ad_post": ad}
+            if not pool_run(queue_ad_post(t, item)):
+                return ad_poster_editor(d, "Очередь заполнена. Черновик сохранён.")
+            AD_POST_DRAFTS.pop(uid, None)
+            text, rows = ad_poster_screen(uid)
+            return "✅ Пост добавлен в очередь.\n\n" + text, rows
+    return ad_poster_editor(d)
+
+
+async def queue_ad_post(t, item):
+    async with t.lock or asyncio.Lock():
+        with theme_ctx(t):
+            if any(it["id"] == item["id"] for it in QUEUE):
+                return True
+            if len(QUEUE) >= 100:
+                return False
+            QUEUE.append(item)
+            try:
+                await asyncio.to_thread(save_queue)
+            except Exception:
+                QUEUE.remove(item)
+                raise
+            return True
+
+
+def ad_poster_input(uid, dialog, action, text, atts):
+    step, _, ref = action.removeprefix("adposter:").partition(":")
+    d, _ = ad_poster_context(uid, dialog, ref)
+    if d is None:
+        PENDING.pop(uid, None)
+        send_screen(dialog, *ad_poster_screen(uid))
+        return
+    text, note = (text or "").strip(), ""
+    if step == "text":
+        if len(ad_poster_text(text)) > MAX_TEXT:
+            note = f"Текст длиннее {MAX_TEXT} символов вместе с пометкой «Реклама»."
+        elif len(atts) > ad_poster.MEDIA_LIMIT or any(a["kind"] not in xpromo.KINDS for a in atts):
+            note = f"Пришли до {ad_poster.MEDIA_LIMIT} фото или видео."
+        else:
+            try:
+                media = xp_media(atts, label="Рекламный пост") if atts else d["media"]
+            except Exception as e:
+                journal(f"Рекламный пост: не получилось подготовить медиа ({why(e)})", code="ERR_MAX_UPLOAD")
+                note = "Медиа не загрузилось. Пришли его ещё раз."
+            else:
+                d["media"] = media
+                if text:
+                    d["text"] = "" if text == "-" else text
+    else:
+        note = ad_poster.update_setting(d, step, text)
+    if not note:
+        PENDING.pop(uid, None)
+    send_screen(dialog, *ad_poster_editor(d, note))
+
+
+def ad_poster_report(t, dialog):
+    with theme_ctx(t):
+        posts = [p for p in PUB.get("day_posts", []) if p.get("ad_chat") == t.chat_id and p.get("mid")][-10:]
+    views = fetch_views(t.chat_id, [p["mid"] for p in posts]) if posts else {}
+    lines = [f"📊 Просмотры рекламы · {t.name}"]
+    for p in reversed(posts):
+        stamp = time.strftime("%d.%m %H:%M", time.localtime(p["t"]))
+        lines.append(f"{stamp} · {p['text'] or 'Пост с медиа'} · {views.get(p['mid'], 'нет данных')}")
+    if not posts:
+        lines.append("Опубликованных рекламных постов пока нет.")
+    api_send(dialog, "\n\n".join(lines), [[B("◀️ Рекламные публикации", "m:adposts")]])
+
+
+async def publish_ad_post(chat_id, it):
+    ad = it["ad_post"]
+    if ad["chat"] != chat_id or ad["chat"] != cur().chat_id or ad["owner"] != cur().owner:
+        return skip_post(it, "канал рекламного поста перепривязан", "ERR_MAX_NOT_BOUND")
+    if not it.get("mid0"):
+        if ad.get("sending"):
+            return skip_post(it, "исход отправки рекламы неизвестен, проверь канал", "ERR_MAX_NET")
+        ad["sending"] = True
+        save_queue()
+        try:
+            mid = await asyncio.to_thread(send_max, chat_id, ad_poster_text(it["text"]), [],
+                                          extra_attachments=ad_poster_attachments(ad))
+        except Exception:
+            ad.pop("sending", None)
+            save_queue()
+            raise
+        if not mid:
+            return skip_post(it, "MAX не подтвердил отправку рекламы, проверь канал", "ERR_MAX_NET")
+        it["mid0"] = str(mid)
+        save_queue()
+    mid = it["mid0"]
+    if not any(p.get("mid") == mid for p in PUB.get("day_posts", [])):
+        record_pub(mid, it["ch"], it["text"], options=ad)
+        bump("published")
+        journal(f"📣 Опубликован рекламный пост {it['id']}")
+    note_allowed(chat_id)
+    return "ok"
 
 
 def xp_iv_rows():
@@ -14585,6 +14802,7 @@ def start_client(cid):
     write_subscription(cid)
     env = dict(os.environ)
     for k in ("MAX_TOKEN", "MAX_CHANNEL_LINK", "MAX_CHAT_ID", "ADMIN_CODE", "TG_API_ID", "TG_API_HASH", "TG_PHONE",
+              "SESSION_STRING",
               "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY", "OWNER_ID", "TGMAX_HOST", "HOST_CODE"):   # бот клиента — не host-бот
         env.pop(k, None)
     env.update(BOT_TOKEN=c["token"], TG_MAX_DIR=d, TG_MAX_NO_SEARCH="1", TGMAX_CLIENT="1",
@@ -16272,16 +16490,46 @@ def run_diag():
             + f"\n\nВерсия бота: {BOT_VERSION}")
 
 
+async def startup_telegram(use_file, keep_for_login=False):
+    """Проверяет строковую сессию, затем локальную. None означает сбой проверки, False — входа нет."""
+    exported = configured_string_session()
+    if exported:
+        from telethon.sessions import StringSession
+        keys = (API_ID, API_HASH) if field_ok("api_id", API_ID) and field_ok("api_hash", API_HASH) else builtin_keys()
+        if keys:
+            try:
+                client, authorized = await connect_account(tg_client(StringSession(exported), int(keys[0]), keys[1]))
+                if authorized:
+                    return client, True
+            except Exception as e:
+                print(errors.line("ERR_TG_SESSION", f"Не удалось проверить SESSION_STRING ({type(e).__name__})"))
+            else:
+                print(errors.line("ERR_TG_SESSION", "Telegram не подтвердил вход через SESSION_STRING"))
+        else:
+            print(errors.line("ERR_CONFIG", "Для SESSION_STRING нужны ключи Telegram"))
+
+    if not use_file:
+        return WebClient(), False
+    try:
+        client, authorized = await connect_account(tg_client("session", API_ID, API_HASH),
+                                                   keep_for_login=keep_for_login)
+    except Exception as e:
+        print(errors.line("ERR_TG_DOWN", f"Telegram: не удалось проверить локальный вход: {type(e).__name__}: {e}"))
+        return WebClient(), None
+    return (client if client is not None else WebClient()), authorized
+
+
 async def check_cli():
     """python tg_to_max.py --check: проверка без запуска бота."""
-    use_web = not TG_READY or os.path.exists(WEB_FLAG) or not os.path.exists("session.session")
-    client = WebClient() if use_web else tg_client("session", API_ID, API_HASH)
+    use_file = TG_READY and not os.path.exists(WEB_FLAG) and os.path.exists("session.session")
+    client, _ = await startup_telegram(use_file)
     try:
-        await client.connect()
-    except Exception as e:
-        print(errors.line("ERR_TG_DOWN", f"Telegram: не удалось подключиться: {type(e).__name__}: {e}"))
-    out = [telethon_version_note()] + await asyncio.to_thread(diag_max) + await diag_telegram(client)
-    print("\n".join(("✅ " if ok else "❌ ") + t for ok, t in out))
+        out = [telethon_version_note()] + await asyncio.to_thread(diag_max) + await diag_telegram(client)
+        print("\n".join(("✅ " if ok else "❌ ") + t for ok, t in out))
+    finally:
+        if not is_web_client(client):
+            with contextlib.suppress(Exception):
+                await client.disconnect()
 
 
 async def main():
@@ -16296,36 +16544,29 @@ async def main():
         await asyncio.to_thread(locked_loop)
         return
     from telethon import events
-    ok = False
-    client = WebClient()
-    if TG_READY:
-        client = tg_client("session", API_ID, API_HASH)
-        try:
-            await client.connect()
-            ok = await client.is_user_authorized()
-        except Exception as e:
-            print(errors.line("ERR_TG_DOWN", f"Telegram: не удалось подключиться: {type(e).__name__}: {e}"))
+    use_file = TG_READY and (LOGIN or not os.path.exists(WEB_FLAG))
+    client, ok = await startup_telegram(use_file, keep_for_login=LOGIN and not CLIENT_MODE)
+    if LOGIN and not is_web_client(client):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(WEB_FLAG)
     if not ok and CLIENT_MODE:
         sc = await shared_client()
         if sc is not None:
             client, ok = sc, True
     if not ok:
-        if LOGIN:
-            if os.path.exists(WEB_FLAG):
-                os.remove(WEB_FLAG)
-            client = await telegram_login(client)
-            if not isinstance(client, WebClient) and os.path.exists(WEB_FLAG):
-                os.remove(WEB_FLAG)
+        if LOGIN and not is_web_client(client):
+            account = client
+            client = await telegram_login(account)
+            if is_web_client(client):
+                with contextlib.suppress(Exception):
+                    await account.disconnect()
         else:
-            if TG_READY and os.path.exists("session.session") and not CLIENT_MODE:   # вход был, но Telegram его отозвал
-                with contextlib.suppress(OSError):
-                    os.remove("session.session")
-                await asyncio.to_thread(owner_alert, "🔑 Вход в Telegram больше не действует (Telegram завершил сеанс, "
-                                        "пока бот был выключен). Читаю открытые каналы через t.me.\n\n"
-                                        "Вернуть: 🔑 Telegram → «Подключить аккаунт».")
+            if ok is False and use_file and not CLIENT_MODE and os.path.exists("session.session"):
+                await asyncio.to_thread(owner_alert_err, "ERR_TG_SESSION", "🔑 Telegram не подтвердил вход. "
+                                        "Сохранил файл сессии и читаю открытые каналы через t.me. "
+                                        "При необходимости подключи аккаунт через меню «🔑 Telegram».")
             print("Режим без входа в Telegram: читаю публичные каналы через t.me.")
             print("Подключить аккаунт Telegram: в MAX меню бота → «🔑 Telegram» (или запусти login.py).")
-            client = WebClient()
     print("Telegram: читаю каналы без входа (t.me)" if isinstance(client, WebClient) else "Telegram: вход выполнен")
     client = ClientBox(client)
     TG_CLIENT, MAIN_LOOP = client, asyncio.get_running_loop()
