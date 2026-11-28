@@ -42,7 +42,6 @@ tele = types.ModuleType("telethon"); tele.TelegramClient = FakeTG; tele.errors =
 tele.events = types.SimpleNamespace(NewMessage=lambda *a, **k: None)
 sys.modules["telethon"] = tele; sys.modules["telethon.errors"] = E
 os.chdir(tempfile.mkdtemp())
-os.environ["TGMAX_NO_DESKTOP_KEYS"] = "1"          # старый путь — со своими ключами; ключи Desktop — тест g13
 tio.wjson({"max_token": "T", "max_channel_link": "https://max.ru/x"}, "config.json", "w")
 spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
@@ -311,28 +310,13 @@ assert "Шаг 1 из 2" in text and "номер" in text and bot.TG_LOGIN["api_
 press("tg:cancel")
 for k in ("TGMAX_API_ID", "TGMAX_API_HASH"):
     os.environ.pop(k)
-# 13) без my.telegram.org: ключи Telegram Desktop встроены — вход только номером и кодом, клиент «как Desktop»
-os.environ.pop("TGMAX_NO_DESKTOP_KEYS")
-KW = []
-class DeskTG(FakeTG):
-    def __init__(self, session, api_id, api_hash, **kw):
-        KW.append((api_id, kw)); super().__init__(session, api_id, api_hash)
-    async def send_code_request(self, phone):
-        return types.SimpleNamespace(type=SentCodeTypeApp())
-bot.TelegramClient = DeskTG
-bot.TG_LOGIN.clear(); bot.PENDING.clear()
+# 13) на новом хосте бот не подставляет встроенные ключи.
+bot.API_ID, bot.API_HASH = 0, ""
 text, rows = press("tg:menu")
-assert "Сайты и ключи не нужны" in text and "tg:own" in buttons(rows), text
-text, rows = press("tg:start")
-assert "Шаг 1 из 2" in text and bot.TG_LOGIN["api_id"] == 2040, text
-text, rows = say("+79990001122")
-assert "Шаг 2 из 2" in text, text
-assert KW[-1][0] == 2040 and KW[-1][1].get("system_version") == "Windows 10", KW[-1]
+assert "my.telegram.org" in text, text
+assert bot.builtin_keys() is None
 press("tg:cancel")
-text, rows = press("tg:own")
-assert "Шаг 1 из 4" in text and "api_id" in text, text
-press("tg:cancel")
-print("g13 ok: без my.telegram.org — встроенные ключи Telegram Desktop, только номер и код; свои ключи — по кнопке")
+print("g13 ok: без ключей в окружении запрашивает свои ключи")
 
 # 14) бот покупателя читает каналы через бота продавца (вход только у продавца — Telegram не рвёт связь)
 class Doc:

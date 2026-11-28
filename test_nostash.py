@@ -276,9 +276,9 @@ def n7():
 
 @check
 def n9():
-    """в коде бота, пакете reloader и инструкциях (README, SERVER) — ни строчки о тайнике"""
+    """в коде бота, пакете bot_app и инструкциях (README, SERVER) — ни строчки о тайнике"""
     files = [os.path.join(ROOT, "tg_to_max.py"), os.path.join(ROOT, "README.txt"), os.path.join(ROOT, "SERVER.txt")]
-    files += glob.glob(os.path.join(ROOT, "reloader", "**", "*.py"), recursive=True)
+    files += glob.glob(os.path.join(ROOT, "bot_app", "**", "*.py"), recursive=True)
     left = [(os.path.relpath(f, ROOT), i + 1, line.strip()[:90]) for f in files
             for i, line in enumerate(tio.rfile(f, encoding="utf-8").splitlines()) if WORDS.search(line)]
     assert not left, (len(left), left[:8])

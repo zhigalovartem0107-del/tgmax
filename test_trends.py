@@ -15,13 +15,13 @@ import types
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 from fake_max import FakeMax  # noqa: E402
-from reloader.core.files import load_json_safe, save_json  # noqa: E402
-from reloader.services.trends import alerts as AL  # noqa: E402
-from reloader.services.trends import keywords as KW  # noqa: E402
-from reloader.services.trends import search as SE  # noqa: E402
-from reloader.services.trends import store as ST  # noqa: E402
-from reloader.services.trends import text as TX  # noqa: E402
-from reloader.services.trends import worker as WK  # noqa: E402
+from bot_app.core.files import load_json_safe, save_json  # noqa: E402
+from bot_app.services.trends import alerts as AL  # noqa: E402
+from bot_app.services.trends import keywords as KW  # noqa: E402
+from bot_app.services.trends import search as SE  # noqa: E402
+from bot_app.services.trends import store as ST  # noqa: E402
+from bot_app.services.trends import text as TX  # noqa: E402
+from bot_app.services.trends import worker as WK  # noqa: E402
 
 NOW = time.mktime((2026, 11, 7, 20, 0, 0, 0, 0, -1))
 H = 3600

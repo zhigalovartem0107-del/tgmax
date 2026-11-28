@@ -1,6 +1,6 @@
 """🧾 Коды ошибок: у каждой ошибки, предупреждения и критического сбоя — свой код (ERR_…) и понятное описание.
 
-1) Реестр reloader/core/errors.py: уникальные коды, уровень, описание и что делать; коды из задачи — с теми же
+1) Реестр bot_app/core/errors.py: уникальные коды, уровень, описание и что делать; коды из задачи — с теми же
    описаниями; неизвестный код бота не роняет; исключения сами получают код (classify).
 2) Журналы: каждая пойманная ошибка пишется с кодом — «[ERR_AI_429] Лимиты ИИ исчерпаны …» — в bot.log, в консоль
    и (для хозяина) в «📜 Журнал»; ни одного предупреждения или сбоя без кода (проверка исходников).
@@ -33,7 +33,7 @@ sys.path.insert(0, ROOT)
 from fake_max import FakeMax  # noqa: E402
 
 try:
-    from reloader.core import errors as E
+    from bot_app.core import errors as E
 except ImportError:                                     # модуля ещё нет — проверки скажут, чего не хватает
     E = None
 
@@ -66,14 +66,14 @@ REQUIRED = {
     "ERR_LICENSE_MISSING": "Не задан BOT_SECRET (Защита от копирования)",
 }
 SOURCES = [os.path.join(ROOT, "tg_to_max.py"), os.path.join(ROOT, "main.py")] + sorted(
-    p for p in glob.glob(os.path.join(ROOT, "reloader", "**", "*.py"), recursive=True) if "__pycache__" not in p)
+    p for p in glob.glob(os.path.join(ROOT, "bot_app", "**", "*.py"), recursive=True) if "__pycache__" not in p)
 
 
 @check
 def e1():
     """реестр: коды из задачи — с теми же описаниями; каждый код уникален, вида ERR_…, у каждого уровень (critical /
     error / warning), раздел, описание и «что делать» — по-русски; кодов хватает на все ошибки бота"""
-    assert E is not None, "нет модуля reloader.core.errors"
+    assert E is not None, "нет модуля bot_app.core.errors"
     for code, text in REQUIRED.items():
         assert code in E.ERRORS and E.ERRORS[code].text == text, (code, E.ERRORS.get(code))
     assert len(E.REGISTRY) == len(E.ERRORS) >= 40, ("повтор кода в реестре или кодов мало", len(E.REGISTRY))
@@ -137,8 +137,8 @@ def e3():
     ERR_AI_TIMEOUT, ключ не принят — ERR_AI_KEY, ключей нет — ERR_AI_NO_KEYS, иное — ERR_AI_FAIL (по настоящему
     пересказу через ротацию ключей)"""
     import requests
-    from reloader.services.ai.keys import KeyRotator
-    from reloader.services.ai.rewrite import AiUnavailable, rewrite
+    from bot_app.services.ai.keys import KeyRotator
+    from bot_app.services.ai.rewrite import AiUnavailable, rewrite
     assert E.classify(E.CodedError("ERR_YK_401", "HTTP 401")) == "ERR_YK_401"
     assert str(E.CodedError("ERR_YK_401", "HTTP 401")) == "HTTP 401" and E.CodedError("ERR_MAX_403").code == "ERR_MAX_403"
 
@@ -181,7 +181,7 @@ def e4():
     path = os.path.join(ROOT, "docs", "ERRORS.md")
     assert os.path.exists(path), "нет docs/ERRORS.md"
     doc = tio.rfile(path, encoding="utf-8")
-    assert doc == E.markdown(), "docs/ERRORS.md устарел — пересоздай: python -m reloader.core.errors > docs/ERRORS.md"
+    assert doc == E.markdown(), "docs/ERRORS.md устарел — пересоздай: python -m bot_app.core.errors > docs/ERRORS.md"
     for code, info in E.ERRORS.items():
         assert f"`{code}`" in doc and info.text in doc and info.fix in doc, code
     assert "docs/ERRORS.md" in tio.rfile(os.path.join(ROOT, "README.txt"), encoding="utf-8")
@@ -588,7 +588,7 @@ def d8():
 def d9():
     """защита от копирования: main.py без BOT_SECRET — «[ERR_LICENSE_MISSING] Не задан BOT_SECRET (Защита от
     копирования)», с неверным — «[ERR_LICENSE_BAD]»; бот не стартует; то же пишет общий модуль лицензии"""
-    from reloader.services import license as L
+    from bot_app.services import license as L
     env = {k: v for k, v in os.environ.items() if k != "BOT_SECRET"}
     for secret, code in ((None, "ERR_LICENSE_MISSING"), ("неверный", "ERR_LICENSE_BAD")):
         e = dict(env, **({"BOT_SECRET": secret} if secret else {}))
@@ -649,7 +649,7 @@ def d11():
 @check
 def d12():
     """файл данных испортился — бот поднимает его из резервной копии и пишет «[ERR_DATA_RESTORED]»"""
-    from reloader.core.files import load_json_safe, save_json
+    from bot_app.core.files import load_json_safe, save_json
     p = os.path.abspath("data_check.json")
     save_json(p, {"a": 1}, backup=True)
     tio.wfile("{oops", p, "w")

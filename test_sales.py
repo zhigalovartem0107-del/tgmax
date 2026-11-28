@@ -23,8 +23,8 @@ srv.add_bot("CLIENTTOKEN2", "ПесБот")
 w = tempfile.mkdtemp()
 LIC = tio.licensed_copy(ROOT)        # копия бота с замком на тестовый секрет: настоящий BOT_SECRET не нужен
 shutil.copy(LIC + "/tg_to_max.py", f"{w}/main.py")
-shutil.copytree(LIC + "/reloader", os.path.join(os.path.dirname(f"{w}/main.py"), "reloader"), dirs_exist_ok=True)   # бот = файл + пакет reloader
-env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_TOKEN="TESTTOKEN", BOT_SECRET=tio.TEST_SECRET,
+shutil.copytree(LIC + "/bot_app", os.path.join(os.path.dirname(f"{w}/main.py"), "bot_app"), dirs_exist_ok=True)   # бот = файл + пакет bot_app
+env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_TOKEN="TESTTOKEN", BOT_SECRET=tio.TEST_SECRET, BOT_SECRET_SHA256=tio.TEST_HASH,
            MAX_CHANNEL_LINK="https://max.ru/mychannel", MAX_API_URL=srv.url, ADMIN_CODE="sellercode1",
            YOOKASSA_SHOP_ID="123456", YOOKASSA_SECRET_KEY="test_secret", YK_API_URL=srv.url,
            SELLER_CONTACT="@seller_test", OWNER_ID="1",

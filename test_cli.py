@@ -46,7 +46,7 @@ tio.wfile(textwrap.dedent('''
 '''), f"{pk}/telethon/__init__.py", "w")
 tio.wfile("class SessionPasswordNeededError(Exception): pass\nclass PhoneCodeInvalidError(Exception): pass\nclass PhoneCodeExpiredError(Exception): pass\n", f"{pk}/telethon/errors.py", "w")
 LIC = tio.licensed_copy(ROOT)        # бот — процессом: копия с замком на тестовый секрет (настоящий не нужен)
-env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_SECRET=tio.TEST_SECRET)
+env = dict(os.environ, PYTHONPATH=pk, PYTHONIOENCODING="utf-8", BOT_SECRET=tio.TEST_SECRET, BOT_SECRET_SHA256=tio.TEST_HASH)
 script = LIC + "/tg_to_max.py"
 
 # 1) первый запуск: нет config.json -> мастер спрашивает всё и сохраняет
@@ -138,6 +138,7 @@ print("c7 ok: вебхук хостинга на токене — бот сни�
 import shutil
 w8 = tempfile.mkdtemp()
 shutil.copy(LIC + "/main.py", w8)
+shutil.copytree(LIC + "/bot_app", w8 + "/bot_app")
 tio.wfile('print("RAN old")\n', f"{w8}/tg_to_max.py", "w")                                   # старый, без номера
 tio.wfile('BOT_VERSION = 2026101801\nprint("RAN v1")\n', f"{w8}/tg_to_max-2.py", "w")
 tio.wfile('BOT_VERSION = 2026101901\nimport os\nprint("RAN v2", os.getcwd())\n', f"{w8}/tgmax_new3-1.py", "w")

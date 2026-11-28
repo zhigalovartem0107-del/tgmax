@@ -19,11 +19,11 @@ sys.path.insert(0, ROOT)
 from PIL import Image, ImageFilter  # noqa: E402
 
 from fake_max import FakeMax  # noqa: E402
-from reloader.services import analytics_image as A  # noqa: E402
-from reloader.services.ai import image as AIIMG  # noqa: E402
-from reloader.services.ai import rewrite as RW  # noqa: E402
-from reloader.services.ai.keys import KeyRotator  # noqa: E402
-from reloader.services.analytics import predict as P  # noqa: E402
+from bot_app.services import analytics_image as A  # noqa: E402
+from bot_app.services.ai import image as AIIMG  # noqa: E402
+from bot_app.services.ai import rewrite as RW  # noqa: E402
+from bot_app.services.ai.keys import KeyRotator  # noqa: E402
+from bot_app.services.analytics import predict as P  # noqa: E402
 
 DAY = 86400
 NOW = time.mktime((2026, 11, 7, 20, 0, 0, 0, 0, -1))      # суббота, 20:00 по местному времени
@@ -233,7 +233,7 @@ print("a5b ok: 📈/👥/👁 — ровно три строки в заданн
 
 # 5c) 🤖 вывод ИИ — 4-я строка: свои цифры канала → ИИ (ротация ключей) с заданием «Based on these stats…»;
 #     ответ — одной строкой, без разметки, не длиннее 300 знаков; нет ключей или ИИ упал — три строки
-from reloader.services.analytics import insight as INS  # noqa: E402
+from bot_app.services.analytics import insight as INS  # noqa: E402
 assert "Based on these stats, write a 1-2 sentence conclusion in Russian about the channel's health." in INS.PROMPT
 assert "Is it growing? Is engagement high?" in INS.PROMPT
 assert INS.clean("**Вывод:** Канал растёт.\nВовлечённость высокая!\n\n- третье\n- четвёртое") == \

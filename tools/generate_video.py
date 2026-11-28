@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Промо-видео Reloader, 10 секунд: фон, анимированный текст, пост летит из Telegram в MAX.
+"""Промо-видео Relay, 10 секунд: фон, анимированный текст, пост летит из Telegram в MAX.
 
 Результат — welcome.mp4 для приветствия бота (WELCOME_VIDEO_PATH в переменных хостинга).
 
@@ -9,7 +9,7 @@
     python tools/generate_video.py --out welcome.mp4 --size 1920x1080 --fps 30
 
 Сценарий (10 с):
-    0.0–3.5  название «Reloader - Auto-posting to MAX» появляется и гаснет
+    0.0–3.5  название «Relay - Auto-posting to MAX» появляется и гаснет
     3.5–8.5  карточка поста вылетает из круга «TG», по дуге летит в круг «MAX»
     8.5–10   название возвращается и плавно уходит в фон
 """
@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 DURATION = 10.0
-TITLE = "Reloader - Auto-posting to MAX"
+TITLE = "Relay - Auto-posting to MAX"
 FLIGHT_START = 3.5          # с какой секунды пост вылетает
 FLIGHT_END = 8.5            # когда долетает до MAX
 FONT_CANDIDATES = [
@@ -138,7 +138,7 @@ def render(out, width=1280, height=720, fps=30):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Промо-видео Reloader (10 с) для приветствия бота.")
+    parser = argparse.ArgumentParser(description="Промо-видео Relay (10 с) для приветствия бота.")
     parser.add_argument("--out", default="welcome.mp4", help="куда сохранить, по умолчанию welcome.mp4")
     parser.add_argument("--size", default="1280x720", help="ширина x высота, например 1920x1080")
     parser.add_argument("--fps", type=int, default=30)

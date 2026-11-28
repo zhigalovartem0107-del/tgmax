@@ -29,6 +29,8 @@ class TelegramReliability(unittest.IsolatedAsyncioTestCase):
             patch.dict(os.environ, SESSION_STRING=session_string),
             patch.object(bot, "tg_client", side_effect=connect),
             patch.object(bot, "TG_READY", file_ready),
+            patch.object(bot, "API_ID", 1234567),
+            patch.object(bot, "API_HASH", "a" * 32),
             patch.object(bot, "NO_TG", False),
             patch.object(bot, "CLIENT_MODE", False),
             patch.object(bot, "LOGIN", False),

@@ -18,7 +18,7 @@ spec = importlib.util.spec_from_file_location("bot", ROOT + "/tg_to_max.py")
 bot = importlib.util.module_from_spec(spec); spec.loader.exec_module(bot)
 bot.S.trust_env = False
 
-from reloader.services.media.policy import MAX_MEDIA_BYTES, size_skip_reason
+from bot_app.services.media.policy import MAX_MEDIA_BYTES, size_skip_reason
 MB = 1024 * 1024
 assert MAX_MEDIA_BYTES == 250 * MB
 assert size_skip_reason(300 * MB) == "Skipped: file >250MB"

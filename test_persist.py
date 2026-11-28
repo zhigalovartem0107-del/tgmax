@@ -3,15 +3,15 @@
 папку данных можно вынести на постоянный диск (TG_MAX_DIR). Каждый «перезапуск» — отдельный процесс."""
 import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import json
-import re
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
-from reloader.core.files import load_json, load_json_safe, save_json  # noqa: E402
+from bot_app.core.files import load_json, load_json_safe, save_json  # noqa: E402
 
 # 1) запись с резервной копией: основной файл испорчен или пропал — читаем копию; копия — с теми же правами
 d = tempfile.mkdtemp()
@@ -42,7 +42,7 @@ os.remove(p + ".bak"); os.mkdir(p + ".bak")                          # копи�
 save_json(p, {"seller_contact": "@four"}, private=True, backup=True)
 assert load_json(p, {}) == {"seller_contact": "@four"}
 os.rmdir(p + ".bak")
-from reloader.services.codes.store import CodeStore  # noqa: E402
+from bot_app.services.codes.store import CodeStore  # noqa: E402
 cs_path = os.path.join(d, "codes.json")
 code = CodeStore(cs_path).generate(1, "Старт", 30)[0]
 tio.wfile("{broken", cs_path, "w")                                 # коды — это оплаты покупателей
@@ -66,6 +66,20 @@ if ACTION == "set":                                   # хозяин вводи�
     bot.apply_text("clcontact", "@panel_admin", 1)
     bot.apply_text("clyk", "777777 test_panelkey", 1)
     bot.ensure_host_cabinet()                          # кабинет хозяина с темой — в tenants.json и themes.json
+if ACTION == "managed":
+    bot.GCFG.update(host_uid="2", yk_shop="777777", yk_key="fixture-panel-key",
+                    legal={"offer_url": "https://example.test/old"}, vk_token="fixture-old")
+    assert bot.is_host(1) and not bot.is_host(2) and bot.host_id() == "1"
+    assert bot.MAX_TOKEN == "fixture-host-token" and bot.S.verify is True
+    assert bot.API_ID == 1234567 and bot.API_HASH == "a" * 32
+    assert bot.vk_token() == "fixture-env"
+    assert bot.legal_info()["offer_url"] == "https://example.test/new"
+    assert not bot.legal_can_edit(1)
+    bot.HOST_CODE["code"] = "old-private-code"
+    bot.track_cabinet = lambda *args: None
+    bot.handle_message(2, 222, "test", "old-private-code")
+    assert not bot.is_host(2)
+    assert bot.apply_text("clyk", "123456 test_newvalue", 1)[1] == "cltar"
 out = {"contact": bot.SELLER_CONTACT, "link": bot.seller_link(), "yk": bot.yk_keys(),
        "host_cab": bot.host_id() in bot.TENANTS, "host_themes": len(bot.tenant_themes(bot.host_id()))}
 print("RESULT " + json.dumps(out))
@@ -75,7 +89,8 @@ child = os.path.join(tempfile.mkdtemp(), "child.py")
 tio.wfile(CHILD, child, "w")
 BASE = {k: v for k, v in os.environ.items() if k not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy",
                                                         "SELLER_CONTACT", "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY",
-                                                        "TG_MAX_DIR")}
+                                                        "TG_MAX_DIR", "DATA_DIR", "BOT_ENV_ONLY", "MAX_TOKEN",
+                                                        "MAX_BOT_TOKEN", "TG_API_ID", "TG_API_HASH")}
 BASE.update(TGMAX_HOST="1", OWNER_ID="1", BOT_TOKEN="T", MAX_API_URL="http://127.0.0.1:9", YK_API_URL="http://127.0.0.1:9")
 
 
@@ -121,27 +136,35 @@ print("p4 ok: 💾 испорченные или пропавшие settings/ten
 
 # 5) папку данных можно вынести на постоянный диск: TG_MAX_DIR (main.py запускает бота там)
 app = tempfile.mkdtemp()
-import hashlib  # noqa: E402
-# копия main.py с ЗАМКОМ НА ТЕСТОВЫЙ секрет: эта проверка — про папку данных, а не про лицензию (её проверяет
-# test_license); настоящий BOT_SECRET ей не нужен — в репозитории его нет
-src = tio.rfile(os.path.join(ROOT, "main.py"), encoding="utf-8")
-real_hash = re.search(r'_SECRET_SHA256 = "([0-9a-f]{64})"', src).group(1)
-tio.wfile(src.replace(real_hash, hashlib.sha256(b"persist-test-secret").hexdigest()), os.path.join(app, "main.py"), "w",
-          encoding="utf-8")
+shutil.copy(os.path.join(ROOT, "main.py"), app)
+shutil.copytree(os.path.join(ROOT, "bot_app"), os.path.join(app, "bot_app"),
+                ignore=shutil.ignore_patterns("__pycache__"))
 tio.wfile("BOT_VERSION = 99\nimport os\nprint('CWD ' + os.getcwd())\n", os.path.join(app, "stub_bot.py"), "w")
 disk = tempfile.mkdtemp()
-APP_ENV = dict(BASE, BOT_SECRET="persist-test-secret")
+APP_ENV = dict(BASE, BOT_SECRET=tio.TEST_SECRET, BOT_SECRET_SHA256=tio.TEST_HASH)
 r = subprocess.run([sys.executable, "main.py"], cwd=app, env=dict(APP_ENV, TG_MAX_DIR=disk), capture_output=True,
                    text=True)
 assert f"CWD {os.path.realpath(disk)}" in r.stdout.replace(disk, os.path.realpath(disk)), r.stdout + r.stderr
 r = subprocess.run([sys.executable, "main.py"], cwd=app, env=APP_ENV, capture_output=True, text=True)
 assert f"CWD {os.path.join(os.path.realpath(app), 'data')}" in r.stdout.replace(app, os.path.realpath(app)), r.stdout
+r = subprocess.run([sys.executable, "main.py"], cwd=app, env=dict(APP_ENV, DATA_DIR=disk),
+                   capture_output=True, text=True, check=True)
+assert f"CWD {os.path.realpath(disk)}" in r.stdout, r.stdout + r.stderr
+r = subprocess.run([sys.executable, "main.py"], cwd=app,
+                   env=dict(APP_ENV, DATA_DIR=disk, TG_MAX_DIR=app), capture_output=True, text=True, check=True)
+assert f"CWD {os.path.realpath(app)}" in r.stdout, r.stdout + r.stderr
 print("p5 ok: 💾 TG_MAX_DIR — данные бота на постоянном диске; без неё — папка data рядом с ботом")
+
+managed, _ = run(tempfile.mkdtemp(), "managed", **ENV, BOT_ENV_ONLY="1", MAX_BOT_TOKEN="fixture-host-token",
+                 TELEGRAM_API_ID="1234567", TELEGRAM_API_HASH="a" * 32, VK_TOKEN="fixture-env",
+                 LEGAL_OFFER_URL="https://example.test/new")
+assert managed["contact"] == "@env_admin" and managed["yk"] == ["123456", "test_envkey"], managed
+print("p5b ok: переменные BotHost, TLS, ключи и права владельца в BOT_ENV_ONLY")
 
 # 6) запись файлов не ждёт чужих: пока одна запись висит на fsync (медленный диск хостинга), другой файл пишется
 #    сразу — цикл бота не стоит; а ОДИН и тот же файл по-прежнему пишется строго по очереди (временный .tmp общий)
 import threading                                                       # noqa: E402
-import reloader.core.files as F                                        # noqa: E402
+import bot_app.core.files as F                                        # noqa: E402
 held, real_fsync = threading.Event(), F.os.fsync
 F.os.fsync = lambda fd: held.wait(10)                                   # «диск» отвечает, только когда отпустим
 try:
