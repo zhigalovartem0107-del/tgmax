@@ -32,6 +32,7 @@ pyarmor gen -O "$OUT" -r main.py login.py tg_to_max.py bot_app
 cp -f requirements.txt "$OUT"/ 2>/dev/null || true
 cp -f README.txt "$OUT"/ 2>/dev/null || true
 mkdir -p "$OUT/docs"
+cp bot_app/core/max-ca.crt "$OUT/bot_app/core/"
 cp docs/BOTHOST.md "$OUT/docs/"
 
 echo "✅ Готово: $OUT/"

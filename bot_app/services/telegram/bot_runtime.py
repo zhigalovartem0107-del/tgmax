@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from bot_app.core.max_tls import configure_max_tls
 from bot_app.config import env_text, parse_ids
 from bot_app.services import legal
 from bot_app.services.ad_poster import ad_poster_text
@@ -543,6 +544,7 @@ def start(data):
                               owner=int(owner), source_chats=sources, channel_id=channel_id)
             bot.bot_id = me["id"]
             if max_token:
+                configure_max_tls(session)
                 max_api = MaxSourceAPI(max_token, session)
                 bot.max_sources = MaxSources(queue, max_api, int(owner), channel, bot.clock, bool(webhook_url))
                 bot.max_publisher = MaxPublisher(max_api, api)
