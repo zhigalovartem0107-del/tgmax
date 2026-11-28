@@ -132,6 +132,31 @@ with tempfile.TemporaryDirectory() as directory:
     assert queue.recent(OWNER)[0]["status"] == "unknown"
     queue.close()
 
+with tempfile.TemporaryDirectory() as directory:
+    queue = BotQueue(Path(directory) / "tg.sqlite3")
+    source = -100100002
+    bot = TelegramBot(FakeAPI(), queue, {OWNER}, CHANNEL, lambda: NOW[0],
+                      owner=OWNER, source_chats={source}, channel_id=int(CHANNEL))
+    response["count"] = None
+
+    def intake(chat, mid, **extras):
+        with queue.db:
+            bot.handle({"channel_post": {"chat": {"id": chat, "type": "channel"}, "message_id": mid,
+                                        "photo": [{"file_id": "test-photo"}], **extras}})
+
+    intake(-100100003, 31)
+    intake(int(CHANNEL), 32)
+    intake(source, 33, has_protected_content=True)
+    assert not queue.recent(OWNER)
+    intake(source, 35, media_group_id="group")
+    intake(source, 34, media_group_id="group")
+    assert len(queue.recent(OWNER)) == 1 and not bot.publish_due()
+    NOW[0] += 5
+    assert bot.publish_due() and not bot.publish_due()
+    assert on_channel("copyMessages")[-1]["message_ids"] == [34, 35]
+    assert on_channel("copyMessages")[-1]["from_chat_id"] == source
+    queue.close()
+
 session = Mock()
 session.post.side_effect = requests.ConnectionError("secret-token-should-not-be-shown")
 try:

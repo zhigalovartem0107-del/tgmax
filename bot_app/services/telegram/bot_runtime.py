@@ -34,12 +34,15 @@ STATUS = {"queued": "ждёт", "sending": "отправляется", "sent": "
 
 
 class TelegramBot:
-    def __init__(self, api, queue, admins, channel, clock=time.time):
+    def __init__(self, api, queue, admins, channel, clock=time.time, *, owner=None, source_chats=(), channel_id=None):
         self.api = api
         self.queue = queue
         self.admins = admins
         self.channel = channel
         self.clock = clock
+        self.owner = owner
+        self.source_chats = source_chats
+        self.channel_id = channel_id
 
     def say(self, chat, text, rows=None):
         params = {"chat_id": chat, "text": text, "link_preview_options": {"is_disabled": True}}
@@ -65,7 +68,7 @@ class TelegramBot:
 
     def copy(self, owner, target, draft):
         ids = draft["ids"]
-        params = {"chat_id": target, "from_chat_id": owner}
+        params = {"chat_id": target, "from_chat_id": draft.get("source", owner)}
         if draft["ad"]:
             text = ad_poster_text(draft["text"])
             if draft["url"]:
@@ -93,6 +96,13 @@ class TelegramBot:
             self.notice(chat, f"Пост №{post_id} добавлен в очередь.")
 
     def handle(self, update):
+        if self.source_chats and (post := update.get("channel_post")):
+            source = (post.get("chat") or {}).get("id")
+            if (source in self.source_chats and source != self.channel_id and not post.get("has_protected_content")
+                    and (post.get("text") or any(key in post for key in ALLOWED_MEDIA))):
+                self.queue.relay(self.owner, source, post["message_id"], post.get("media_group_id"),
+                                 self.channel, int(self.clock()))
+            return
         callback = update.get("callback_query")
         if callback:
             message = callback.get("message") or {}
@@ -235,7 +245,7 @@ class TelegramBot:
             try:
                 timeout = 1 if self.publish_due() else 5
                 updates = self.api.call("getUpdates", offset=self.queue.offset(), timeout=timeout,
-                                        allowed_updates=["message", "callback_query"])
+                                        allowed_updates=["message", "callback_query", "channel_post"])
                 for update in updates:
                     with self.queue.db:
                         try:
@@ -262,13 +272,24 @@ def start(data):
         raise ValueError("Задай числовой TELEGRAM_OWNER_ID.")
     if not re.fullmatch(r"(?:-100[0-9]{5,15}|@[A-Za-z][A-Za-z0-9_]{4,31})", channel):
         raise ValueError("Задай TELEGRAM_CHANNEL_ID — ID канала или его @имя.")
+    sources = set()
+    for raw in re.split(r"[,\s]+", env_text("TELEGRAM_SOURCE_IDS")):
+        if not raw:
+            continue
+        if not re.fullmatch(r"-100[0-9]{5,15}", raw):
+            raise ValueError("TELEGRAM_SOURCE_IDS принимает числовые ID каналов через запятую.")
+        sources.add(int(raw))
     queue = BotQueue(Path(data) / "telegram-bot.sqlite3")
     try:
         with requests.Session() as session:
-            bot = TelegramBot(BotAPI(token, session), queue,
-                              {int(owner), *parse_ids(env_text("TELEGRAM_ADMIN_IDS"))}, channel)
-            me = bot.api.call("getMe")
+            api = BotAPI(token, session)
+            me = api.call("getMe")
             queue.bind(me["id"])
+            channel_id = api.call("getChat", chat_id=channel)["id"] if sources else None
+            if channel_id in sources:
+                raise ValueError("TELEGRAM_SOURCE_IDS не должен включать канал назначения.")
+            bot = TelegramBot(api, queue, {int(owner), *parse_ids(env_text("TELEGRAM_ADMIN_IDS"))}, channel,
+                              owner=int(owner), source_chats=sources, channel_id=channel_id)
             if "--check" in sys.argv:
                 member = bot.api.call("getChatMember", chat_id=channel, user_id=me["id"])
                 if member.get("status") != "creator" and not member.get("can_post_messages"):
