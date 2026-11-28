@@ -15,10 +15,14 @@ class BotAPI:
         self.url = f"https://api.telegram.org/bot{token}"
         self.session = session
 
-    def call(self, method, **params):
+    def call(self, method, *, upload=None, **params):
         timeout = params.get("timeout", 0) + 10
         try:
-            response = self.session.post(f"{self.url}/{method}", json=params, timeout=(5, timeout))
+            url = f"{self.url}/{method}"
+            if upload:
+                response = self.session.post(url, data=params, files=upload, timeout=(5, 120), allow_redirects=False)
+            else:
+                response = self.session.post(url, json=params, timeout=(5, timeout), allow_redirects=False)
             envelope = response.json()
         except (requests.RequestException, ValueError):
             raise BotAPIError() from None
