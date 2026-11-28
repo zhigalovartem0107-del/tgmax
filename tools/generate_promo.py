@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Вертикальный промо-ролик Reloader, 10 секунд (1080x1920) — в стиле коротких видео.
+"""Вертикальный промо-ролик Relay, 10 секунд (1080x1920) — в стиле коротких видео.
 
 Чёрный фон, неоновые фиолетовый (#8A2BE2) и розовый (#FF1493) акценты, огромный текст, быстрый монтаж.
 
@@ -8,7 +8,7 @@
     3.0–4.5  курсор нажимает «Опубликовать»; вспышка и «1 КЛИК»
     4.5–6.0  свайп в канал MAX — пост уже там; «ГОТОВО»
     6.0–8.0  пункты: • Без задержек • Любые файлы • Аналитика
-    8.0–10   логотип Reloader и «Твой контент-завод»
+    8.0–10   логотип Relay и «Твой контент-завод»
 
 Запуск (promo.mp4 появится в текущей папке):
     pip install moviepy pillow numpy        # и ffmpeg в системе
@@ -161,7 +161,7 @@ def caption_items(t):
             if t >= at:
                 items.append((text, 104, WHITE, 70, y, "lm"))
     elif t >= 8.0:
-        items.append(("Reloader", 130, PINK, W / 2, 1000, "mm"))
+        items.append(("Relay", 130, PINK, W / 2, 1000, "mm"))
         if t >= 8.4:
             items.append(("Твой контент-завод", 84, WHITE, W / 2, 1130, "mm"))
     return items
@@ -220,7 +220,7 @@ def chat_screen(t):
     img = Image.new("RGB", (SW, SH), SCREEN_BG)
     d = ImageDraw.Draw(img)
     d.rectangle([0, 0, SW, 120], fill=HEADER_BG)
-    d.text((30, 42), "Reloader", font=font(44), fill=WHITE)
+    d.text((30, 42), "Relay", font=font(44), fill=WHITE)
     d.text((30, 88), "бот", font=font(28, False), fill=GREY)
     d.rounded_rectangle([24, 150, SW - 120, 220], radius=24, fill=BUBBLE)
     d.text((46, 185), "Пришлю новые посты", font=font(30, False), fill=GREY, anchor="lm")
@@ -301,7 +301,7 @@ def render(out=OUT, fps=FPS):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Вертикальный промо-ролик Reloader (10 с, 1080x1920).")
+    parser = argparse.ArgumentParser(description="Вертикальный промо-ролик Relay (10 с, 1080x1920).")
     parser.add_argument("--out", default=OUT, help="файл, по умолчанию promo.mp4 в текущей папке")
     parser.add_argument("--fps", type=int, default=FPS)
     parser.add_argument("--preview", type=float, help="сохранить один кадр на этой секунде и выйти")

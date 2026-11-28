@@ -13,7 +13,7 @@ import types
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 from fake_max import FakeMax  # noqa: E402
-from reloader.services import legal as L  # noqa: E402
+from bot_app.services import legal as L  # noqa: E402
 
 
 def make_inn12(prefix10):

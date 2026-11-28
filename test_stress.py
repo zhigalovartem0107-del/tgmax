@@ -200,7 +200,7 @@ class CountingDDGS:
                  "url": f"https://news.ru/{n}", "date": time.time() - 600, "source": "News", "body": "Подробности"}]
 
 
-from reloader.services.trends import search as SE  # noqa: E402
+from bot_app.services.trends import search as SE  # noqa: E402
 bot.TREND_SEARCH = SE.Searcher([("DuckDuckGo", lambda q, lang: SE.ddg_news(q, lang, ddgs=CountingDDGS))],
                                pause=None, ttl=0, max_per_hour=10 ** 6, deadline=10)
 srv.delay = DELAY
@@ -253,7 +253,7 @@ def watchdog():
         if MEASURE[0] and time.perf_counter() - BEAT[0] > 0.1:
             fr = sys._current_frames().get(LOOP_T.ident)
             st = [f"{f.name}:{f.lineno}" for f in (traceback.extract_stack(fr) if fr else [])
-                  if f.filename.endswith("tg_to_max.py") or "/reloader/" in f.filename]
+                  if f.filename.endswith("tg_to_max.py") or "/bot_app/" in f.filename]
             STALLS[" > ".join(st[-4:]) or "(вне кода бота)"] += 1
 
 
@@ -401,7 +401,7 @@ gc.collect()
 threads0, fds0 = threading.active_count(), fds()
 tracemalloc.start(1)
 FILT = [tracemalloc.Filter(True, os.path.join(ROOT, "tg_to_max.py")),
-        tracemalloc.Filter(True, os.path.join(ROOT, "reloader", "*"))]
+        tracemalloc.Filter(True, os.path.join(ROOT, "bot_app", "*"))]
 
 
 def bot_bytes():

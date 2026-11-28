@@ -21,7 +21,7 @@ sys.path.insert(0, ROOT)
 from fake_max import FakeMax  # noqa: E402
 
 try:
-    from reloader.services import referral as R
+    from bot_app.services import referral as R
 except ImportError:                                     # модуля ещё нет — проверки скажут, чего не хватает
     R = None
 
@@ -44,7 +44,7 @@ def check(fn):
 def r1():
     """ID клиента — из пересланного сообщения человека (или ID цифрами); ссылка — https://max.ru/<бот>?start=ref_<ID>;
     ID партнёра — из ?start=ref_<ID>, мусор не принимаем"""
-    assert R is not None, "нет модуля reloader.services.referral"
+    assert R is not None, "нет модуля bot_app.services.referral"
     fwd = {"link": {"type": "forward", "chat_id": 555, "sender": {"user_id": 7777, "name": "Иван Петров"},
                     "message": {"text": "Здравствуйте, хочу подключить бота"}}}
     assert R.client_from_message(fwd, "") == (7777, "Иван Петров")

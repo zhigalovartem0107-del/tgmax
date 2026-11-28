@@ -27,8 +27,8 @@ import types
 import zlib
 from collections import Counter, deque
 
-for _k in [k for k in sys.modules if k == "reloader" or k.startswith("reloader.")]:
-    del sys.modules[_k]                   # каждая загрузка файла — свой, свежий пакет reloader
+for _k in [k for k in sys.modules if k == "bot_app" or k.startswith("bot_app.")]:
+    del sys.modules[_k]                   # каждая загрузка файла — свой, свежий пакет bot_app
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests
 import urllib3
@@ -36,15 +36,17 @@ from requests.adapters import HTTPAdapter
 from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
+from bot_app import config as APP_CONFIG
 
-BOT_VERSION = 2026111901            # номер версии: main.py на хостинге запускает файл с самым большим номером
+
+BOT_VERSION = 2026112801            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
     # 🔒 Защита от кражи (как в main.py): при прямом запуске бота — тоже требуем правильный BOT_SECRET.
     #   На импорт (тесты) не влияет: сработает только при запуске как главный файл. Проверка — до любой работы.
     try:
-        from reloader.services import license as _license
+        from bot_app.services import license as _license
     except Exception:
         print("🛑 [ERR_LICENSE_MODULE] Модуль защиты от копирования не найден\n🔒 КРИТИЧЕСКАЯ ОШИБКА: Unauthorized "
               "copy detected. Модуль лицензии недоступен — бот остановлен.", flush=True)
@@ -54,12 +56,12 @@ if __name__ == "__main__":
 # Хостинг ботов (Bothost и т.п.): файл бота назван main.py, или задан TG_MAX_DIR, или хостинг выдал BOT_ID.
 # Тогда все файлы бота живут в папке data рядом (она сохраняется между перезапусками), консоли нет.
 _FILE = globals().get("__file__") or ""
-HOSTED = bool(os.environ.get("TG_MAX_DIR") or os.environ.get("BOT_ID")) \
+HOSTED = bool(APP_CONFIG.data_dir() or os.environ.get("BOT_ID")) \
     or os.path.dirname(os.path.abspath(_FILE or ".")) == "/app" or (
     os.path.basename(_FILE) == "main.py"
     and not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(_FILE)), "config.json")))
 if HOSTED and __name__ == "__main__":
-    _data = os.environ.get("TG_MAX_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    _data = os.path.abspath(APP_CONFIG.data_dir() or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
     os.makedirs(_data, exist_ok=True)
     os.chdir(_data)
     os.environ["TG_MAX_DIR"] = _data
@@ -99,41 +101,29 @@ LIMIT_ADMINS = 3
 for _stream in (sys.stdout, sys.stderr):              # логи хостинга видны сразу, а не когда наберётся буфер
     with contextlib.suppress(Exception):
         _stream.reconfigure(line_buffering=True)
-from reloader.core import log as _log
-from reloader.core import files as _files
-from reloader.core.files import load_json, load_json_safe, save_json, DATA_FILES, DATA_GLOBS, _find_sessions  # noqa: E402
-from reloader.core.timeutil import MONTHS_SHORT  # noqa: E402
-from reloader.core import timeutil as _timeutil
-from reloader.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
-from reloader.keyboards import buttons as _buttons
-from reloader.keyboards.buttons import B, LB, on_off  # noqa: E402
-from reloader.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402
-from reloader.core import errors  # noqa: E402   🧾 коды ошибок: «[ERR_…] Описание — подробности»
-from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
-from reloader.services.telegram.session import connect_account  # noqa: E402
-from reloader.services.codes.store import CodeStore, looks_like_code  # noqa: E402
-from reloader.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
-from reloader.services.billing.catalog import over_limit  # noqa: E402
-from reloader.services.filters import duplicates  # noqa: E402
-from reloader.services.filters.duplicates import GENERIC, STOP_WORDS, norm, terms  # noqa: E402
-from reloader.services.media.policy import MAX_MEDIA_MB, size_skip_reason  # noqa: E402
-from reloader.services.ai.keys import KeyRotator, mask_keys, parse_keys  # noqa: E402
-from reloader.services.ai.rewrite import AiUnavailable, DEFAULTS as AI_DEFAULTS, rewrite as ai_rewrite_text  # noqa: E402
-from reloader import config as APP_CONFIG  # noqa: E402
+from bot_app.core import log as _log
+from bot_app.core import files as _files
+from bot_app.core.files import load_json, load_json_safe, save_json, DATA_FILES, DATA_GLOBS, _find_sessions  # noqa: E402
+from bot_app.core.timeutil import MONTHS_SHORT  # noqa: E402
+from bot_app.core import timeutil as _timeutil
+from bot_app.core.timeutil import n_word, fmt_min, fmt_date, fmt_words, plain_snip, price90, num_sp, week_range  # noqa: E402
+from bot_app.keyboards import buttons as _buttons
+from bot_app.keyboards.buttons import B, LB, on_off  # noqa: E402
+from bot_app.core.log import LOG_FILE, JOURNAL, _log_line, print, journal, log_exc  # noqa: E402
+from bot_app.core import errors  # noqa: E402   🧾 коды ошибок: «[ERR_…] Описание — подробности»
+from bot_app.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
+from bot_app.services.telegram.session import connect_account  # noqa: E402
+from bot_app.services.codes.store import CodeStore, looks_like_code  # noqa: E402
+from bot_app.services.buyers.profile import build_profile, render_profile, contact_info, match_buyer, paginate  # noqa: E402
+from bot_app.services.billing.catalog import over_limit  # noqa: E402
+from bot_app.services.filters import duplicates  # noqa: E402
+from bot_app.services.filters.duplicates import GENERIC, STOP_WORDS, norm, terms  # noqa: E402
+from bot_app.services.media.policy import MAX_MEDIA_MB, size_skip_reason  # noqa: E402
+from bot_app.services.ai.keys import KeyRotator, mask_keys, parse_keys  # noqa: E402
+from bot_app.services.ai.rewrite import AiUnavailable, DEFAULTS as AI_DEFAULTS, rewrite as ai_rewrite_text  # noqa: E402
 ADMIN_IDS = set(APP_CONFIG.ADMIN_IDS)      # 👥 администраторы бота (ADMIN_IDS в переменных хостинга)
 
-# Ключи официального Telegram Desktop: вход без my.telegram.org. Владелец выбрал это сам, на свой риск —
-# Telegram может ограничить аккаунт за чужие ключи. Свои ключи — кнопка «🔧 Свои ключи».
-DESKTOP_KEYS = ("2040", "b18441a1ff607e10a989891a5462e627")
-
-
 def tg_client(name, api_id, api_hash):
-    if str(api_id) == DESKTOP_KEYS[0]:
-        c = TelegramClient(name, int(api_id), api_hash, device_model="PC 64bit", system_version="Windows 10",
-                           app_version="5.6.3 x64", lang_code="ru", system_lang_code="ru-RU")
-        with contextlib.suppress(Exception):            # как настоящий Telegram Desktop — меньше шансов, что
-            c._init_request.lang_pack = "tdesktop"      # Telegram примет вход за подозрительный и отзовёт
-        return c
     return TelegramClient(name, api_id, api_hash)
 
 
@@ -153,7 +143,7 @@ def setup_data_dir(base=None, extra_roots=None, check=None):
     вместе с настройками и очередью. Тогда код из Telegram не нужен."""
     import glob
     import shutil
-    base = base or os.environ.get("TG_MAX_DIR") or os.getcwd()
+    base = base or APP_CONFIG.data_dir() or os.getcwd()
     os.makedirs(base, exist_ok=True)
     os.chdir(base)
     check = check or (lambda name: asyncio.run(_authorized(name)))
@@ -221,7 +211,7 @@ WEB_FLAG = "web_mode.flag"                     # владелец выбрал �
 
 
 def configured_string_session():
-    if NO_TG or os.path.exists(WEB_FLAG):
+    if NO_TG or (os.path.exists(WEB_FLAG) and not APP_CONFIG.owner_config_in_env()):
         return ""
     return (os.environ.get("SESSION_STRING") or "").strip()
 
@@ -270,14 +260,22 @@ def load_config(interactive):
         pass
     except Exception as e:
         print(f"{CONFIG_FILE} не читается ({e}) — проверь запятые и кавычки")
-    env = {key: os.getenv(var) for key, var in (("api_id", "TG_API_ID"), ("api_hash", "TG_API_HASH"),
-           ("phone", "TG_PHONE"), ("max_token", "BOT_TOKEN"), ("max_token", "MAX_TOKEN"),
-           ("max_channel_link", "MAX_CHANNEL_LINK"), ("max_api", "MAX_API_URL"),
-           ("max_chat_id", "MAX_CHAT_ID")) if os.getenv(var)}
-    env = {k: v.strip() for k, v in env.items()}
-    if os.getenv("BOT_TOKEN") and os.getenv("MAX_TOKEN") and os.getenv("BOT_TOKEN").strip() != env["max_token"]:
-        print("⚠️ " + errors.line("ERR_CONFIG", "заданы и BOT_TOKEN, и MAX_TOKEN, и они разные — беру MAX_TOKEN. "
-                                              "Лишний лучше удалить."))
+    names = {
+        "api_id": ("TG_API_ID", "TELEGRAM_API_ID"),
+        "api_hash": ("TG_API_HASH", "TELEGRAM_API_HASH"),
+        "phone": ("TG_PHONE",),
+        "max_token": ("MAX_TOKEN", "MAX_BOT_TOKEN", "BOT_TOKEN"),
+        "max_channel_link": ("MAX_CHANNEL_LINK",),
+        "max_api": ("MAX_API_URL",),
+        "max_chat_id": ("MAX_CHAT_ID",),
+    }
+    env = {key: value for key, variables in names.items() if (value := APP_CONFIG.env_text(*variables))}
+    if APP_CONFIG.owner_config_in_env():
+        cfg["verify_ssl"] = True
+        for key in ("api_id", "api_hash", "phone", "max_token", "max_channel_link", "max_chat_id"):
+            cfg[key] = None if key == "max_chat_id" else ""
+    if len({value for name in names["max_token"] if (value := APP_CONFIG.env_text(name))}) > 1:
+        print("⚠️ " + errors.line("ERR_CONFIG", "Заданы разные токены MAX. Приоритет: MAX_TOKEN, MAX_BOT_TOKEN, BOT_TOKEN."))
     link = env.get("max_channel_link", "")
     if link and "max.ru/" not in link:                # «@name» или «name» -> https://max.ru/name
         env["max_channel_link"] = "https://max.ru/" + link.lstrip("@").strip("/")
@@ -491,7 +489,7 @@ _save_json_raw = save_json
 
 
 def save_json(path, data, private=False, backup=False):
-    """Запись файла данных (reloader.core.files.save_json) + учёт времени. Словарь поменяли из другого потока
+    """Запись файла данных (bot_app.core.files.save_json) + учёт времени. Словарь поменяли из другого потока
     прямо во время записи — пишем ещё раз (меню обрабатывает нажатия разных людей одновременно)."""
     t0 = time.perf_counter()
     try:
@@ -611,7 +609,7 @@ def pick_setting(key, env_value):
 
 if not contact_ok(GCFG.get("seller_contact")):
     GCFG.pop("seller_contact", None)                    # «.» и прочий мусор — забываем, хозяину покажем «задай контакт»
-if not CLIENT_MODE and GCFG.get("seller_contact"):       # контакт: из панели или переменной — что поменяли позже
+if not CLIENT_MODE and GCFG.get("seller_contact") and not APP_CONFIG.owner_config_in_env():       # контакт: из панели или переменной — что поменяли позже
     SELLER_CONTACT = pick_setting("seller_contact", os.environ.get("SELLER_CONTACT")) or SELLER_CONTACT
 elif CLIENT_MODE:
     _sc = load_json("subscription.json", {}).get("contact")
@@ -1859,7 +1857,7 @@ AI_PROVIDERS = {"gemini": ("GEMINI_API_KEYS", "Gemini"), "openrouter": ("OPENROU
 def ai_keys(provider):
     """Ключи провайдера ИИ: сохранённые в панели бота (settings.json) главнее переменной окружения."""
     saved = (GCFG.get("ai_keys") or {}).get(provider)
-    if saved:
+    if saved and not APP_CONFIG.owner_config_in_env():
         return list(saved)
     return parse_keys(os.environ.get(AI_PROVIDERS[provider][0]))
 
@@ -2124,7 +2122,8 @@ def max_chats():
             if marker:
                 params["marker"] = marker
             r = S.get(f"{MAX_API}/chats", headers=HEADERS, params=params, timeout=30)
-            print(f"MAX GET /chats (стр. {page}) -> {r.status_code}: {r.text[:6000]}")
+            detail = "" if APP_CONFIG.owner_config_in_env() else f": {r.text[:6000]}"
+            print(f"MAX GET /chats (стр. {page}) -> {r.status_code}{detail}")
             if r.status_code != 200:
                 break
             j = r.json()
@@ -2432,7 +2431,7 @@ def channel_test(chat_id, for_staff=True):
         return err_text("ERR_MAX_NOT_BOUND", "Канал MAX ещё не привязан — сначала выбери его.", for_staff=for_staff)
     try:
         r = S.post(f"{MAX_API}/messages", params={"chat_id": chat_id}, headers=HEADERS, timeout=30,
-                   json={"text": "Проверка публикации Reloader."})
+                   json={"text": "Проверка публикации."})
     except Exception as e:
         return err_text("ERR_MAX_NET", "⚠️ Нет связи с MAX. Попробуй через минуту.", f"{type(e).__name__}: {e}",
                         for_staff)
@@ -2474,7 +2473,7 @@ def _norm_link(link):
 
 
 def link_slug(link):
-    """«https://max.ru/Reloader_NEWS/», «max.ru/reloader_news», «@Reloader_NEWS» -> «reloader_news»."""
+    """«https://max.ru/channel_news/», «max.ru/channel_news», «@channel_news» → «channel_news»."""
     t = _norm_link(link).lstrip("@")
     return t.split("/")[-1] if t else ""
 
@@ -3950,6 +3949,9 @@ try:
 except (TypeError, ValueError):
     FIXED_OWNER = 0
 HOST_OWNER = FIXED_OWNER                              # хозяин бота в host-режиме
+if HOST_MODE and APP_CONFIG.owner_config_in_env() and HOST_OWNER <= 0 and __name__ == "__main__":
+    print(errors.line("ERR_CONFIG", "Для BOT_ENV_ONLY=1 в режиме TGMAX_HOST=1 задай OWNER_ID (числовой ID владельца MAX)."))
+    sys.exit(1)
 
 
 def is_owner(uid):
@@ -3963,7 +3965,9 @@ def is_owner(uid):
 
 def host_id():
     """ID хозяина: кого признали по коду хозяина (host_uid), иначе — OWNER_ID."""
-    return str(GCFG.get("host_uid") or (HOST_OWNER if HOST_OWNER else "") or "")
+    if APP_CONFIG.owner_config_in_env():
+        return str(HOST_OWNER or "")
+    return str(GCFG.get("host_uid") or HOST_OWNER or "")
 
 
 def is_host(uid):
@@ -3971,7 +3975,7 @@ def is_host(uid):
     Сравниваем как строки — MAX шлёт id то числом, то строкой."""
     if not HOST_MODE or uid is None:
         return False
-    return same_uid(uid, HOST_OWNER) or same_uid(uid, GCFG.get("host_uid"))
+    return same_uid(uid, HOST_OWNER) or (not APP_CONFIG.owner_config_in_env() and same_uid(uid, GCFG.get("host_uid")))
 
 
 def is_global_admin(uid):
@@ -4831,6 +4835,8 @@ def apply_text(action, text, uid=None):
             return str(e), "codes"
         return f"✅ Добавил код {code} на «{t['name']}» (30 дн.).", "codes"
     if action == "clyk":
+        if APP_CONFIG.owner_config_in_env():
+            return "Ключи ЮKassa управляются переменными хостинга.", "cltar"
         if not can_panel(uid):
             return "Нет доступа.", "main"
         tail = secret_tail(uid)
@@ -4848,6 +4854,8 @@ def apply_text(action, text, uid=None):
                 "YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY (тот же shopId и ключ).")
         return ("✅ ЮKassa " + why + "\nТеперь покупатели сразу получают ссылку на оплату." + keep if ok else
                 "❌ ЮKassa: " + why) + tail, "cltar"
+    if APP_CONFIG.owner_config_in_env() and (action in ("clvk", "cltt") or (action or "").startswith("claikeys:")):
+        return "Ключи интеграций задаются в переменных хостинга.", "clkeys"
     if (action or "").startswith("claikeys:"):            # 🤖 ключи ИИ списком — панель
         if not can_panel(uid):
             return "Нет доступа.", "main"
@@ -6186,7 +6194,8 @@ def handle_message(uid, chat_id, name, text, msg=None):
     if t.lower() in ("/id", "id", "/whoami"):           # узнать свой user_id (для OWNER_ID) — доступно всем
         api_send(chat_id, f"Твой ID в MAX: {uid}")
         return
-    if HOST_MODE and HOST_CODE["code"] and t.lower() == HOST_CODE["code"] and not is_host(uid):
+    if (HOST_MODE and not APP_CONFIG.owner_config_in_env() and HOST_CODE["code"]
+            and t.lower() == HOST_CODE["code"] and not is_host(uid)):
         GCFG["host_uid"] = str(uid)                      # кто прислал код хозяина — тот и хозяин (не зависит от формата ID)
         if chat_id:
             HOST_CHAT["chat"] = chat_id                  # сюда хозяину уведомления
@@ -6560,7 +6569,7 @@ def _handle_update(u, kind):
         msg = u.get("message") or {}
         rec = msg.get("recipient") or {}
         if rec.get("chat_type") != "dialog":
-            if chan_hint_due(rec.get("chat_id"), "raw"):
+            if not APP_CONFIG.owner_config_in_env() and chan_hint_due(rec.get("chat_id"), "raw"):
                 print("MAX сообщение не из лички: " + json.dumps(msg, ensure_ascii=False)[:1500])
             try:
                 rsya_check(msg)                        # 🛡 реклама РСЯ в канале темы — сразу «закапываем» её
@@ -6775,7 +6784,9 @@ def perf_report(reset=False):
 def menu_loop():
     """Слушает события бота MAX (кнопки и сообщения) — работает в отдельном потоке."""
     global CLAIM_CODE
-    if HOST_MODE:
+    if HOST_MODE and APP_CONFIG.owner_config_in_env():
+        print("HOST-режим готов. Владелец задан через OWNER_ID.")
+    elif HOST_MODE:
         load_host_code()
         print("HOST-режим готов: клиенты открывают твоего бота в MAX и оформляют доступ сами.")
         if GCFG.get("host_uid"):
@@ -9245,7 +9256,7 @@ def _dash_tip(c, ws, MX):
 
 
 def week_dashboard(name, ws, thumbs=()):
-    """Картинка «Итоги недели» 1080×1920 (экран телефона) в цветах Reloader."""
+    """Картинка «Итоги недели» 1080×1920 (экран телефона) в цветах Relay."""
     MX = 64
     c = Dash(1080, 1920, [(160, 300, 330, (60, 22, 120)), (980, 760, 300, (80, 18, 80)),
                           (120, 1350, 280, (30, 22, 90)), (960, 1720, 300, (60, 16, 90))])
@@ -9257,7 +9268,7 @@ def week_dashboard(name, ws, thumbs=()):
     size = c.fit(title, 50, True, c.W - 2 * MX - pw - 24, 34)
     c.text((MX, 92), c.one_line(title, size, True, c.W - 2 * MX - pw - 24), size, D_INK, bold=True)
     c.pill(c.W - MX - pw, 62, rng, 24)
-    c.text((c.W - MX, 140), "Reloader", 22, (120, 110, 160), "ra", True)
+    c.text((c.W - MX, 140), "Отчёт", 22, (120, 110, 160), "ra", True)
     _dash_hero(c, ws, MX)
     _dash_strip(c, ws, MX)
     _dash_times(c, ws, MX)
@@ -9371,10 +9382,10 @@ def analytics_start(uid):
 
 
 # ---------- 🖼 ПРЕМИУМ-КАРТОЧКИ: статистика канала и всей сети каналов ----------
-from reloader.services import analytics_image as anlimg  # noqa: E402
-from reloader.services.ai import image as ai_image  # noqa: E402
-from reloader.services.ai.rewrite import ask as ai_ask_text  # noqa: E402
-from reloader.services.analytics import predict as anlpredict  # noqa: E402
+from bot_app.services import analytics_image as anlimg  # noqa: E402
+from bot_app.services.ai import image as ai_image  # noqa: E402
+from bot_app.services.ai.rewrite import ask as ai_ask_text  # noqa: E402
+from bot_app.services.analytics import predict as anlpredict  # noqa: E402
 
 SUBS_FILE = "subs_history.json"
 def _load_subs(path):
@@ -9452,11 +9463,11 @@ def subs_snapshot_all():
 
 
 # ---------- 📊 ПОСТ ИЗ ЛЮБОГО КАНАЛА: «Вижу пост из канала: …» и три кнопки (без привязки и без прав админа) ----------
-# 📊 Рекламный охват — картинка для рекламодателя (со знаком Reloader); 📈 Массовая проверка — аналитика канала из
+# 📊 Рекламный охват — картинка для рекламодателя (со знаком Relay); 📈 Массовая проверка — аналитика канала из
 # своей сетки; ⚡ Оценка потенциала — 0–100. Число подписчиков канала бот снимает сам раз в час — отсюда
 # «Подписалось / Отписалось / Итого». Канал попадает в «🕘 Недавние проверки».
-from reloader.services.analytics import potential as anlpot  # noqa: E402
-from reloader.services.analytics import watch as fwdw  # noqa: E402
+from bot_app.services.analytics import potential as anlpot  # noqa: E402
+from bot_app.services.analytics import watch as fwdw  # noqa: E402
 
 FWD_FILE = "channel_checks.json"         # «🕘 Недавние проверки» и снимки числа подписчиков проверенных каналов
 FWD_WATCH = fwdw.Watch(FWD_FILE, save=save_json, load=load_json_safe)
@@ -9889,7 +9900,7 @@ def ai_background(topic):
     return None
 
 
-from reloader.services.analytics import backgrounds as bgsrc  # noqa: E402
+from bot_app.services.analytics import backgrounds as bgsrc  # noqa: E402
 
 BG_DAILY_FILE = "bg_daily.json"         # фото для карточек на сегодня: день и адрес; само фото — bg_daily.jpg
 BG_HTTP = requests.Session()            # своя сессия: к picsum не уходят настройки и заголовки MAX
@@ -9934,7 +9945,7 @@ def card_caption(n):
             f"72 ч — {f.fmt_int(n.get('v72'))} · ER24 {f.fmt_pct(n.get('er24'))}")
 
 
-from reloader.services.analytics import insight as anlinsight  # noqa: E402
+from bot_app.services.analytics import insight as anlinsight  # noqa: E402
 
 INSIGHT_CACHE = {}                       # цифры канала -> (когда, вывод ИИ): те же цифры за час — ИИ не спрашиваем
 INSIGHT_TTL = 3600
@@ -10169,11 +10180,11 @@ def predict_start(uid, chat, text, atts=()):
 # Не отчёт по расписанию, а сигнал по событию: фоновый поток раз в 2–3 часа на канал ищет свежие новости по словам
 # из последних постов, ИИ строго отвечает «NO» или «YES [n]» с коротким текстом; «NO» — молчим. Одну новость
 # (тот же адрес, перепечатку, ту же новость другими словами) одному получателю — один раз (sent_alerts.json).
-from reloader.services.trends import search as trsearch  # noqa: E402
-from reloader.services.trends import text as trtext  # noqa: E402
-from reloader.services.trends.store import AlertStore  # noqa: E402
-from reloader.services.trends.worker import Job as TrendJob, NoAI as TrendNoAI, TrendState, TrendWorker  # noqa: E402
-from reloader.services.trends.worker import scan as trend_scan  # noqa: E402
+from bot_app.services.trends import search as trsearch  # noqa: E402
+from bot_app.services.trends import text as trtext  # noqa: E402
+from bot_app.services.trends.store import AlertStore  # noqa: E402
+from bot_app.services.trends.worker import Job as TrendJob, NoAI as TrendNoAI, TrendState, TrendWorker  # noqa: E402
+from bot_app.services.trends.worker import scan as trend_scan  # noqa: E402
 
 TREND_FILE = "sent_alerts.json"          # что уже отправили (и что ИИ отклонил) — никогда не шлём одно дважды
 TREND_STATE_FILE = "trends_state.json"   # когда следующая проверка каждой темы и чем кончилась прошлая
@@ -10781,12 +10792,14 @@ def yt_channel_id(ch):
 
 def vk_token():
     """Ключ VK: сохранённый в боте главнее переменной VK_TOKEN; в боте нет — из переменной."""
-    return GCFG.get("vk_token") or (os.environ.get("VK_TOKEN") or "").strip() or None
+    saved = None if APP_CONFIG.owner_config_in_env() else GCFG.get("vk_token")
+    return saved or APP_CONFIG.env_text("VK_TOKEN") or None
 
 
 def tiktok_cookies():
     """Cookies TikTok: сохранённые в боте главнее переменной TIKTOK_COOKIES; в боте нет — из переменной."""
-    return GCFG.get("tt_cookies") or (os.environ.get("TIKTOK_COOKIES") or "").strip() or None
+    saved = None if APP_CONFIG.owner_config_in_env() else GCFG.get("tt_cookies")
+    return saved or APP_CONFIG.env_text("TIKTOK_COOKIES") or None
 
 
 def parse_cookies(text):
@@ -11750,11 +11763,16 @@ async def tg_finish():
 
 
 def builtin_keys():
-    """Ключи, с которыми вход — только номер и код: продавца (у бота клиента), иначе Telegram Desktop."""
-    k = (os.environ.get("TGMAX_API_ID") or "", os.environ.get("TGMAX_API_HASH") or "")
-    if field_ok("api_id", k[0]) and field_ok("api_hash", k[1]):
-        return k
-    return None if os.environ.get("TGMAX_NO_DESKTOP_KEYS") == "1" else DESKTOP_KEYS
+    """Ключи Telegram поставляются через переменные окружения."""
+    pairs = (
+        (os.environ.get("TGMAX_API_ID"), os.environ.get("TGMAX_API_HASH")),
+        (APP_CONFIG.env_text("TG_API_ID", "TELEGRAM_API_ID"),
+         APP_CONFIG.env_text("TG_API_HASH", "TELEGRAM_API_HASH")),
+    )
+    for api_id, api_hash in pairs:
+        if field_ok("api_id", api_id) and field_ok("api_hash", api_hash):
+            return api_id, api_hash
+    return None
 
 
 SHARED = {"on": False}  # бот клиента читает каналы через аккаунт продавца
@@ -12065,6 +12083,10 @@ TG_STEPS = {
 
 def tg_screen(uid):
     """Экран «🔑 Telegram» в меню."""
+    if APP_CONFIG.owner_config_in_env() and is_host(uid):
+        status = "подключён" if TG_CLIENT is not None and not is_web_client(TG_CLIENT) else "не подключён"
+        return (f"🔑 Telegram: {status}. Настройка аккаунта через переменные хостинга.",
+                [[B("◀️ Меню", "m:main")]])
     if SHARED["on"] and TG_CLIENT is not None and not is_web_client(TG_CLIENT):
         text = ("🔑 Telegram: подключён ✅ (общий аккаунт)\n\nНичего делать не нужно: бот уже читает каналы через "
                 "аккаунт — переносятся файлы и большие видео.\n\nСвой аккаунт нужен, только если хочешь брать посты "
@@ -12175,7 +12197,7 @@ def tg_after_phone(uid):
 
 def tg_callback(rest, uid):
     """Кнопки tg:* — возвращает (текст, кнопки)."""
-    if not is_owner(uid):
+    if not is_owner(uid) or (APP_CONFIG.owner_config_in_env() and is_host(uid)):
         return tg_screen(uid)
     if rest == "start":
         if MAIN_LOOP is None:
@@ -12241,6 +12263,9 @@ def tg_callback(rest, uid):
 
 def tg_text(uid, step, t, mid=None):
     """Ответ на шаг ввода (tg_*) — возвращает (текст, кнопки)."""
+    if APP_CONFIG.owner_config_in_env() and is_host(uid):
+        PENDING.pop(uid, None)
+        return tg_screen(uid)
     if step == "tg_api_id":
         if not field_ok("api_id", t):
             return tg_ask(uid, step, "Не похоже на api_id: нужно число из 7–8 цифр.")
@@ -12595,8 +12620,8 @@ def ad_broadcast(d):
 # постов из источников: не занимает её мест (очередь, пауза между постами и счётчики темы не меняются), не ждёт её и не
 # зависит от того, пуста ли она и на паузе ли бот. Каналы — ТОЛЬКО своего кабинета: чужие не показываем, кнопку с чужой
 # темой отклоняем, и при выкладке ещё раз сверяем владельца (ID в кнопке — не пропуск).
-from reloader.services import ad_poster, xpromo  # noqa: E402
-from reloader.services.ad_poster import ad_poster_attachments, ad_poster_editor, ad_poster_text  # noqa: E402
+from bot_app.services import ad_poster, xpromo  # noqa: E402
+from bot_app.services.ad_poster import ad_poster_attachments, ad_poster_editor, ad_poster_text  # noqa: E402
 
 XP_FILE = "xpromo.json"
 XP = xpromo.Campaigns(XP_FILE, save=lambda path, data: save_json(path, data, private=True, backup=True),
@@ -13446,7 +13471,8 @@ def fsub_add(text):
                     f"• {c.get('title') or '—'} — {c.get('link') or 'без ссылки'} (ID {c['chat_id']}, "
                     f"{c.get('type') or '?'}, {c.get('status') or '?'})" for c in seen[:30])
                    if seen else "MAX не вернул ни одного чата бота.")
-                + "\n\nПолный ответ MAX — в журнале бота (строка «MAX GET /chats»)."), "clfs"
+                + ("" if APP_CONFIG.owner_config_in_env() else
+                   "\n\nПолный ответ MAX — в журнале бота (строка «MAX GET /chats»).")), "clfs"
     if any(c["chat_id"] == cid for c in force_subs()):
         return "Этот канал уже в списке.", "clfs"
     if is_member(cid, host_id() or 0) is None:              # проверяем ровно то, что нужно: видит ли бот подписчиков
@@ -13713,7 +13739,7 @@ def log_purchase(key, plan, days, price, how, code=""):
 
 
 # ---------- 🤝 ПАРТНЁРСКАЯ ССЫЛКА: хозяин делает ссылку для партнёра, бот помнит, кто от кого, и сообщает о покупках ----------
-from reloader.services import referral as refs  # noqa: E402
+from bot_app.services import referral as refs  # noqa: E402
 
 REF_FILE = "referrals.json"             # переходы по ссылке, кто за каким партнёром, что купил, процент и выплаты
 REFS = refs.Referrals(REF_FILE, save=lambda path, data: save_json(path, data, private=True, backup=True),
@@ -13933,7 +13959,7 @@ def host_apply_paid(key, plan, days, price=0, how=""):
 
 
 # ---------- 👥 карточка покупателя · 🎟 коды активации (Playerok) ----------
-CODES = CodeStore("codes.json")           # одноразовые коды тарифов: см. reloader/services/codes
+CODES = CodeStore("codes.json")           # одноразовые коды тарифов: см. bot_app/services/codes
 CODE_EXPORT = {}                          # хозяин -> файл с кодами, который отправлю следом
 
 
@@ -14340,7 +14366,7 @@ def pay_screen():
 # ---------- ⚖️ ЮРИДИЧЕСКОЕ: реквизиты продавца, документы, согласие до оплаты, удаление данных ----------
 # 152-ФЗ (персональные данные), 54-ФЗ (чеки), «О защите прав потребителей» (оферта, возврат, реквизиты продавца),
 # «О рекламе» (отписка). Реквизиты и ссылки вводит хозяин (/legal), покупатель видит их в «📄 Условия» и перед оплатой.
-from reloader.services import legal as LEGAL  # noqa: E402
+from bot_app.services import legal as LEGAL  # noqa: E402
 
 LEGAL_CONSENTS_FILE = "legal_consents.json"   # кто, когда и с какими документами согласился перед оплатой
 LEGAL_REQUESTS_FILE = "legal_requests.json"   # запросы на удаление данных: кто, когда, выполнено ли
@@ -14358,7 +14384,7 @@ DOC_ICONS = {"Оферта": "📄", "Политика конфиденциал�
 def legal_info():
     """Реквизиты и ссылки продавца: введённое хозяином в панели → переменные хостинга. У бота клиента (продажа
     ботов) — данные продавца из subscription.json (сам клиент их не меняет)."""
-    panel = GCFG.get("legal") if isinstance(GCFG.get("legal"), dict) else {}
+    panel = {} if APP_CONFIG.owner_config_in_env() else GCFG.get("legal")
     if CLIENT_MODE:
         seller = sub_info().get("legal")
         panel = seller if isinstance(seller, dict) else {}
@@ -14371,7 +14397,7 @@ def legal_version():
 
 def legal_can_edit(uid):
     """Реквизиты меняет только хозяин (и ADMIN_IDS); у бота клиента — никто (это данные продавца)."""
-    return bool(uid is not None and can_panel(uid) and not CLIENT_MODE)
+    return bool(uid is not None and can_panel(uid) and not CLIENT_MODE and not APP_CONFIG.owner_config_in_env())
 
 
 def legal_buyer(uid):
@@ -14434,7 +14460,7 @@ def legal_doc_rows(info=None):
 def legal_admin_screen():
     """⚖️ Юридическая информация — экран хозяина: что заполнено, что нет, кнопки ввода."""
     info = legal_info()
-    panel = GCFG.get("legal") if isinstance(GCFG.get("legal"), dict) else {}
+    panel = {} if APP_CONFIG.owner_config_in_env() else GCFG.get("legal")
     form = info.get("form") or ""
     og = "ОГРНИП" if form == "ИП" else "ОГРН" if form == "ООО" else "ОГРН / ОГРНИП"
 
@@ -14801,8 +14827,8 @@ def start_client(cid):
         return                                            # второй бот на токене основного перехватывал бы его кнопки
     write_subscription(cid)
     env = dict(os.environ)
-    for k in ("MAX_TOKEN", "MAX_CHANNEL_LINK", "MAX_CHAT_ID", "ADMIN_CODE", "TG_API_ID", "TG_API_HASH", "TG_PHONE",
-              "SESSION_STRING",
+    for k in ("MAX_TOKEN", "MAX_BOT_TOKEN", "MAX_CHANNEL_LINK", "MAX_CHAT_ID", "ADMIN_CODE", "TG_API_ID", "TG_API_HASH", "TG_PHONE",
+              "SESSION_STRING", "TELEGRAM_API_ID", "TELEGRAM_API_HASH", "YOOKASSA_RECEIPT_EMAIL",
               "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY", "OWNER_ID", "TGMAX_HOST", "HOST_CODE"):   # бот клиента — не host-бот
         env.pop(k, None)
     env.update(BOT_TOKEN=c["token"], TG_MAX_DIR=d, TG_MAX_NO_SEARCH="1", TGMAX_CLIENT="1",
@@ -14912,15 +14938,18 @@ def _yk_clean(v):
 
 def yk_env_keys():
     """Ключи ЮKassa из переменных хостинга (или config.json); нет пары — None."""
-    sid = _yk_clean(os.environ.get("YOOKASSA_SHOP_ID") or CONFIG.get("yookassa_shop_id"))
-    key = _yk_clean(os.environ.get("YOOKASSA_SECRET_KEY") or CONFIG.get("yookassa_secret_key"))
+    sid = _yk_clean(os.environ.get("YOOKASSA_SHOP_ID"))
+    key = _yk_clean(os.environ.get("YOOKASSA_SECRET_KEY"))
+    if not APP_CONFIG.owner_config_in_env() and not (sid or key):
+        sid = _yk_clean(CONFIG.get("yookassa_shop_id"))
+        key = _yk_clean(CONFIG.get("yookassa_secret_key"))
     return (sid, key) if sid and key else None
 
 
 def yk_keys():
     """shopId и секретный ключ ЮKassa: введены в панели бота — они главнее переменных хостинга;
     в панели нет — из переменных (YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY). В коде ключей нет."""
-    if GCFG.get("yk_shop") and GCFG.get("yk_key"):
+    if not APP_CONFIG.owner_config_in_env() and GCFG.get("yk_shop") and GCFG.get("yk_key"):
         return _yk_clean(GCFG["yk_shop"]), _yk_clean(GCFG["yk_key"])
     return yk_env_keys()
 
@@ -14940,7 +14969,8 @@ def yk_seen():
     k = yk_keys()
     if not k:
         return "ключей нет"
-    src = "из панели бота" if GCFG.get("yk_shop") and GCFG.get("yk_key") else "из переменных хостинга"
+    from_panel = not APP_CONFIG.owner_config_in_env() and GCFG.get("yk_shop") and GCFG.get("yk_key")
+    src = "из панели бота" if from_panel else "из переменных хостинга"
     kind = "боевой (live_)" if k[1].startswith("live_") else "тестовый (test_)" if k[1].startswith("test_") else "неизвестного вида"
     return f"бот видит ({src}): shopId {k[0]}, ключ {kind}, {len(k[1])} символов, …{k[1][-4:]}"
 
@@ -15003,7 +15033,8 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Z
 
 def receipt_email():
     """Запасная почта для чека (54-ФЗ), если покупатель свою не дал: YOOKASSA_RECEIPT_EMAIL."""
-    return _yk_clean(os.environ.get("YOOKASSA_RECEIPT_EMAIL") or CONFIG.get("yookassa_receipt_email")) or None
+    fallback = "" if APP_CONFIG.owner_config_in_env() else CONFIG.get("yookassa_receipt_email")
+    return _yk_clean(os.environ.get("YOOKASSA_RECEIPT_EMAIL") or fallback) or None
 
 
 def yk_create(amount, description, metadata, return_url, email=None):
@@ -16253,6 +16284,8 @@ def clients_text(action, text, uid):
         return "Тарифы сохранены ✅" + (f"\nНе понял строки: {'; '.join(bad)}" if bad else ""), "cltar"
     if action == "clcontact":
         global SELLER_CONTACT
+        if APP_CONFIG.owner_config_in_env():
+            return "Контакт продавца задаётся через SELLER_CONTACT.", "clhost"
         if not contact_ok(text):
             return ("Это не похоже на контакт. Пришли ник (например @ivan), ссылку https://max.ru/… "
                     "или телефон — покупатели будут писать туда."), "cltar"
@@ -16508,7 +16541,7 @@ async def startup_telegram(use_file, keep_for_login=False):
         else:
             print(errors.line("ERR_CONFIG", "Для SESSION_STRING нужны ключи Telegram"))
 
-    if not use_file:
+    if not use_file or APP_CONFIG.owner_config_in_env():
         return WebClient(), False
     try:
         client, authorized = await connect_account(tg_client("session", API_ID, API_HASH),
@@ -16713,7 +16746,7 @@ async def main():
 
 
 class _Facade(types.ModuleType):
-    """Для тестов: bot.X = подделка ставится и в модуль reloader, где X теперь живёт, — подделку видят все."""
+    """Для тестов: bot.X = подделка ставится и в модуль bot_app, где X теперь живёт, — подделку видят все."""
     def __setattr__(self, name, value):
         for m in _MOVED:
             if name in vars(m):

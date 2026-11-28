@@ -1,6 +1,6 @@
 """📊 Пост из любого канала (или ссылка на канал) — без привязки и без прав админа: «Вижу пост из канала: …» и ровно
 три кнопки — «📊 Рекламный охват», «📈 Массовая проверка» (только каналы из своей сетки, иначе «Этого канала нет в
-вашей сетке…»), «⚡ Оценка потенциала». После каждой картинки (на всех — знак Reloader) — сообщение ровно в формате
+вашей сетке…»), «⚡ Оценка потенциала». После каждой картинки (на всех — знак Relay) — сообщение ровно в формате
 «📈 «Канал» / 👥 … подписчиков · сегодня …, за 7 дней … / 👁 Просмотры на пост: 24 ч — …». Бот сам копит число
 подписчиков (раз в час): «Подписалось: +X, Отписалось: -Y, Итого: +Z». «Это закрытый канал. …» — только когда канал
 правда закрытый (приглашение, в котором аккаунт бота не состоит); открытый канал так не называем никогда: MAX не
@@ -23,7 +23,7 @@ sys.path.insert(0, ROOT)
 from fake_max import FakeMax  # noqa: E402
 
 try:
-    from reloader.services.analytics import watch as W
+    from bot_app.services.analytics import watch as W
 except ImportError:                                     # модуля ещё нет — проверки скажут, чего не хватает
     W = None
 
@@ -47,7 +47,7 @@ def check(fn):
 def w1():
     """откуда пост: пересланный пост канала MAX (по chat_id), ссылки t.me / max.ru / web.max.ru; закрытые ссылки;
     сообщение человека и обычный текст — не проверка канала"""
-    assert W is not None, "нет модуля reloader.services.analytics.watch"
+    assert W is not None, "нет модуля bot_app.services.analytics.watch"
     fwd = {"link": {"type": "forward", "chat_id": -7100, "message": {"text": "пост"}}}
     assert W.source_of(fwd, "") == {"kind": "max", "chat_id": -7100}
     person = {"link": {"type": "forward", "sender": {"user_id": 55}, "chat_id": 777, "message": {"text": "hi"}}}
@@ -320,7 +320,7 @@ def live_texts(chat, n0):
 @check
 def f2():
     """«📊 Рекламный охват»: картинка БЕЗ подписи (охват, подписчики, приток и отток — на самой картинке, знак
-    Reloader), сразу за ней — 📈/👥/👁; «Анализирую…» и прежнее меню убраны, под цифрами — меню канала"""
+    Relay), сразу за ней — 📈/👥/👁; «Анализирую…» и прежнее меню убраны, под цифрами — меню канала"""
     menus = [m for m in said(BC, 0) if (m["body"].get("text") or "").startswith("Вижу пост из канала: robloxnews")]
     n0, a0, c0 = len(srv.messages), len(srv.answers), len(CARDS)
     press(BUYER, BC, f"fw:ad:max:{PUB_ID}")
@@ -329,7 +329,7 @@ def f2():
     kind, d = RENDERED[-1]
     assert kind == "render_ad_reach" and d["subs"] == 1000 and (d["joins"], d["leaves"], d["total"]) == (0, 0, 0), d
     assert "er24" in d and bot.anlimg.fmt_pct(d["er24"]) == m["er"], (d.get("er24"), m["er"])   # ER24 на первой карточке
-    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "на картинке — знак Reloader"
+    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "на картинке — знак Relay"
     assert menus and str(menus[-1]["mid"]) in gone(), "прежнее меню канала убрано"
     menu_left = srv.answers[a0]["body"]["message"]
     assert [b["text"] for row in menu_left["attachments"][0]["payload"]["buttons"] for b in row] == MENU
@@ -338,7 +338,7 @@ def f2():
 @check
 def f3():
     """бот сам следит за каналом (раз в час): 1000 → 1010 → 1004; «⚡ Оценка потенциала» — картинка без подписи
-    (оценка из 100 и приток +10 / отток −6 / итого +4 — на картинке, со знаком Reloader), за ней — 📈/👥/👁"""
+    (оценка из 100 и приток +10 / отток −6 / итого +4 — на картинке, со знаком Relay), за ней — 📈/👥/👁"""
     srv.subs[PUB_ID] = 1010
     bot.fwd_snapshot_all()
     srv.subs[PUB_ID] = 1004
@@ -349,7 +349,7 @@ def f3():
     assert m["subs"] == "1 004", m.groupdict()
     kind, d = RENDERED[-1]
     assert kind == "render_potential" and (d["joins"], d["leaves"], d["total"]) == (10, 6, 4) and d["score"], d
-    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "знак Reloader — на каждой картинке"
+    assert len(CARDS) == c0 + 1 and watermark(CARDS[-1]) > 150, "знак Relay — на каждой картинке"
 
 
 @check

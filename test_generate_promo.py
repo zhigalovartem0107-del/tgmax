@@ -34,7 +34,7 @@ assert "АВТОПОСТИНГ" in words(1.0) and "В MAX" in words(1.0)
 assert "1 КЛИК" in words(4.0) and "ГОТОВО" not in words(4.0)
 assert "ГОТОВО" in words(5.0) and "1 КЛИК" not in words(5.0)
 assert words(6.1) == ["• Без задержек"] and "• Любые файлы" in words(6.8) and "• Аналитика" in words(7.5)
-assert "Reloader" in words(9.0) and "Твой контент-завод" in words(9.0)
+assert "Relay" in words(9.0) and "Твой контент-завод" in words(9.0)
 
 # 5) текст помещается по ширине 1080 (на телефоне читается, не обрезается)
 for t in (1.0, 4.0, 5.0, 6.8, 9.0):

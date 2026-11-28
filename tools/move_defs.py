@@ -1,9 +1,9 @@
-"""Переносит функции/классы верхнего уровня из tg_to_max.py в модуль пакета reloader — без изменений тела.
+"""Переносит функции/классы верхнего уровня из tg_to_max.py в модуль пакета bot_app — без изменений тела.
 
-python3 tools/move_defs.py reloader/core/timeutil.py "Описание модуля" "import re,import time" n_word fmt_min ...
+python3 tools/move_defs.py bot_app/core/timeutil.py "Описание модуля" "import re,import time" n_word fmt_min ...
 
 Что делает: вырезает блоки (с декораторами) из tg_to_max.py, дописывает их в модуль (создаёт с docstring и
-импортами), добавляет в tg_to_max.py `from reloader.x import имена` (старые вызовы работают) и регистрирует модуль
+импортами), добавляет в tg_to_max.py `from bot_app.x import имена` (старые вызовы работают) и регистрирует модуль
 в фасаде (_MOVED), чтобы bot.X = подделка в тестах доходила до нового места.
 """
 import os
@@ -69,7 +69,7 @@ def main(dst, doc, imports, names):
     dotted = dst[:-3].replace("/", ".")
     alias = "_" + dotted.split(".")[-1]
     src = "\n".join(lines)
-    anchor = "from reloader.core import log as _log\n"
+    anchor = "from bot_app.core import log as _log\n"
     add = ""
     if f"import {dotted.split('.')[-1]} as {alias}\n" not in src:
         add += f"from {dotted.rsplit('.', 1)[0]} import {dotted.split('.')[-1]} as {alias}\n"

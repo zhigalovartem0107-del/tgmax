@@ -1,7 +1,4 @@
-"""🔒 Защита от кражи: бот запускается только с правильным BOT_SECRET (переменная окружения хостинга). В коде — лишь
-SHA-256 секрета, не сам секрет: даже со всеми файлами бота, но без секрета, его не запустить. main.py без (или с
-неверным) BOT_SECRET пишет «Unauthorized copy detected» и сразу выходит, не запуская бота; с верным — запускается.
-Плюс build_obfuscated.sh (PyArmor) — для защищённой выкладки на хостинг."""
+"""Проверки секрета запуска и хеша из переменных хостинга."""
 import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import hashlib
 import os
@@ -14,7 +11,7 @@ import traceback
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from reloader.services import license as L  # noqa: E402
+from bot_app.services import license as L  # noqa: E402
 
 FAILS = []
 
@@ -44,11 +41,9 @@ def t1():
     assert L.secret_ok(TEST_SECRET.upper(), TEST_HASH) is False, "регистр важен"
     for bad in ("", "wrong", " " + TEST_SECRET, None, 123, TEST_HASH):
         assert L.secret_ok(bad, TEST_HASH) is False, bad
-    assert len(L.EXPECTED_SHA256) == 64 and all(c in "0123456789abcdef" for c in L.EXPECTED_SHA256.lower())
-    src = tio.rfile(os.path.join(ROOT, "reloader/services/license.py"), encoding="utf-8")
-    assert "BOT_SECRET" in src and L.EXPECTED_SHA256 in src
-    main_src = tio.rfile(os.path.join(ROOT, "main.py"), encoding="utf-8")   # замок в main.py — тот же хеш
-    assert L.EXPECTED_SHA256 in main_src and "BOT_SECRET" in main_src and "Unauthorized copy detected" in main_src
+    assert not L.secret_ok(TEST_SECRET)
+    main_src = tio.rfile(os.path.join(ROOT, "main.py"), encoding="utf-8")
+    assert "from bot_app.services.license import enforce" in main_src
 
 
 @check
@@ -85,10 +80,10 @@ def run_main(workdir, env, limit=60):
 
 
 def sandbox():
-    """Копия запуска: main.py + пакет reloader + подставной бот, который лишь печатает «BOT STARTED»."""
+    """Копия запуска: main.py + пакет bot_app + подставной бот, который лишь печатает «BOT STARTED»."""
     w = tempfile.mkdtemp()
     shutil.copy(os.path.join(ROOT, "main.py"), w)
-    shutil.copytree(os.path.join(ROOT, "reloader"), os.path.join(w, "reloader"),
+    shutil.copytree(os.path.join(ROOT, "bot_app"), os.path.join(w, "bot_app"),
                     ignore=shutil.ignore_patterns("__pycache__"))
     tio.wfile("BOT_VERSION = 2026110625\nprint('BOT STARTED', flush=True)\n", os.path.join(w, "tg_to_max.py"), "w", encoding="utf-8")
     return w
@@ -109,15 +104,16 @@ def t4():
 
 @check
 def t5():
-    """main.py с ВЕРНЫМ BOT_SECRET проходит замок и запускает бота («BOT STARTED»), без «Unauthorized». Верный
-    секрет берём из окружения (BOT_SECRET) — в репозитории его нет; нет секрета в окружении — проверку пропускаем"""
-    secret = os.environ.get("BOT_SECRET", "")
-    if not L.secret_ok(secret):
-        print("   (пропуск: верный BOT_SECRET не задан в окружении — замок на отказ проверен в t4)")
-        return
+    """Запуск принимает только верную пару из окружения."""
     w = sandbox()
-    code, out = run_main(w, dict(os.environ, BOT_SECRET=secret, TG_MAX_DIR=os.path.join(w, "data")))
-    assert "BOT STARTED" in out and "Unauthorized copy detected" not in out, (code, out[-500:])
+    env = dict(os.environ, BOT_SECRET=TEST_SECRET, TG_MAX_DIR=os.path.join(w, "data"))
+    env.pop("BOT_SECRET_SHA256", None)
+    for value in ("", "abc", "0" * 64):
+        code, out = run_main(w, dict(env, BOT_SECRET_SHA256=value))
+        assert code == 3 and "BOT STARTED" not in out
+        assert TEST_SECRET not in out and TEST_HASH not in out
+    code, out = run_main(w, dict(env, BOT_SECRET_SHA256=TEST_HASH))
+    assert code == 0 and "BOT STARTED" in out and "Unauthorized copy detected" not in out, out[-500:]
 
 
 @check
@@ -133,7 +129,7 @@ def t7():
         out = (p.stdout or "") + (p.stderr or "")
         assert p.returncode != 0 and "Unauthorized copy detected" in out, (args, p.returncode, out[-500:])
     src = tio.rfile(os.path.join(ROOT, "tg_to_max.py"), encoding="utf-8")
-    assert "from reloader.services import license" in src, "замок в tg_to_max.py использует общий модуль лицензии"
+    assert "from bot_app.services import license" in src, "замок в tg_to_max.py использует общий модуль лицензии"
 
 
 @check

@@ -51,7 +51,7 @@ def payloads(rows):
     return [b.get("payload") for r in rows for b in r if b.get("type") == "callback"]
 
 
-from reloader.services.ai.keys import parse_keys, mask_keys  # noqa: E402
+from bot_app.services.ai.keys import parse_keys, mask_keys  # noqa: E402
 
 # 1) разбор и маскировка: запятые, переносы строк, лишние пробелы и повторы
 assert parse_keys(" k1, k2\nk3 ,, k2 \n") == ["k1", "k2", "k3"]

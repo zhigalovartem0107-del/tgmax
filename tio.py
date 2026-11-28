@@ -10,11 +10,11 @@ import contextlib
 import hashlib
 import json
 import os
-import re
 import shutil
 import tempfile
 
-TEST_SECRET = "tgmax-test-only-secret"     # только для проверок: копия бота с замком на этот секрет
+TEST_SECRET = "tgmax-test-only-secret"
+TEST_HASH = hashlib.sha256(TEST_SECRET.encode()).hexdigest()
 _COPIES = {}
 
 
@@ -56,7 +56,7 @@ def reap(p, timeout=10):
 
 def licensed_copy(root):
     """Копия бота (все файлы, кроме .git, кэша и проверок) для проверок, где бот запускается процессом
-    (python tg_to_max.py / main.py): замок защиты от копирования в КОПИИ настроен на тестовый секрет TEST_SECRET.
+    (python tg_to_max.py / main.py): передай тестовые BOT_SECRET и BOT_SECRET_SHA256 при запуске.
     Настоящий BOT_SECRET проверкам не нужен (его нет в репозитории), код бота не меняется; сам замок на настоящем
     коде проверяет test_license. Одна копия на процесс проверки. Возвращает папку копии."""
     if root in _COPIES:
@@ -71,12 +71,5 @@ def licensed_copy(root):
             shutil.copytree(src, os.path.join(dst, name), ignore=skip)
         else:
             shutil.copy2(src, dst)
-    want = hashlib.sha256(TEST_SECRET.encode("utf-8")).hexdigest()
-    for rel, var in (("reloader/services/license.py", "EXPECTED_SHA256"), ("main.py", "_SECRET_SHA256")):
-        path = os.path.join(dst, rel)
-        src = rfile(path, encoding="utf-8")
-        new = re.sub(rf'^({var} = )"[0-9a-f]{{64}}"', lambda m: f'{m.group(1)}"{want}"', src, flags=re.M)
-        assert new != src, f"не нашёл хеш секрета в {rel}"
-        wfile(new, path, "w", encoding="utf-8")
     _COPIES[root] = dst
     return dst

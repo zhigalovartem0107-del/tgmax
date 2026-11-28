@@ -298,7 +298,7 @@ print("h19 ok: кабинет покупателя находится по ча�
 
 # 20) в host-режиме старые «клиентские» боты не запускаются — особенно на токене основного бота
 #     (раньше второй бот на том же токене перехватывал нажатия и всем писал «оформи доступ»)
-bot.CLIENTS["old1"] = {"token": "HOSTTOKEN", "name": "Reloader", "until": time.time() + 86400, "enabled": True}
+bot.CLIENTS["old1"] = {"token": "HOSTTOKEN", "name": "Relay", "until": time.time() + 86400, "enabled": True}
 bot.start_client("old1")
 assert "old1" not in bot.PROCS, bot.PROCS
 bot.CLIENTS.pop("old1")
@@ -656,7 +656,7 @@ print("h33 ok: 🎁 пробный период при «Старте»; 💬 л
 # 34) личка: в нажатии кнопки message.sender — сам бот; имя/ник покупателя не затираются ботом
 bot.handle_update({"update_type": "message_callback", "callback": {
     "callback_id": "c", "payload": "m:main", "user": {"user_id": 9101, "first_name": "Лёша", "username": "lesha_max"}},
-    "message": {"sender": {"user_id": 777, "name": "Reloader", "username": "id5018_bot", "is_bot": True},
+    "message": {"sender": {"user_id": 777, "name": "Relay", "username": "id5018_bot", "is_bot": True},
                 "recipient": {"chat_id": 99101}}})
 assert bot.TENANTS[k9]["usernames"]["9101"] == "lesha_max" and bot.TENANTS[k9]["names"]["9101"] == "Лёша", bot.TENANTS[k9]
 bot.TENANTS[ckey].setdefault("usernames", {})["5001"] = "id5018_bot"     # так записывали старые версии
@@ -1508,7 +1508,7 @@ print("h59 ok: 📢 реклама: пост с маркировкой «Рек�
 # 60) 📌 обязательная подписка: не подписан на канал хозяина — всё закрыто, экран «📢 Подписаться на канал» (ссылка) и
 #     «✅ Проверить подписку»; подписался — пускает. Хозяин добавляет/убирает каналы; канал, где бот не админ, не добавить
 #     (не сможет проверять). MAX не дал проверить (бота сняли с админа) — не запираем всех, а говорим хозяину
-srv.chats["reloader_news"] = -7001
+srv.chats["bot_app_news"] = -7001
 srv.members[-7001] = set()
 press(1, 61000, "m:cl")
 assert "m:clfs" in shown(), shown()
@@ -1517,17 +1517,17 @@ assert "p:clfsadd" in shown(), shown()
 press(1, 61000, "p:clfsadd"); msg(1, 61000, "https://max.ru/nosuchchannel")   # бота в таком канале нет
 told = OUT[-2][0] + OUT[-1][0]
 assert "nosuchchannel" in told and "администратор" in told, told                    # понятно, что проверить
-assert "-7001" in told and "reloader_news" in told, told                            # и какие каналы бот видит (с ID)
+assert "-7001" in told and "bot_app_news" in told, told                            # и какие каналы бот видит (с ID)
 assert bot.GCFG.get("force_subs") in (None, []), bot.GCFG.get("force_subs")
-press(1, 61000, "p:clfsadd"); msg(1, 61000, "https://max.ru/Reloader_NEWS")        # как прислал хозяин: другой регистр
-assert bot.GCFG["force_subs"] == [{"chat_id": -7001, "title": "reloader_news", "link": "https://max.ru/reloader_news"}], \
+press(1, 61000, "p:clfsadd"); msg(1, 61000, "https://max.ru/Bot_App_NEWS")        # как прислал хозяин: другой регистр
+assert bot.GCFG["force_subs"] == [{"chat_id": -7001, "title": "bot_app_news", "link": "https://max.ru/bot_app_news"}], \
     (bot.GCFG.get("force_subs"), OUT[-1][0])
 srv.chats["other_chan"] = -7002
 srv.deny_chats.add(-7002)
 press(1, 61000, "p:clfsadd"); msg(1, 61000, "https://max.ru/other_chan")
 assert len(bot.GCFG["force_subs"]) == 1 and "админ" in " ".join(o[0] for o in OUT[-2:]), OUT[-2:]
 msg(6100, 61100, "/start")                                           # новый, не подписан
-assert "fs:check" in shown() and "https://max.ru/reloader_news" in shown() and "Подписаться" in shown(), shown()
+assert "fs:check" in shown() and "https://max.ru/bot_app_news" in shown() and "Подписаться" in shown(), shown()
 assert bot.tenant_by_chat(61100) is None                             # кабинет — только после подписки
 press(6100, 61100, "m:ch")
 assert "fs:check" in shown(), shown()                                # всё закрыто
@@ -1544,7 +1544,7 @@ srv.deny_chats.add(-7001)                                            # бота 
 n0 = len(OUT)
 msg(6200, 62100, "/start")
 assert "fs:check" not in shown(), shown()                            # не запираем всех из-за настройки
-assert any("не могу проверить" in o[0].lower() and "reloader_news" in o[0] for o in OUT[n0:]), OUT[n0:]
+assert any("не могу проверить" in o[0].lower() and "bot_app_news" in o[0] for o in OUT[n0:]), OUT[n0:]
 srv.deny_chats.discard(-7001)
 press(1, 61000, "a:clfsdel:0")
 assert bot.GCFG["force_subs"] == []
@@ -1553,23 +1553,23 @@ print("h60 ok: 📌 обязательная подписка: не подпис
 # 61) список чатов бота из MAX (GET /chats): ответ MAX — в журнал как есть (видно, как MAX показывает канал);
 #     ссылку находим в любом виде (регистр, без https), чат любого типа; ссылки нет — по названию; убранные — нет.
 #     Не нашли — хозяин видит ВСЕ чаты бота: название, ссылку, ID, тип и статус
-for slug_ in ("reloader_news", "other_chan"):                 # каналы из h60 — убираем, тут свои
+for slug_ in ("bot_app_news", "other_chan"):                 # каналы из h60 — убираем, тут свои
     srv.chats.pop(slug_, None)
 srv.extra_chats[:] = [
-    {"chat_id": -7101, "type": "channel", "status": "active", "title": "Reloader NEWS", "link": "https://max.ru/Reloader_NEWS"},
-    {"chat_id": -7102, "type": "chat", "status": "active", "title": "Группа", "link": "max.ru/reloader_chat"},
+    {"chat_id": -7101, "type": "channel", "status": "active", "title": "Relay NEWS", "link": "https://max.ru/Bot_App_NEWS"},
+    {"chat_id": -7102, "type": "chat", "status": "active", "title": "Группа", "link": "max.ru/bot_app_chat"},
     {"chat_id": -7103, "type": "channel", "status": "active", "title": "Bravlik_News", "link": None},
     {"chat_id": -7104, "type": "channel", "status": "removed", "title": "Old", "link": "https://max.ru/old_chan"}]
-assert bot.resolve_chat_id("https://max.ru/reloader_news") == -7101
-assert bot.resolve_chat_id("@Reloader_NEWS") == -7101 and bot.resolve_chat_id("max.ru/RELOADER_NEWS/") == -7101
-assert bot.resolve_chat_id("https://max.ru/Reloader_chat") == -7102                # группа — тоже
+assert bot.resolve_chat_id("https://max.ru/bot_app_news") == -7101
+assert bot.resolve_chat_id("@Bot_App_NEWS") == -7101 and bot.resolve_chat_id("max.ru/BOT_APP_NEWS/") == -7101
+assert bot.resolve_chat_id("https://max.ru/Bot_App_chat") == -7102                # группа — тоже
 assert bot.resolve_chat_id("https://max.ru/Bravlik_News") == -7103                 # ссылки нет — по названию
 assert bot.resolve_chat_id("https://max.ru/old_chan") is None                      # бота из канала убрали
 logged = tio.rfile(bot.LOG_FILE, encoding="utf-8")
-assert "GET /chats" in logged and '"chat_id": -7101' in logged and "https://max.ru/Reloader_NEWS" in logged, logged[-600:]
+assert "GET /chats" in logged and '"chat_id": -7101' in logged and "https://max.ru/Bot_App_NEWS" in logged, logged[-600:]
 press(1, 61000, "p:clfsadd"); msg(1, 61000, "https://max.ru/no_such_one")
 told = OUT[-2][0] + OUT[-1][0]
-for bit in ("-7101", "Reloader NEWS", "channel", "-7104", "removed", "-7102", "chat"):
+for bit in ("-7101", "Relay NEWS", "channel", "-7104", "removed", "-7102", "chat"):
     assert bit in told, (bit, told)
 srv.extra_chats[:] = []
 print("h61 ok: 🔎 чаты бота из MAX: ответ MAX — в журнале; ссылка в любом виде, группа, по названию; не нашли — видно всё")
@@ -1704,7 +1704,7 @@ with bot.theme_ctx(t65):
     assert not bot.smart_hold(time.time(), [], 3600)
     bot.CFG["signature_text"] = ""
     body = bot.compose_text("Просто пост", "src")
-    assert "Reloader" not in body and "max.ru" not in body, body                     # без водяного знака
+    assert "Relay" not in body and "max.ru" not in body, body                     # без водяного знака
 press(6500, 65000, "p:chadd"); bot.record_consent(6500); press(6500, 65000, "p:chadd"); msg(6500, 65000, "@secondsource")
 with bot.theme_ctx(t65):
     assert bot.CFG["channels"] == ["firstsrc"], bot.CFG["channels"]
@@ -2125,7 +2125,7 @@ PENDING_CLEAR = [bot.PENDING.pop(u_, None) for u_ in (1, 7000)]
 print("h71 ok: 🌐 ввод — всегда «◀️ Назад» и «❌ Отмена», предупреждение «для всех тем»; ни одного экрана-тупика")
 
 # ---------- 👥 карточка покупателя, 💳 тарифы с одноразовыми кодами (Playerok) ----------
-from reloader.services.codes.store import CodeStore
+from bot_app.services.codes.store import CodeStore
 import re as _re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -2165,7 +2165,7 @@ assert "—" in t0 and "Пустой" in t0, t0
 print("h72 ok: 👤 профиль покупателя: тариф, лимиты, каналы MAX и источники, оплаты; пустые поля — «—», без падения")
 
 # ---------- коды активации: простым сообщением, без кнопок; связь лично — только через MAX ----------
-from reloader.services.codes.store import normalize_code, looks_like_code
+from bot_app.services.codes.store import normalize_code, looks_like_code
 
 def links_of(rows):
     return [b_["url"] for r in rows for b_ in r if b_.get("type") == "link"]
@@ -2325,7 +2325,7 @@ assert normalize_code("привет") is None and normalize_code("abc") is None
 print("h79 ok: 🎲 коды: 500 уникальных, 12 символов, буквы и цифры, без префикса; ввод без регистра и пробелов")
 
 # 80) 🎟 админ: своя партия/код, список активных с тарифом и датой, удаление, экспорт .txt, ссылка на бота
-bot.BOT_TITLE.update({"username": "reloader_bot"})
+bot.BOT_TITLE.update({"username": "bot_app_bot"})
 press(1, 61000, "p:codegen:0"); msg(1, 61000, "Ab12Cd34Ef56")
 assert "Добавил" in OUT[-2][0], OUT[-2][0]
 assert bot.CODES.get("AB12CD34EF56") is not None and bot.CODES.get("AB12CD34EF56")["tariff"] == "Старт"
@@ -2337,7 +2337,7 @@ press(1, 61000, "p:codegen:0"); msg(1, 61000, "Ab12Cd34Ef56")
 assert "уже" in OUT[-2][0], OUT[-2][0]
 press(1, 61000, "m:codes")
 card80 = json.dumps(OUT[-1], ensure_ascii=False)
-assert "AB12CD34EF56" in card80 and "Старт" in card80 and "https://max.ru/reloader_bot" in card80, card80[:300]
+assert "AB12CD34EF56" in card80 and "Старт" in card80 and "https://max.ru/bot_app_bot" in card80, card80[:300]
 assert "a:codesexp" in card80 and "p:coderevoke" in card80
 press(1, 61000, "p:coderevoke"); msg(1, 61000, "ab12 cd34-ef56")
 assert bot.CODES.get("AB12CD34EF56") is None and "удалён" in OUT[-2][0], OUT[-2][0]
@@ -2400,13 +2400,13 @@ assert links_of(rows82c) == ["https://max.ru/buyer72"]
 print("h82 ok: 📇 связь лично: username — ссылка MAX; без username — запрос контакта кнопкой; поделился — карточка контакта в чат хозяина")
 
 # ---------- главное меню из 6 кнопок · /admin · приветственное видео на /start ----------
-from reloader import config as APP_CONFIG
+from bot_app import config as APP_CONFIG
 
 # 83) 📋 главное меню покупателя — ровно 6 кнопок: 🎭 Мои каналы, 📅 Расписание, ⚙️ Настройки,
 #     📊 Статистика и Отчеты, 💳 Подписка (зелёная), ❓ Поддержка — прямая ссылка на профиль продавца в MAX
 BUYER6 = ["🎭 Мои каналы", "📅 Расписание", "⚙️ Настройки", "📊 Статистика и Отчеты", "💳 Подписка", "❓ Поддержка"]
 contact83 = bot.SELLER_CONTACT
-bot.SELLER_CONTACT = "@reloader_admin"
+bot.SELLER_CONTACT = "@bot_app_admin"
 press(7800, 78000, "m:main")
 bl83 = buttons_of(OUT[-1][1])
 assert [b_["text"] for b_ in bl83] == BUYER6 and len(bl83) == 6, [b_["text"] for b_ in bl83]
@@ -2417,7 +2417,7 @@ assert by83["📊 Статистика и Отчеты"]["payload"] == "m:sr"
 assert by83["💳 Подписка"].get("intent") == "positive", by83["💳 Подписка"]          # зелёная
 assert all(by83[t].get("intent") in (None, "default") for t in BUYER6 if t != "💳 Подписка"), bl83
 sup83 = by83["❓ Поддержка"]
-assert sup83["type"] == "link" and sup83["url"] == "https://max.ru/reloader_admin" and "payload" not in sup83, sup83
+assert sup83["type"] == "link" and sup83["url"] == "https://max.ru/bot_app_admin" and "payload" not in sup83, sup83
 assert not {"m:st", "m:gd", "m:anl", "m:hp", "m:cl"} & {b_.get("payload") for b_ in bl83}, bl83
 press(1, 61000, "m:main")                                                 # у хозяина «main» — панель кабинетов
 assert "m:cll:0" in shown() and "m:bview" in shown(), shown()
@@ -2607,14 +2607,14 @@ print("h89 ok: 👀 «Посмотреть меню покупателя» — �
 
 # 90) 🧑 меню покупателя — ровно 6 кнопок; в настройках «🛡 Фильтр рекламы» и «✍️ Подпись под постами»,
 #     без «Проверки каналов» и «Теста»; «📊 Статистика и Отчеты» — одна кнопка (статистика + отчёт)
-contact90, bot.SELLER_CONTACT = bot.SELLER_CONTACT, "@reloader_admin"
+contact90, bot.SELLER_CONTACT = bot.SELLER_CONTACT, "@bot_app_admin"
 OUT.clear()
 msg(9100, 91000, "/start")
 bot.SELLER_CONTACT = contact90
 b90 = buttons_of(OUT[-1][1])
 assert [b_["text"] for b_ in b90] == BUYER6, [b_["text"] for b_ in b90]
 assert [b_.get("payload") for b_ in b90[:5]] == ["m:th", "m:q", "m:more", "m:sr", "m:pay"], b90
-assert b90[4].get("intent") == "positive" and b90[5]["type"] == "link" and b90[5]["url"] == "https://max.ru/reloader_admin", b90
+assert b90[4].get("intent") == "positive" and b90[5]["type"] == "link" and b90[5]["url"] == "https://max.ru/bot_app_admin", b90
 press(9100, 91000, "m:more")
 st90 = {b_["text"]: b_.get("payload") for b_ in buttons_of(OUT[-1][1])}
 assert st90.get("📣 Рекламные публикации") == "m:adposts" and st90.get("✍️ Подпись под постами") == "m:sg", st90
@@ -3260,8 +3260,8 @@ print("h102 ok: 📢 без GET /chats (MAX с июня 2026): каналы из
 
 # 103) 🔥 тренды в host-режиме: у хозяина — всегда; покупателю — только когда хозяин включил («специально
 #      выбранным»), сама всем не выходит; бесплатный тариф — нет; у каждого кабинета своя память; сигнал — в его чат
-from reloader.services.trends import search as SE103  # noqa: E402
-from reloader.services.trends.store import AlertStore as AS103  # noqa: E402
+from bot_app.services.trends import search as SE103  # noqa: E402
+from bot_app.services.trends.store import AlertStore as AS103  # noqa: E402
 SENT103, subs103 = [], bot.GCFG.get("force_subs")
 api103, ready103, ask103 = bot.api_send, bot.ai_llm_ready, bot.ai_ask_text
 bot.api_send = lambda chat, text, rows=None, token=None: (SENT103.append((chat, text or "", rows or [])),

@@ -25,7 +25,7 @@ sys.path.insert(0, ROOT)
 from fake_max import FakeMax  # noqa: E402
 
 try:
-    from reloader.services import xpromo as X
+    from bot_app.services import xpromo as X
 except ImportError:                                     # модуля ещё нет — проверки скажут, чего не хватает
     X = None
 
@@ -59,7 +59,7 @@ def s1():
     не сохраняем; у каждой свой id; список — только кампании этого владельца; первый выход — сразу, дальше раз в
     интервал; «остановить», «возобновить» и «удалить» — только своему владельцу; возобновили — по своему расписанию
     (не раньше, чем через интервал после прошлого выхода); число часов из сообщения"""
-    assert X is not None, "нет модуля reloader.services.xpromo"
+    assert X is not None, "нет модуля bot_app.services.xpromo"
     now = [10_000.0]
     st, _ = store(clock=lambda: now[0])
     img = [{"kind": "image", "token": "tok1"}]

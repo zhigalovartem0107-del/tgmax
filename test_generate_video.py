@@ -11,7 +11,7 @@ gv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gv)
 
 assert gv.DURATION == 10.0
-assert gv.TITLE == "Reloader - Auto-posting to MAX"
+assert gv.TITLE == "Relay - Auto-posting to MAX"
 
 # 1) прозрачность текста: от 0 до 1 и обратно, без скачков за границами
 for t in [i / 10 for i in range(0, 101)]:

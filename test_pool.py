@@ -1,4 +1,4 @@
-"""Пул аккаунтов Telegram (reloader/services/telegram/pool.py) на поддельных клиентах — без сети.
+"""Пул аккаунтов Telegram (bot_app/services/telegram/pool.py) на поддельных клиентах — без сети.
 Запуск: python3 test_pool.py"""
 import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import asyncio
@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from reloader.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
+from bot_app.services.telegram.pool import AccountPool, PoolBusy, SessionError  # noqa: E402
 
 SQLITE = b"SQLite format 3\x00" + b"\x00" * 200
 

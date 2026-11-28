@@ -1,7 +1,7 @@
-"""🖼 Дашборд Reloader (свой дизайн): тема по московскому времени — 06:00–17:00 светлая, 17:00–06:00 тёмная
+"""🖼 Дашборд Relay (свой дизайн): тема по московскому времени — 06:00–17:00 светлая, 17:00–06:00 тёмная
 (#0A0A0A, белый текст, #9B30FF и #FF1493); фон — случайное фото с picsum.photos (без ключей; адрес, тип, размер
 проверяем; одно на сутки), сильно размытое под вуалью, но видное; picsum недоступен — свой премиальный градиент
-(фиолетовый, розовый, чёрный) на весь холст; водяной знак «Reloader» — на КАЖДОЙ картинке."""
+(фиолетовый, розовый, чёрный) на весь холст; водяной знак «Relay» — на КАЖДОЙ картинке."""
 import tio  # файлы в проверках — с закрытием (без ResourceWarning)
 import calendar
 import io
@@ -17,17 +17,17 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 from PIL import Image, ImageDraw, ImageFilter  # noqa: E402
 
-from reloader.services import analytics_image as A  # noqa: E402
+from bot_app.services import analytics_image as A  # noqa: E402
 
 try:
-    from reloader.services.analytics import backgrounds as BGS
+    from bot_app.services.analytics import backgrounds as BGS
 except ImportError:
     BGS = None
 try:
-    from reloader.services.analytics import potential as POT
+    from bot_app.services.analytics import potential as POT
 except ImportError:
     POT = None
-from reloader.services.analytics import predict as P  # noqa: E402
+from bot_app.services.analytics import predict as P  # noqa: E402
 
 PURPLE, PINK, WHITE, BLACK = (0x9B, 0x30, 0xFF), (0xFF, 0x14, 0x93), (0xFF, 0xFF, 0xFF), (0x0A, 0x0A, 0x0A)
 FAILS = []
@@ -241,9 +241,9 @@ def d4():
     """фон-фото без ключей: случайное фото с https://picsum.photos/1280/800 (переадресация — только на picsum.photos
     по https), тип — картинка, до 8 МБ, открывается; одно фото на сутки по МСК (кэш); сбой — без падения, повтор не
     раньше чем через 30 минут; Unsplash и его ключа больше нет"""
-    assert BGS is not None, "нет модуля reloader.services.analytics.backgrounds"
+    assert BGS is not None, "нет модуля bot_app.services.analytics.backgrounds"
     assert BGS.PICSUM_URL == "https://picsum.photos/1280/800"
-    for path in ("reloader/services/analytics/backgrounds.py", "tg_to_max.py", "README.txt"):
+    for path in ("bot_app/services/analytics/backgrounds.py", "tg_to_max.py", "README.txt"):
         src = tio.rfile(os.path.join(ROOT, path), encoding="utf-8")
         assert "UNSPLASH_ACCESS_KEY" not in src and "api.unsplash.com" not in src, (path, "Unsplash убран полностью")
     d = tempfile.mkdtemp()
@@ -295,7 +295,7 @@ POTD = {"title": "EroxBlox", "subs": 5008, "score": 74, "label": "Высокий
 
 @check
 def d5():
-    """водяной знак «Reloader» внизу справа — на КАЖДОЙ картинке: канал, сеть, прогноз, потенциал, рекламный охват;
+    """водяной знак «Relay» внизу справа — на КАЖДОЙ картинке: канал, сеть, прогноз, потенциал, рекламный охват;
     днём и ночью, с фото и без"""
     photo = busy_photo()
     for theme in ("dark", "light"):
@@ -314,7 +314,7 @@ def d5():
 def d6():
     """оценка потенциала 0–100: рост, вовлечённость, регулярность, охват — сильный канал «Высокий», слабый «Низкий»;
     чего нет — не выдумываем; охват рекламного поста — по медиане просмотров"""
-    assert POT is not None, "нет модуля reloader.services.analytics.potential"
+    assert POT is not None, "нет модуля bot_app.services.analytics.potential"
     day = 86400
     t0 = NOW - 14 * day
     strong = POT.score(50000, points=[(t0, 46000), (t0 + 7 * day, 48000), (NOW, 50500)],
@@ -370,10 +370,10 @@ def d8():
 
 @check
 def d9():
-    """водяной знак — фирменный логотип Reloader (робот со стрелками и надпись «Reloader»): в углу — его голубой
+    """водяной знак — фирменный логотип Relay (робот со стрелками и надпись «Relay»): в углу — его голубой
     цвет; логотип — прозрачный PNG (без чёрного квадрата); на светлой картинке он стоит на своей чёрной плашке,
     как в оригинале"""
-    from reloader.services.analytics import logo as LOGO
+    from bot_app.services.analytics import logo as LOGO
     lk = LOGO.lockup()
     assert lk.mode == "RGBA" and lk.size == (440, 88) and lk.getpixel((0, 0))[3] == 0, (lk.mode, lk.size)
     for theme in ("dark", "light"):
