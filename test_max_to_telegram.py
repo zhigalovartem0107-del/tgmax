@@ -45,7 +45,7 @@ class MAX:
         events, self.events = self.events, []
         return {"marker": len(self.markers), "updates": events}
 
-    def authorized(self, source):
+    def authorized(self, source, permission="read_all_messages"):
         return self.can_read and source == SOURCE
 
     def read(self, path):
@@ -249,6 +249,11 @@ with TemporaryDirectory() as temporary:
     api.forward.side_effect = MaxForwardError()
     assert bot.publish_due() and not bot.publish_due()
     assert queue.recent(OWNER)[0]["status"] == "unknown" and len(queue.recent(OWNER)) == 3
+    talk(bot, "/stats")
+    assert "MAX · опубликован — 1" in telegram.reply[-1][2]["text"]
+    talk(bot, "/check")
+    assert "доступ есть" in telegram.reply[-1][2]["text"]
+    assert api.forward.call_count == 2
     queue.close()
 
 http = Mock()

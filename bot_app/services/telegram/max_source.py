@@ -208,6 +208,30 @@ class MaxSources:
             return "Источников пока нет. Пришли ссылку на канал MAX."
         return "\n\n".join(lines) + "\n\n/source ID — включить · /remove ID — убрать источник"
 
+    def check_access(self, cid, permission):
+        try:
+            allowed = self.api.authorized(cid, permission)
+        except MaxReadError as exc:
+            return f"проверка не удалась ({exc})"
+        return "доступ есть" if allowed else "нужно выдать право"
+
+    def diagnostics(self):
+        route = self.queue.route()
+        lines = []
+        if route["target"]:
+            cid = route["target"]
+            lines.append(f"Публикация в MAX {cid} — {self.check_access(cid, 'write')}")
+        if route["pending"]:
+            lines.append(f"Жду подключения назначения max.ru/{route['pending']}")
+        active = [row for row in self.queue.max_sources() if row["since"] is not None]
+        for row in active[:3]:
+            lines.append(f"Чтение «{row['title']}» — {self.check_access(row['id'], 'read_all_messages')}")
+        if len(active) > 3:
+            lines.append(f"Проверены первые 3 из {len(active)} активных источников.")
+        if not active:
+            lines.append("Активных источников MAX пока нет. Список — /sources.")
+        return lines
+
     def remove(self, value):
         if source_link(value):
             row = self.queue.max_source_by_link(source_link(value))

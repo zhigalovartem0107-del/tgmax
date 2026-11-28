@@ -35,6 +35,7 @@ class BotQueue:
             CREATE TABLE IF NOT EXISTS max_seen (
                 source INTEGER NOT NULL, mid TEXT NOT NULL, timestamp INTEGER NOT NULL, PRIMARY KEY(source, mid)
             );
+            CREATE INDEX IF NOT EXISTS max_seen_time ON max_seen(timestamp);
             CREATE TABLE IF NOT EXISTS source_groups (key TEXT PRIMARY KEY, post_id INTEGER NOT NULL);
         """)
         # Telegram мог принять запрос до остановки процесса. Не публикуем его повторно.
@@ -199,6 +200,10 @@ class BotQueue:
     def recent(self, owner):
         return self.db.execute("SELECT id, due, status, platform FROM posts WHERE owner=? ORDER BY id DESC LIMIT 10",
                                (owner,)).fetchall()
+
+    def totals(self, owner):
+        return self.db.execute("SELECT platform, status, COUNT(*) AS count FROM posts WHERE owner=? "
+                               "GROUP BY platform, status ORDER BY platform, status", (owner,)).fetchall()
 
     def claim(self, now):
         with self.db:

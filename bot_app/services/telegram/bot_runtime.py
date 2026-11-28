@@ -29,7 +29,7 @@ COPY_LIMIT = 10
 HELP = ("/post [минуты] — новый пост\n/ad [минуты] — рекламный пост\n"
         "/news тема — новость с источниками\n/delay минуты — отложить черновик\n/preview — посмотреть черновик\n/send — добавить в очередь\n"
         "/link URL — кнопка рекламы · /pin — закрепление\n/deleteafter минуты — таймер удаления рекламы\n"
-        "/queue — последние публикации\n/cancel [номер] — отменить черновик или публикацию из очереди\n"
+        "/queue — последние публикации · /stats — итоги доставки\n/cancel [номер] — отменить черновик или публикацию из очереди\n"
         "/terms — документы\n/support — контакт\n\n"
         "Пришли пост, фото, видео, документ или перешли сообщение в этот чат. "
         "После получения всех частей нажми «В очередь».")
@@ -92,6 +92,7 @@ class TelegramBot:
         buttons = [[("Создать пост", "post"), ("Создать рекламу", "ad")], [("Новость", "news"), ("Очередь", "queue")]]
         if self.max_sources and uid == self.owner:
             buttons.append([("Источники MAX", "sources"), ("Куда публиковать", "route")])
+            buttons.append([("Проверить доступ", "check"), ("Статистика доставки", "stats")])
         rows = [[{"text": title, "callback_data": "menu:" + action} for title, action in row] for row in buttons]
         self.say(uid, (MAX_HELP + "\n\n" if self.max_sources else "") + HELP, rows)
 
@@ -194,7 +195,7 @@ class TelegramBot:
         draft = self.queue.draft(uid)
         if callback:
             action, _, ref = (callback.get("data") or "").partition(":")
-            menu = action == "menu" and ref in ("post", "ad", "news", "queue", "sources", "route")
+            menu = action == "menu" and ref in ("post", "ad", "news", "queue", "sources", "route", "check", "stats")
             route_button = action == "route" and ref in ("telegram", "max", "both")
             valid = draft and ref == draft["ref"] and (
                 action in ("cancel", "preview", "send") or (action == "pin" and draft["ad"]))
@@ -290,6 +291,19 @@ class TelegramBot:
                      "text": "", "media": False, "url": ""}
             self.queue.save(uid, draft)
             self.draft_screen(uid, draft)
+        elif command == "/check" and uid == self.owner:
+            lines = self.max_sources.diagnostics() if self.max_sources else ["MAX_SOURCE_TOKEN ещё не задан."]
+            if self.channel:
+                try:
+                    verify_target(self.api, self.channel, self.bot_id)
+                    lines.append("Telegram — право публикации подтверждено.")
+                except (BotAPIError, ValueError):
+                    lines.append("Telegram — проверь права публикации и /target.")
+            self.say(uid, "\n".join(lines))
+        elif command == "/stats":
+            counts = self.queue.totals(uid)
+            lines = [f"{r['platform']} · {STATUS[r['status']]} — {r['count']}" for r in counts]
+            self.say(uid, "\n".join(lines) or "Публикаций пока нет.")
         elif command == "/queue":
             rows = self.queue.recent(uid)
             status = [f"№{row['id']} · {row['platform']} — {STATUS[row['status']]}" for row in rows]
