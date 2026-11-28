@@ -28,6 +28,7 @@ dist_obf/
 # Настройки окружения, локальные ключи и данные рабочей копии
 .env.*
 !.env.example
+!.env.telegram.example
 *.pem
 *.key
 *.log
@@ -54,3 +55,4 @@ host_code.txt
 claim_code.txt
 channel_id.txt
 web_mode.flag
+telegram-bot.sqlite3*

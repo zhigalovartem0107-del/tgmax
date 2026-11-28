@@ -580,6 +580,14 @@ GCFG = copy.deepcopy(DEFAULTS)           # общие настройки (и з�
 GCFG.update(load_json_safe(SETTINGS_FILE, {}))      # испорчен/пропал — из резервной копии
 for _k in ("host_uids", "host_chat"):     # старые версии записывали «хозяйские» id из чужих чатов (канала) — забываем
     GCFG.pop(_k, None)
+
+
+def payment_instructions():
+    if APP_CONFIG.owner_config_in_env():
+        return APP_CONFIG.env_text("PAYMENT_INSTRUCTIONS")
+    return (GCFG.get("pay_info") or "").strip() or APP_CONFIG.env_text("PAYMENT_INSTRUCTIONS")
+
+
 def contact_ok(s):
     """Контакт продавца похож на настоящий (ник, ссылка, телефон), а не «.» или пробел."""
     return len(re.sub(r"[^\w]", "", str(s or ""))) >= 3
@@ -12350,7 +12358,7 @@ def sub_info():
             return {}
         info = {"until": c.get("until", 0), "plan": c.get("plan", ""), "mode": tenant_mode(key),
                 "themes": c.get("lim_themes", LIMIT_THEMES), "sources": c.get("lim_sources", LIMIT_SOURCES),
-                "tariffs": tariffs(), "pay": GCFG.get("pay_info", ""), "online": bool(yk_keys())}
+                "tariffs": tariffs(), "pay": payment_instructions(), "online": bool(yk_keys())}
         if info["mode"] == "free":                       # 🆓 срок кончился — лимиты бесплатного тарифа
             info.update(plan=FREE_PLAN["name"], themes=FREE_PLAN["themes"], sources=FREE_PLAN["sources"])
         return info
@@ -14150,7 +14158,7 @@ def host_pay_online(rest, uid, email=None):
         host_alert_err(code, f"ЮKassa не дала ссылку на оплату (кабинет «{(TENANTS.get(key) or {}).get('name') or key}», "
                              f"{price} ₽). Покупателю предложил оплату переводом.",
                        f"Ответ ЮKassa: {str(e)[:300]}" + ("" if ok else f"\nКлючи: {why}"))
-        how = (GCFG.get("pay_info") or "").strip() or f"реквизиты пришлёт продавец — напиши {SELLER_CONTACT}"
+        how = payment_instructions() or f"реквизиты пришлёт продавец — напиши {SELLER_CONTACT}"
         return errors.user(code, f"⚠️ Онлайн-оплата сейчас не открылась (продавец уже знает).\n\nМожно оплатить "
                                  f"переводом: «{t['name']}» на {days} дней — {price} ₽.\n{how}\n\nПосле перевода "
                                  "нажми «✅ Я оплатил» — продавец проверит и откроет доступ."), \
@@ -14183,7 +14191,7 @@ def host_pay_manual(rest, uid):
                f"Тариф: «{t['name']}» на {days} дней — {price} ₽\n\nПроверь перевод и нажми кнопку:",
                [[B("✅ Оплата пришла — открыть", f"a:clpayok:{key}")],
                 [B("❌ Не пришла", f"a:clpayno:{key}")]])
-    how = (GCFG.get("pay_info") or "").strip()
+    how = payment_instructions()
     reqs = ("Реквизиты:\n" + how) if how else "Жди — хозяин подтвердит оплату."
     return (f"✅ Заявка отправлена. {reqs}\n\n"
             f"Как подтвердят — доступ откроется, придёт сообщение. Вопросы: {SELLER_CONTACT}"), [[B("◀️ Назад", "m:pay")]]
@@ -14814,7 +14822,7 @@ def write_subscription(cid):
     save_json(os.path.join(client_dir(cid), "subscription.json"),
               {"until": c.get("until", 0), "mode": client_mode(c), "contact": SELLER_CONTACT,
                "plan": c.get("plan") or "", "themes": c.get("lim_themes", LIMIT_THEMES),
-               "sources": c.get("lim_sources", LIMIT_SOURCES), "tariffs": tariffs(), "pay": GCFG.get("pay_info", ""),
+               "sources": c.get("lim_sources", LIMIT_SOURCES), "tariffs": tariffs(), "pay": payment_instructions(),
                "online": bool(yk_keys()), "legal": legal_info()})
 
 
@@ -15762,7 +15770,7 @@ def host_screen(name, uid):
                  "У покупателя пока нет тем."),
                 [[B(f"📡 {t.name}"[:60], f"m:clsrt:{t.id}")] for t in ts] + [[B("◀️ Кабинет", f"m:clc:{key}")]])
     if kind == "cltar":
-        pay = GCFG.get("pay_info") or "— не заданы"
+        pay = payment_instructions() or "— не заданы"
         text = ("💰 Тарифы (цена за 30 дней; за 90 дней — ×2,5)\n\n" + "\n".join(tariff_line(t) for t in tariffs())
                 + f"\n\n💳 Реквизиты (ручная оплата):\n{pay}\n\n💳 Онлайн-оплата ЮKassa: " + yk_check()[1]
                 + f"\n\n📞 Мой контакт: {SELLER_CONTACT}"
@@ -16063,7 +16071,7 @@ def clients_screen(name, uid):
                  [B("📣 Написать всем клиентам", "p:clmsg")], [B("◀️ В меню", "m:main")]]
         return text, rows
     if name == "cltar":
-        pay = GCFG.get("pay_info") or "— не заданы (клиентам пишу: «напиши продавцу, он пришлёт реквизиты»)"
+        pay = payment_instructions() or "— не заданы (клиентам пишу: «напиши продавцу, он пришлёт реквизиты»)"
         text = ("💰 Тарифы (цена за 30 дней; за 90 дней — ×2,5)\n\n" + "\n".join(tariff_line(t) for t in tariffs())
                 + f"\n\n💳 Реквизиты для клиентов:\n{pay}\n\n"
                   "Клиент выбирает тариф в своём боте (кнопка «💳 Тариф и оплата»), видит реквизиты и жмёт "
@@ -16304,6 +16312,8 @@ def clients_text(action, text, uid):
             "⚠️ Это не ссылка — кнопка «❓ Поддержка» не откроет чат с тобой. Пришли ссылку на свой профиль MAX "
             "(https://max.ru/…) или @ник.") + keep), "cltar"
     if action == "clpayset":
+        if APP_CONFIG.owner_config_in_env():
+            return "Текст для ручной оплаты задаётся через PAYMENT_INSTRUCTIONS.", "cltar"
         GCFG["pay_info"] = text.strip()[:500]
         save_cfg()
         for cid in list(CLIENTS):
