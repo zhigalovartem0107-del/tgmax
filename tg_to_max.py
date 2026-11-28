@@ -31,15 +31,15 @@ for _k in [k for k in sys.modules if k == "bot_app" or k.startswith("bot_app.")]
     del sys.modules[_k]                   # каждая загрузка файла — свой, свежий пакет bot_app
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests
-import urllib3
 from requests.adapters import HTTPAdapter
 from telethon import TelegramClient
 from urllib3.util.retry import Retry
 
 from bot_app import config as APP_CONFIG
+from bot_app.core.max_tls import MAX_API_ORIGIN, configure_max_tls
 
 
-BOT_VERSION = 2026112801            # номер версии: main.py на хостинге запускает файл с самым большим номером
+BOT_VERSION = 2026112802            # номер версии: main.py на хостинге запускает файл с самым большим номером
 
 if __name__ == "__main__":
     os.umask(0o077)                     # новые файлы (токены, вход в Telegram, клиенты) — только для самого бота
@@ -251,7 +251,7 @@ def norm_phone(v):
 
 def load_config(interactive):
     cfg = {"api_id": 0, "api_hash": "", "phone": "", "max_token": "", "max_channel_link": "",
-           "max_chat_id": None, "max_api": "https://platform-api2.max.ru", "verify_ssl": False,
+           "max_chat_id": None, "max_api": MAX_API_ORIGIN, "verify_ssl": True,
            "test_repost_last": False}
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
@@ -405,13 +405,8 @@ FOOTER_DOMAINS = ["t.me", "telegram.me", "max.ru", "vk.com", "vk.ru", "vk.cc",
 MAX_API = CONFIG["max_api"].rstrip("/")   # адрес API MAX
 HEADERS = {"Authorization": MAX_TOKEN}
 
-# MAX перешёл на российский сертификат, которого нет в Pydroid/Python,
-# поэтому проверку сертификата отключаем.
-VERIFY_SSL = bool(CONFIG["verify_ssl"])
-if not VERIFY_SSL:
-    urllib3.disable_warnings()
 S = requests.Session()
-S.verify = VERIFY_SSL
+S.verify = MAX_API == MAX_API_ORIGIN or bool(CONFIG["verify_ssl"])
 # при обрыве соединения запрос повторяется сам (только до установки соединения — дублей не будет)
 try:
     _retry = Retry(total=3, connect=3, read=0, status=0, other=0, backoff_factor=1, allowed_methods=None)
@@ -420,6 +415,7 @@ except TypeError:                       # старый urllib3
 _adapter = HTTPAdapter(max_retries=_retry, pool_connections=10, pool_maxsize=20)
 S.mount("https://", _adapter)
 S.mount("http://", _adapter)
+configure_max_tls(S, max_retries=_retry, pool_connections=10, pool_maxsize=20)
 
 # t.me читаем отдельной сессией: быстро сдаёмся, если сайт недоступен (в РФ Telegram блокируют),
 # и можно пустить только его через прокси (TG_PROXY=http://user:pass@host:port) — MAX идёт напрямую.
