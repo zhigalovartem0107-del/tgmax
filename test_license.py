@@ -117,6 +117,26 @@ def t5():
 
 
 @check
+def t_legacy_max():
+    """На BotHost прежний MAX-бот продолжает стартовать со старым ключом."""
+    w = sandbox()
+    module = os.path.join(w, "bot_app/services/license.py")
+    src = tio.rfile(module, encoding="utf-8").replace(L._LEGACY_MAX_SHA256, TEST_HASH)
+    tio.wfile(src, module, "w", encoding="utf-8")
+    env = dict(os.environ, BOT_SECRET=TEST_SECRET, TG_MAX_DIR=os.path.join(w, "data"))
+    for name in ("BOT_PLATFORM", "BOT_SECRET_SHA256"):
+        env.pop(name, None)
+
+    for compatibility in ({}, {"BOT_SECRET_SHA256": "0" * 64}, {"BOT_PLATFORM": "max"}):
+        code, out = run_main(w, dict(env, **compatibility))
+        assert code == 0 and "BOT STARTED" in out, out[-500:]
+
+    for explicit in ({"BOT_PLATFORM": "max", "BOT_SECRET_SHA256": "0" * 64}, {"BOT_PLATFORM": "telegram"}):
+        code, out = run_main(w, dict(env, **explicit))
+        assert code == 3 and "BOT STARTED" not in out, out[-500:]
+
+
+@check
 def t7():
     """защита в глубину: tg_to_max.py запущен напрямую (в обход main.py) без BOT_SECRET — тоже «Unauthorized copy
     detected» и выход (ненулевой код); замок стоит раньше любой работы, даже --check не выполняется"""

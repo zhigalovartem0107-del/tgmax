@@ -7,6 +7,8 @@ import sys
 
 from bot_app.core import errors as _errors
 
+# Проверка ключа из прежнего запуска MAX без BOT_PLATFORM.
+_LEGACY_MAX_SHA256 = "2ce7077c94ee1b5c55f7ea2bda1308e0814fbf2696e2f3d4fadcc7c3294066d9"
 HASH_VAR = "BOT_SECRET_SHA256"
 ENV_VAR = "BOT_SECRET"
 UNAUTHORIZED = "Unauthorized copy detected"
@@ -32,7 +34,14 @@ def check(env=None, expected=None):
     secret = str(env.get(ENV_VAR) or "").strip()
     if not secret:
         return False, "нет переменной BOT_SECRET"
-    expected = env.get(HASH_VAR) if expected is None else expected
+    if expected is None:
+        platform = str(env.get("BOT_PLATFORM") or "").strip().lower()
+        expected = str(env.get(HASH_VAR) or "").strip()
+        # У старых инсталляций MAX мог остаться неиспользуемый хеш из новой сборки.
+        if not platform and secret_ok(secret, _LEGACY_MAX_SHA256):
+            return True, "ok"
+        if platform in ("", "max") and not expected:
+            expected = _LEGACY_MAX_SHA256
     if not re.fullmatch(r"[0-9a-fA-F]{64}", str(expected or "").strip()):
         return False, "задай BOT_SECRET_SHA256 (64 шестнадцатеричных символа)"
     if not secret_ok(secret, expected):
