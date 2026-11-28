@@ -2138,7 +2138,10 @@ def max_chats():
         except Exception as e:
             print("Список чатов бота:", type(e).__name__, e)
             break
-        out += [c for c in j.get("chats") or [] if isinstance(c.get("chat_id"), int)]
+        for chat in j.get("chats") or ():
+            cid = _cid(chat.get("chat_id")) if isinstance(chat, dict) else None
+            if cid is not None:
+                out.append(dict(chat, chat_id=cid))
         marker = j.get("marker")
         if not marker:
             break
@@ -3839,14 +3842,27 @@ def purge_cards():
             if c.get("del_at") is None and now - c.get("t", now) > 3 * 86400:
                 c["del_at"] = now
         due = [c for c in CARDS if c.get("del_at") is not None and c["del_at"] <= now]
+    completed = set()
+    retries = {}
     for c in due:
+        mid = c["mid"]
         try:
-            delete_msg(c["mid"])
+            deleted = delete_msg(mid)
         except Exception as e:
+            deleted = False
             print(errors.line("ERR_MAX_DELETE", f"карточки: {type(e).__name__}: {e}"))
+        if deleted:
+            completed.add(mid)
+        else:
+            retries[mid] = c.get("delete_attempts", 0) + 1
     if due:
         with CARDS_LOCK:
-            CARDS[:] = [c for c in CARDS if c not in due]
+            for c in CARDS:
+                attempts = retries.get(c["mid"])
+                if attempts:
+                    c["delete_attempts"] = attempts
+                    c["del_at"] = now + min(86400, 60 * 2 ** min(attempts - 1, 11))
+            CARDS[:] = [c for c in CARDS if c["mid"] not in completed]
             save_json(CARDS_FILE, CARDS)
 
 

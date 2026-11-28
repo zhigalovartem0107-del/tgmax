@@ -34,6 +34,9 @@ class MAX:
         self.events = []
         self.messages = {}
 
+    def find_channel(self, link):
+        return None
+
     def chat(self, source):
         return {"type": "channel", "link": "https://max.ru/Example_Channel", "title": "Пример"}
 
@@ -42,7 +45,7 @@ class MAX:
         events, self.events = self.events, []
         return {"marker": len(self.markers), "updates": events}
 
-    def authorized(self, source):
+    def authorized(self, source, permission="read_all_messages"):
         return self.can_read and source == SOURCE
 
     def read(self, path):
@@ -194,3 +197,75 @@ except MediaUnavailable:
 else:
     raise AssertionError("insecure download URL was allowed")
 print("MAX → Telegram: ссылки, права, PDF, сохранение после перезапуска и отказ без дублей — OK")
+
+# Два независимых назначения, включая реальный формат метаданных документа MAX.
+from unittest.mock import Mock
+from bot_app.services.telegram.max_source import MaxForwardError, MaxSourceAPI
+
+DEST = -521234567
+api = MAX()
+api.chat = lambda cid: {"type": "channel", "title": str(cid),
+                        "link": "https://max.ru/" + ("my_dest" if cid == DEST else "my_source")}
+api.authorized = lambda cid, permission="read_all_messages": (
+    cid == (SOURCE if permission == "read_all_messages" else DEST))
+api.forward = Mock()
+telegram = Telegram()
+with TemporaryDirectory() as temporary:
+    path = Path(temporary) / "routes.sqlite3"
+    queue = BotQueue(path)
+    bot = TelegramBot(telegram, queue, {OWNER, ADMIN}, TARGET, lambda: NOW, owner=OWNER)
+    bot.max_sources = adapter = MaxSources(queue, api, OWNER, TARGET, lambda: NOW)
+    bot.max_publisher = MaxPublisher(api, telegram, media)
+    talk(bot, "/start")
+    assert "/ad" in telegram.reply[-1][2]["text"] and telegram.reply[-1][2]["reply_markup"]["inline_keyboard"]
+    talk(bot, "/targetmax https://max.ru/my_dest", ADMIN)
+    assert not queue.route()["pending"]
+    talk(bot, "/targetmax https://max.ru/my_dest")
+    api.events = [{"update_type": "bot_added", "chat_id": DEST, "is_channel": True}]
+    assert "сохранён" in adapter.poll()[0]
+    assert queue.route()["target"] == DEST
+    talk(bot, f"/source {DEST}")
+    assert not queue.active_source(DEST)
+    talk(bot, f"/source {SOURCE}")
+    talk(bot, f"/targetmax {SOURCE}")
+    assert queue.route()["target"] == DEST
+    talk(bot, "/route both")
+    queue.close()
+    bot.queue = adapter.queue = queue = BotQueue(path)
+    assert queue.route()["mode"] == "both"
+
+    attachment = {"type": "file", "filename": "Схема.pdf", "size": 3, "payload": {"url": "https://example.test/pdf"}}
+    api.messages["both"] = message("both", attachments=[attachment])
+    api.events = [update(api.messages["both"])] * 2
+    adapter.poll()
+    talk(bot, "/route max")
+    assert bot.publish_due() and bot.publish_due() and not bot.publish_due()
+    api.forward.assert_called_once_with(DEST, "both")
+    assert telegram.channel[-1][1]["document"] == ("Схема.pdf", b"pdf")
+    assert len(queue.recent(OWNER)) == 2
+    api.messages["timeout"] = message("timeout", text="Тест")
+    api.events = [update(api.messages["timeout"]), update(message("loop", source=DEST))]
+    adapter.poll()
+    api.forward.side_effect = MaxForwardError()
+    assert bot.publish_due() and not bot.publish_due()
+    assert queue.recent(OWNER)[0]["status"] == "unknown" and len(queue.recent(OWNER)) == 3
+    talk(bot, "/stats")
+    assert "MAX · опубликован — 1" in telegram.reply[-1][2]["text"]
+    talk(bot, "/check")
+    assert "доступ есть" in telegram.reply[-1][2]["text"]
+    assert api.forward.call_count == 2
+    queue.close()
+
+http = Mock()
+http.post.return_value.status_code = 200
+http.post.return_value.json.return_value = {"message": {"body": {"mid": "sent"}}}
+MaxSourceAPI("fixture", http).forward(DEST, "mid.source")
+assert http.post.call_args.kwargs["params"] == {"chat_id": DEST}
+assert http.post.call_args.kwargs["json"] == {"link": {"type": "forward", "mid": "mid.source"}}
+print("MAX → MAX и оба канала: маршруты, перезапуск, документы, права, дедупликация — OK")
+
+# Бот уже состоит в закрытом канале до настройки. MAX возвращает ID строкой на второй странице.
+discovery = MaxSourceAPI("fixture", http)
+discovery.read = Mock(side_effect=[{"chats": [], "marker": 7}, {"chats": [
+    {"chat_id": str(DEST), "link": "https://max.ru/join/AbC", "type": "channel", "status": "active"}]}])
+assert discovery.find_channel("join/AbC") == DEST and discovery.read.call_args.kwargs["marker"] == 7

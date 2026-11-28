@@ -16,6 +16,10 @@ class MaxReadError(Exception):
         self.code = code
 
 
+class MaxForwardError(MaxReadError):
+    """MAX отклонил пересылку или не подтвердил доставку."""
+
+
 def source_link(value):
     try:
         url = urlsplit(value if "://" in value else f"https://{value}")
@@ -51,10 +55,47 @@ class MaxSourceAPI:
     def chat(self, cid):
         return self.read(f"/chats/{cid}")
 
-    def authorized(self, cid):
+    def find_channel(self, link):
+        marker = None
+        for _ in range(10):
+            try:
+                page = self.read("/chats", count=100, **({"marker": marker} if marker is not None else {}))
+            except MaxReadError as exc:
+                if exc.code in (403, 404, 405):
+                    return None
+                raise
+            for chat in page.get("chats") or ():
+                if (chat.get("type") == "channel" and chat.get("status") in (None, "active")
+                        and source_link(chat.get("link") or "") == link):
+                    raw = str(chat.get("chat_id") or "")
+                    if re.fullmatch(r"-?\d{1,19}", raw) and -(2**63) <= int(raw) < 2**63:
+                        return int(raw)
+            next_marker = page.get("marker")
+            if next_marker is None or next_marker == marker:
+                break
+            marker = next_marker
+        return None
+
+    def authorized(self, cid, permission="read_all_messages"):
         member = self.read(f"/chats/{cid}/members/me")
-        return member.get("is_owner") or (member.get("is_admin") and "read_all_messages" in
+        return member.get("is_owner") or (member.get("is_admin") and permission in
                                           (member.get("permissions") or ()))
+
+    def forward(self, cid, mid):
+        # После обрыва при записи MAX уже мог доставить пост.
+        try:
+            response = self.session.post(self.origin + "/messages", headers=self.headers,
+                                         params={"chat_id": cid}, json={"link": {"type": "forward", "mid": mid}},
+                                         timeout=(4, 30), allow_redirects=False)
+            if response.status_code != 200:
+                raise MaxForwardError(response.status_code)
+            data = response.json()
+            message = data.get("message") if isinstance(data, dict) else None
+            body = message.get("body") if isinstance(message, dict) else None
+            if not isinstance(body, dict) or not body.get("mid"):
+                raise MaxForwardError()
+        except (requests.RequestException, ValueError):
+            raise MaxForwardError() from None
 
     def updates(self, marker):
         query = {"limit": 100, "timeout": 0, "types": ",".join(MAX_EVENTS)}
@@ -99,14 +140,42 @@ class MaxSources:
         if not key:
             return "Пришли ссылку на канал MAX или команду /source с числовым ID."
         row = self.queue.max_source_by_link(key)
-        if row:
-            return self.activate(row["id"])
+        cid = row["id"] if row else self.api.find_channel(key)
+        if cid is not None:
+            return self.activate(cid)
         self.queue.set_max_pending(key)
         return ("Запомнил ссылку. Добавь MAX-бота в администраторы канала с правом «Читать все сообщения». "
                 "Когда MAX сообщит о подключении, источник включится. Список — /sources.")
 
+    def destination(self, value):
+        key = source_link(value)
+        raw = key or value.strip()
+        if re.fullmatch(r"-?\d{1,19}", raw) and -(2**63) <= int(raw) < 2**63:
+            return self.set_destination(int(raw))
+        if key:
+            row = self.queue.max_source_by_link(key)
+            cid = row["id"] if row else self.api.find_channel(key)
+            if cid is not None:
+                return self.set_destination(cid)
+            self.queue.pending_destination(key)
+            return ("Ссылка назначения сохранена. Добавь MAX-бота в канал с правом публикации. "
+                    "Если бот уже добавлен, укажи /targetmax ID канала из /sources.")
+        return "Пришли /targetmax со ссылкой или числовым ID канала MAX."
+
+    def set_destination(self, cid):
+        if self.queue.active_source(cid):
+            return "Этот канал уже подключён как источник. Выбери другой канал назначения."
+        chat = self.api.chat(cid)
+        if chat.get("type") != "channel" or not self.api.authorized(cid, "write"):
+            return "Для канала назначения дай MAX-боту право публиковать сообщения."
+        self.queue.remember_max(cid, source_link(chat.get("link") or ""), self.title(chat, cid))
+        self.queue.set_max_destination(cid)
+        return f"Канал назначения MAX «{self.title(chat, cid)}» сохранён. Выбери направление через /route."
+
     def activate(self, cid, info=None):
         """Проверяет доступ; транзакцией списка источников управляет вызывающий код."""
+        if cid == self.queue.route()["target"]:
+            return "Канал назначения MAX уже выбран. Подключи другой канал как источник."
         try:
             chat = self.api.chat(cid) if info is None else info
             if chat.get("type") != "channel":
@@ -119,10 +188,10 @@ class MaxSources:
                         "«Читать все сообщения» и повтори подключение.")
             raise
         self.queue.remember_max(cid, source_link(chat.get("link") or ""), self.title(chat, cid))
-        if not self.target:
+        if not self.target and self.queue.route()["mode"] == "telegram":
             return "MAX-канал найден. Подключи канал назначения через /target и пришли ссылку MAX ещё раз."
         self.queue.enable_max(cid, int(self.clock() * 1000))
-        return f"Источник «{self.title(chat, cid)}» подключён. Новые посты пойдут в Telegram."
+        return f"Источник «{self.title(chat, cid)}» подключён. Направление публикации — /route."
 
     @staticmethod
     def title(chat, cid):
@@ -138,6 +207,30 @@ class MaxSources:
         if not lines:
             return "Источников пока нет. Пришли ссылку на канал MAX."
         return "\n\n".join(lines) + "\n\n/source ID — включить · /remove ID — убрать источник"
+
+    def check_access(self, cid, permission):
+        try:
+            allowed = self.api.authorized(cid, permission)
+        except MaxReadError as exc:
+            return f"проверка не удалась ({exc})"
+        return "доступ есть" if allowed else "нужно выдать право"
+
+    def diagnostics(self):
+        route = self.queue.route()
+        lines = []
+        if route["target"]:
+            cid = route["target"]
+            lines.append(f"Публикация в MAX {cid} — {self.check_access(cid, 'write')}")
+        if route["pending"]:
+            lines.append(f"Жду подключения назначения max.ru/{route['pending']}")
+        active = [row for row in self.queue.max_sources() if row["since"] is not None]
+        for row in active[:3]:
+            lines.append(f"Чтение «{row['title']}» — {self.check_access(row['id'], 'read_all_messages')}")
+        if len(active) > 3:
+            lines.append(f"Проверены первые 3 из {len(active)} активных источников.")
+        if not active:
+            lines.append("Активных источников MAX пока нет. Список — /sources.")
+        return lines
 
     def remove(self, value):
         if source_link(value):
@@ -183,6 +276,13 @@ class MaxSources:
                 return ()
             key = source_link(info.get("link") or "")
             self.queue.remember_max(cid, key, self.title(info, cid))
+            if key and key == self.queue.route()["pending"]:
+                try:
+                    return (self.set_destination(cid),)
+                except MaxReadError as exc:
+                    if exc.code in (403, 404):
+                        return ("MAX пока не подтвердил доступ к каналу назначения. Проверь права на публикацию.",)
+                    raise
             if key in self.queue.max_pending():
                 return (self.activate(cid, info),)
             return ()

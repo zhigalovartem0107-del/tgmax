@@ -338,7 +338,7 @@ def api_with_mid(chat, text, rows=None, token=None):
     return f"m{MIDS[0]}"
 bot.api_send = api_with_mid
 DEL = []
-bot.delete_msg = lambda mid: DEL.append(mid)
+bot.delete_msg = lambda mid: DEL.append(mid) or True
 bot.CARDS.clear()
 p = item(1, "a", status="pending")
 bot.send_previews([p])
@@ -382,6 +382,21 @@ p = item(1, "a", status="pending"); bot.send_previews([p])
 bot.handle_message(1, 111, "Gh", "/approve", None)
 bot.purge_cards(); assert len(DEL) == 1
 print("11d ok: /approve чистит карточку у второго админа")
+
+# MAX временно не подтвердил удаление. Карточка остаётся на диске до следующей попытки.
+bot.CARDS.clear()
+bot.add_card(111, "transient", "retry")
+bot.drop_card("retry", 111)
+working_delete = bot.delete_msg
+bot.delete_msg = lambda mid: False
+bot.purge_cards()
+assert len(bot.CARDS) == 1 and bot.CARDS[0]["del_at"] > CLOCK[0]
+bot.delete_msg = working_delete
+bot.purge_cards()
+assert bot.CARDS
+CLOCK[0] += 61
+bot.purge_cards()
+assert not bot.CARDS and DEL[-1] == "transient"
 
 # 12) нет прав на канал (MAX 403 chat.denied): посты НЕ удаляются, админам — одно сообщение,
 #     канал не долбим каждую минуту; появились права — всё выходит

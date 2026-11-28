@@ -10,7 +10,7 @@ from itertools import groupby
 from urllib.parse import quote, urlsplit
 
 from .bot_api import BotAPIError
-from .max_source import MaxReadError
+from .max_source import MaxForwardError, MaxReadError
 
 LIMIT = 50_000_000
 POST_LIMIT = 120_000_000
@@ -126,10 +126,11 @@ class MaxPublisher:
                 raise MediaUnavailable("В посте больше десяти поддерживаемых вложений.")
             handle = stack.enter_context(tempfile.TemporaryFile())
             size = self.fetch(url, handle, min(remaining, 10_000_000 if key == "photo" else LIMIT))
-            if kind == "file" and isinstance(payload.get("size"), int) and size != payload["size"]:
+            expected = attachment.get("size", payload.get("size"))
+            if kind == "file" and isinstance(expected, int) and size != expected:
                 raise MediaUnavailable("Размер скачанного файла отличается от указанного в MAX.")
             remaining -= size
-            files.append((key, filename(payload, fallback), handle))
+            files.append((key, filename(attachment, filename(payload, fallback)), handle))
         return files
 
     def publish(self, draft):
@@ -143,15 +144,31 @@ class MaxPublisher:
             if (rec.get("chat_id") != cid or rec.get("chat_type") != "channel"
                     or message.get("has_protected_content") or message.get("protect_content")):
                 raise MediaUnavailable("MAX не подтвердил доступность этого сообщения в источнике.")
+            if draft.get("platform") == "max":
+                if cid == target or not self.max.authorized(target, "write"):
+                    raise MediaUnavailable("Проверь канал назначения MAX и право публикации.")
+                self.max.forward(target, mid)
+                return
             body = message.get("body") or {}
+            linked = message.get("link") or {}
+            if linked.get("type") == "forward" and not body.get("attachments") and not body.get("text"):
+                body = linked.get("message") or body
             text = body.get("text") or ""
             with ExitStack() as stack:
                 files = self.media(body.get("attachments") or (), draft.get("max_urls", ()), stack)
                 if not text and not files:
                     raise MediaUnavailable("В сообщении нет текста или поддерживаемых файлов.")
                 self.send(target, text, files)
+        except MaxForwardError as exc:
+            if exc.code == 429:
+                raise BotAPIError(429, retry_after=30) from exc
+            if exc.code is None or exc.code >= 500:
+                raise IncompletePost() from exc
+            raise MediaUnavailable(f"MAX отклонил пересылку (HTTP {exc.code}).") from exc
         except MaxReadError as exc:
-            raise MediaUnavailable("MAX не выдал пост или вложение.") from exc
+            if exc.code is None or exc.code == 429 or exc.code >= 500:
+                raise BotAPIError(429, retry_after=30) from exc
+            raise MediaUnavailable(f"MAX не выдал пост или вложение (HTTP {exc.code}).") from exc
 
     def send(self, target, text, files):
         sent = False
