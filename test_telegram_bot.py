@@ -167,3 +167,44 @@ else:
     raise AssertionError("network error must be sanitized")
 
 print("Telegram: права, черновики, PDF, реклама, очередь, перезапуск и неопределённая отправка — OK")
+
+with tempfile.TemporaryDirectory() as directory:
+    path = Path(directory) / "ad-actions.sqlite3"
+    queue = BotQueue(path)
+    bot = TelegramBot(FakeAPI(), queue, {OWNER}, CHANNEL, lambda: NOW[0])
+    send(80, "/ad")
+    send(81, "Объявление")
+    send(82, "/pin")
+    send(83, "/deleteafter 2")
+    send(84, "/send")
+    assert bot.publish_due()
+    assert bot.run_action() and calls[-1][0] == "pinChatMessage" and not bot.run_action()
+    queue.close()
+    bot.queue = queue = BotQueue(path)
+    NOW[0] += 120
+    response["error"] = BotAPIError(429, retry_after=20)
+    assert bot.run_action() and not bot.run_action()
+    response["error"] = None
+    NOW[0] += 20
+    assert bot.run_action() and calls[-1] == ("deleteMessage", {"chat_id": CHANNEL, "message_id": 901})
+    assert not bot.run_action()
+    queue.close()
+print("Telegram: закрепление и удаление рекламы после перезапуска — OK")
+
+with tempfile.TemporaryDirectory() as directory:
+    queue = BotQueue(Path(directory) / "news.sqlite3")
+    bot = TelegramBot(FakeAPI(), queue, {OWNER}, CHANNEL, lambda: NOW[0])
+    bot.news = Mock()
+    article = {"title": "Открыта выставка орхидей", "t": NOW[0], "source": "Газета",
+               "url": "https://example.org/orchids", "body": "Посетители увидят сто видов цветов."}
+    bot.news.search.return_value = ([dict(article, t=NOW[0] - 90000)], None)
+    send(90, "/news орхидеи")
+    assert not queue.draft(OWNER)
+    bot.news.search.return_value = ([article], None)
+    send(91, "/news орхидеи")
+    assert queue.draft(OWNER)["ids"] == [901]
+    assert article["url"] in calls[-2][1]["text"] and article["body"] in calls[-2][1]["text"]
+    send(92, "/send")
+    assert bot.publish_due()
+    assert on_channel("copyMessage")[-1]["message_id"] == 901
+    queue.close()

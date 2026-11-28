@@ -16,6 +16,14 @@ class BotQueue:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, owner INTEGER NOT NULL,
                 body TEXT NOT NULL, due INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued'
             );
+            CREATE TABLE IF NOT EXISTS telegram_actions (
+                post INTEGER NOT NULL, owner INTEGER NOT NULL, channel TEXT NOT NULL, mid INTEGER NOT NULL,
+                action TEXT NOT NULL, due INTEGER NOT NULL, deadline INTEGER NOT NULL, PRIMARY KEY(post, action)
+            );
+            CREATE INDEX IF NOT EXISTS telegram_actions_due ON telegram_actions(due);
+            CREATE TABLE IF NOT EXISTS max_route (id INTEGER PRIMARY KEY CHECK(id=1), target INTEGER,
+                pending TEXT, mode TEXT NOT NULL DEFAULT 'telegram');
+            INSERT OR IGNORE INTO max_route(id) VALUES(1);
             CREATE INDEX IF NOT EXISTS posts_due ON posts(status, due);
             CREATE TABLE IF NOT EXISTS max_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS max_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -31,6 +39,9 @@ class BotQueue:
         """)
         # Telegram мог принять запрос до остановки процесса. Не публикуем его повторно.
         with self.db:
+            columns = {row["name"] for row in self.db.execute("PRAGMA table_info(posts)")}
+            if "platform" not in columns:
+                self.db.execute("ALTER TABLE posts ADD COLUMN platform TEXT NOT NULL DEFAULT 'Telegram'")
             self.db.execute("UPDATE posts SET status='unknown', body='{}' WHERE status='sending'")
             self.db.execute("DELETE FROM source_groups WHERE post_id IN (SELECT id FROM posts WHERE status!='queued')")
 
@@ -103,6 +114,21 @@ class BotQueue:
     def set_relay_target(self, cid):
         self.db.execute("INSERT OR REPLACE INTO state VALUES ('relay_target', ?)", (cid,))
 
+    def route(self):
+        return self.db.execute("SELECT target, pending, mode FROM max_route WHERE id=1").fetchone()
+
+    def set_max_destination(self, cid):
+        self.db.execute("UPDATE max_route SET target=?, pending=NULL WHERE id=1", (cid,))
+
+    def pending_destination(self, link):
+        self.db.execute("UPDATE max_route SET pending=? WHERE id=1", (link,))
+
+    def route_mode(self, mode):
+        self.db.execute("UPDATE max_route SET mode=? WHERE id=1", (mode,))
+
+    def active_source(self, cid):
+        return self.db.execute("SELECT 1 FROM max_sources WHERE id=? AND since IS NOT NULL", (cid,)).fetchone()
+
     def max_marker(self):
         row = self.db.execute("SELECT value FROM max_state WHERE key='marker'").fetchone()
         return json.loads(row[0]) if row else None
@@ -150,17 +176,28 @@ class BotQueue:
         row = self.db.execute("SELECT since FROM max_sources WHERE id=?", (source,)).fetchone()
         if not row or row["since"] is None or timestamp <= row["since"]:
             return
+        route = self.route()
+        destinations = []
+        if target and route["mode"] in ("telegram", "both"):
+            destinations.append(("telegram", target))
+        if route["target"] and source != route["target"] and route["mode"] in ("max", "both"):
+            destinations.append(("max", route["target"]))
+        if not destinations:
+            return
         new = self.db.execute("INSERT OR IGNORE INTO max_seen VALUES (?, ?, ?)", (source, mid, timestamp)).rowcount
         if not new:
             return
         direct = [url if isinstance(url, str) and len(url) <= 4096 else None for url in urls]
-        draft = {"max_mid": mid, "max_source": source, "channel": target, "max_urls": direct}
-        self.db.execute("INSERT INTO posts(owner, body, due) VALUES (?, ?, ?)",
-                        (owner, json.dumps(draft), now))
+        for platform, channel in destinations:
+            draft = {"max_mid": mid, "max_source": source, "channel": channel, "platform": platform}
+            if platform == "telegram":
+                draft["max_urls"] = direct
+            self.db.execute("INSERT INTO posts(owner, body, due, platform) VALUES (?, ?, ?, ?)",
+                            (owner, json.dumps(draft), now, "MAX" if platform == "max" else "Telegram"))
         self.db.execute("DELETE FROM max_seen WHERE timestamp<?", ((now - 7 * 86400) * 1000,))
 
     def recent(self, owner):
-        return self.db.execute("SELECT id, due, status FROM posts WHERE owner=? ORDER BY id DESC LIMIT 10",
+        return self.db.execute("SELECT id, due, status, platform FROM posts WHERE owner=? ORDER BY id DESC LIMIT 10",
                                (owner,)).fetchall()
 
     def claim(self, now):
@@ -171,6 +208,32 @@ class BotQueue:
                 RETURNING *
             """, (now,)).fetchone()
 
+
+    def finish_ad(self, row, draft, mid, now):
+        delete_delay = draft.get("delete_after", 0) * 60
+        expires = now + 48 * 3600
+        actions = []
+        if draft.get("pin"):
+            actions.append(("pinChatMessage", now, now + delete_delay if delete_delay else expires))
+        if delete_delay:
+            actions.append(("deleteMessage", now + delete_delay, expires))
+        with self.db:
+            self.db.executemany("INSERT INTO telegram_actions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                [(row["id"], row["owner"], draft["channel"], mid, action, due, deadline)
+                                 for action, due, deadline in actions])
+            self.db.execute("UPDATE posts SET status='sent', body='{}' WHERE id=?", (row["id"],))
+
+    def next_action(self, now):
+        return self.db.execute("SELECT * FROM telegram_actions WHERE due<=? ORDER BY due, post LIMIT 1",
+                               (now,)).fetchone()
+
+    def complete_action(self, row, retry=None):
+        with self.db:
+            if retry is None:
+                self.db.execute("DELETE FROM telegram_actions WHERE post=? AND action=?", (row["post"], row["action"]))
+            else:
+                self.db.execute("UPDATE telegram_actions SET due=? WHERE post=? AND action=?",
+                                (retry, row["post"], row["action"]))
 
     def result(self, post_id, status, due=None):
         with self.db:

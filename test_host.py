@@ -1558,7 +1558,7 @@ for slug_ in ("bot_app_news", "other_chan"):                 # каналы из
 srv.extra_chats[:] = [
     {"chat_id": -7101, "type": "channel", "status": "active", "title": "Relay NEWS", "link": "https://max.ru/Bot_App_NEWS"},
     {"chat_id": -7102, "type": "chat", "status": "active", "title": "Группа", "link": "max.ru/bot_app_chat"},
-    {"chat_id": -7103, "type": "channel", "status": "active", "title": "Bravlik_News", "link": None},
+    {"chat_id": "-7103", "type": "channel", "status": "active", "title": "Bravlik_News", "link": None},
     {"chat_id": -7104, "type": "channel", "status": "removed", "title": "Old", "link": "https://max.ru/old_chan"}]
 assert bot.resolve_chat_id("https://max.ru/bot_app_news") == -7101
 assert bot.resolve_chat_id("@Bot_App_NEWS") == -7101 and bot.resolve_chat_id("max.ru/BOT_APP_NEWS/") == -7101

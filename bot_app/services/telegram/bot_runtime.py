@@ -20,21 +20,23 @@ from .bot_api import BotAPI, BotAPIError
 from .bot_queue import BotQueue
 from .max_media import IncompletePost, MaxPublisher, MediaUnavailable
 from .max_source import MaxReadError, MaxSourceAPI, MaxSources, source_link
+from .news import news_post, news_search
 from .max_webhook import PATH as WEBHOOK_PATH, receiver
 
 LOG = logging.getLogger("telegram")
 ALLOWED_MEDIA = ("photo", "video", "document", "audio", "animation", "voice", "video_note", "sticker")
 COPY_LIMIT = 10
 HELP = ("/post [минуты] — новый пост\n/ad [минуты] — рекламный пост\n"
-        "/preview — посмотреть черновик\n/send — добавить в очередь\n"
-        "/link URL — добавить кнопку к рекламе\n"
+        "/news тема — новость с источниками\n/delay минуты — отложить черновик\n/preview — посмотреть черновик\n/send — добавить в очередь\n"
+        "/link URL — кнопка рекламы · /pin — закрепление\n/deleteafter минуты — таймер удаления рекламы\n"
         "/queue — последние публикации\n/cancel [номер] — отменить черновик или публикацию из очереди\n"
         "/terms — документы\n/support — контакт\n\n"
         "Пришли пост, фото, видео, документ или перешли сообщение в этот чат. "
         "После получения всех частей нажми «В очередь».")
 MAX_HELP = ("Пришли сюда ссылку на канал MAX и добавь MAX-бота администратором с правом «Читать все сообщения». "
-            "Новые посты он перенесёт в Telegram.\n\n"
+            "Выбери, куда переносить новые посты из MAX.\n\n"
             "/target — канал назначения в Telegram\n"
+            "/targetmax — канал назначения в MAX\n/route — выбор площадки\n"
             "/sources — источники\n/source ID — подключить канал по ID\n"
             "/remove ID — отключить перенос\n/queue — последние публикации")
 STATUS = {"queued": "ждёт", "sending": "отправляется", "sent": "опубликован", "failed": "ошибка",
@@ -72,6 +74,7 @@ class TelegramBot:
         self.channel_id = channel_id
         self.max_sources = self.max_publisher = None
         self.bot_id = None
+        self.news = news_search()
 
     def say(self, chat, text, rows=None):
         params = {"chat_id": chat, "text": text, "link_preview_options": {"is_disabled": True}}
@@ -85,6 +88,32 @@ class TelegramBot:
         except BotAPIError as exc:
             LOG.warning("Не удалось отправить уведомление Telegram: %s", exc)
 
+    def menu(self, uid):
+        buttons = [[("Создать пост", "post"), ("Создать рекламу", "ad")], [("Новость", "news"), ("Очередь", "queue")]]
+        if self.max_sources and uid == self.owner:
+            buttons.append([("Источники MAX", "sources"), ("Куда публиковать", "route")])
+        rows = [[{"text": title, "callback_data": "menu:" + action} for title, action in row] for row in buttons]
+        self.say(uid, (MAX_HELP + "\n\n" if self.max_sources else "") + HELP, rows)
+
+    def routing(self, uid, mode):
+        route = self.queue.route()
+        labels = {"telegram": "Telegram", "max": "MAX", "both": "Telegram и MAX"}
+        if not mode:
+            self.say(uid, f"Посты из MAX идут в {labels[route['mode']]}.\n"
+                     f"Telegram: {self.channel or 'подключи через /target'}\n"
+                     f"MAX: {route['target'] or 'подключи через /targetmax'}",
+                     [[{"text": name, "callback_data": "route:" + key} for key, name in labels.items()]])
+            return
+        if mode not in labels:
+            self.say(uid, "Выбери площадку через /route.")
+        elif mode in ("both", "max") and not route["target"]:
+            self.say(uid, "Сначала пришли /targetmax и ссылку на свой канал MAX.")
+        elif mode in ("both", "telegram") and not self.channel:
+            self.say(uid, "Сначала пришли /target и ссылку на свой канал Telegram.")
+        else:
+            self.queue.route_mode(mode)
+            self.say(uid, f"Новые посты из MAX будут выходить в {labels[mode]}.")
+
     def draft_screen(self, chat, draft):
         n = len(draft["ids"])
         title = "Рекламный черновик" if draft["ad"] else "Черновик"
@@ -93,6 +122,11 @@ class TelegramBot:
             buttons.append([{"text": "Предпросмотр", "callback_data": f"preview:{draft['ref']}"},
                             {"text": "В очередь", "callback_data": f"send:{draft['ref']}"}])
         buttons.append([{"text": "Отменить", "callback_data": f"cancel:{draft['ref']}"}])
+        if draft["ad"]:
+            title += (" · закрепить" if draft.get("pin") else "") + (
+                f" · удалить через {draft['delete_after']} мин." if draft.get("delete_after") else "")
+            buttons.append([{"text": "Закрепление: " + ("вкл" if draft.get("pin") else "выкл"),
+                             "callback_data": "pin:" + draft["ref"]}])
         self.say(chat, f"{title}. Сообщений: {n}. Задержка: {draft['minutes']} мин.", buttons)
 
     def copy(self, owner, target, draft):
@@ -111,7 +145,12 @@ class TelegramBot:
         return self.api.call("copyMessages", message_ids=ids, **params)
 
     def draft_action(self, chat, draft, action):
-        if action == "cancel":
+        if action == "pin" and draft["ad"]:
+            draft["pin"] = not draft.get("pin", False)
+            draft["ref"] = secrets.token_hex(8)
+            self.queue.save(chat, draft)
+            self.draft_screen(chat, draft)
+        elif action == "cancel":
             self.queue.discard(chat)
             self.notice(chat, "Черновик отменён.")
         elif not draft["ids"]:
@@ -155,22 +194,42 @@ class TelegramBot:
         draft = self.queue.draft(uid)
         if callback:
             action, _, ref = (callback.get("data") or "").partition(":")
-            valid = draft and ref == draft["ref"] and action in ("cancel", "preview", "send")
+            menu = action == "menu" and ref in ("post", "ad", "news", "queue", "sources", "route")
+            route_button = action == "route" and ref in ("telegram", "max", "both")
+            valid = draft and ref == draft["ref"] and (
+                action in ("cancel", "preview", "send") or (action == "pin" and draft["ad"]))
             try:
                 self.api.call("answerCallbackQuery", callback_query_id=callback["id"],
-                              text="" if valid else "Этот черновик уже закрыт.")
+                              text="" if valid or menu or route_button else "Этот черновик уже закрыт.")
             except BotAPIError:
                 pass
             if valid:
                 self.draft_action(uid, draft, action)
-            return
+            if menu or route_button:
+                command = "/" + ref if menu else "/route"
+                arg = "" if menu else ref
+                addressed = ""
+            else:
+                return
         if addressed:
             # В личном чате Bot API присылает команды с суффиксом только как текст.
             # Сравниваем с известным именем бота в run().
             if addressed != getattr(self, "username", "") and command.startswith("/"):
                 return
         if command in ("/start", "/help"):
-            self.say(uid, MAX_HELP if self.max_sources else HELP)
+            self.menu(uid)
+        elif command in ("/route", "/targetmax"):
+            if uid != self.owner:
+                self.say(uid, "Каналы и направление меняет владелец.")
+            elif not self.max_sources:
+                self.say(uid, "Для подключения MAX задай MAX_SOURCE_TOKEN в BotHost.")
+            elif command == "/route":
+                self.routing(uid, arg.strip().lower())
+            else:
+                try:
+                    self.say(uid, self.max_sources.destination(arg.strip()))
+                except MaxReadError as exc:
+                    self.say(uid, f"Канал назначения не проверен. Проверь права бота. {exc}")
         elif command == "/target" or (self.max_sources and telegram_target(text.strip()) and not draft):
             if uid != self.owner:
                 self.say(uid, "Менять канал назначения может владелец.")
@@ -199,6 +258,22 @@ class TelegramBot:
             info = legal.merge({}, os.environ)
             links = [f"{label} — {url}" for label, url in legal.documents(info) if url]
             self.say(uid, "\n\n".join(filter(None, (legal.requisites(info), "\n".join(links)))) or "Документы пока не заданы.")
+        elif command == "/news":
+            if draft:
+                self.say(uid, "Сначала отправь текущий черновик или закрой его через /cancel.")
+                return
+            if not 2 <= len(arg.strip()) <= 120:
+                self.say(uid, "Введи тему, например /news космическая станция.")
+                return
+            items, error = self.news.search(arg.strip())
+            post = news_post(items, self.clock())
+            if not post:
+                self.say(uid, "Поиск временно недоступен." if error else "За последние сутки новостей со ссылкой по этой теме не нашлось.")
+                return
+            preview = self.say(uid, post)
+            draft = {"ref": secrets.token_hex(8), "ad": False, "minutes": 0, "ids": [preview["message_id"]]}
+            self.queue.save(uid, draft)
+            self.draft_screen(uid, draft)
         elif command in ("/post", "/ad"):
             arg = arg.strip()
             if arg and not re.fullmatch(r"[0-9]{1,5}", arg):
@@ -217,7 +292,7 @@ class TelegramBot:
             self.draft_screen(uid, draft)
         elif command == "/queue":
             rows = self.queue.recent(uid)
-            status = [f"№{row['id']} — {STATUS[row['status']]}" for row in rows]
+            status = [f"№{row['id']} · {row['platform']} — {STATUS[row['status']]}" for row in rows]
             self.say(uid, "\n".join(status) if status else "Публикаций пока нет.")
         elif command == "/cancel" and arg.strip():
             post = arg.strip()
@@ -227,6 +302,24 @@ class TelegramBot:
             self.say(uid, "Открой /post или /ad, чтобы создать черновик.")
         elif command in ("/send", "/preview", "/cancel"):
             self.draft_action(uid, draft, command[1:])
+        elif command == "/delay":
+            if not re.fullmatch(r"[0-9]{1,5}", arg.strip()) or int(arg) > 10080:
+                self.say(uid, "Укажи задержку от 0 до 10080 минут.")
+                return
+            draft["minutes"] = int(arg)
+            draft["ref"] = secrets.token_hex(8)
+            self.queue.save(uid, draft)
+            self.draft_screen(uid, draft)
+        elif command == "/pin" and draft["ad"]:
+            self.draft_action(uid, draft, "pin")
+        elif command == "/deleteafter" and draft["ad"]:
+            if not re.fullmatch(r"[0-9]{1,4}", arg.strip()) or int(arg) > 2820:
+                self.say(uid, "Укажи от 1 до 2820 минут (47 часов). Ноль отключает таймер.")
+                return
+            draft["delete_after"] = int(arg)
+            draft["ref"] = secrets.token_hex(8)
+            self.queue.save(uid, draft)
+            self.draft_screen(uid, draft)
         elif command == "/link" and draft["ad"]:
             url = arg.strip()
             try:
@@ -307,6 +400,8 @@ class TelegramBot:
             if "max_mid" in draft:
                 if not self.max_publisher:
                     raise MediaUnavailable("MAX_SOURCE_TOKEN не задан.")
+                if draft.get("platform") == "max" and self.queue.active_source(draft["channel"]):
+                    raise MediaUnavailable("Канал назначения теперь используется как источник.")
                 self.max_publisher.publish(draft)
                 sent = True
             else:
@@ -323,9 +418,37 @@ class TelegramBot:
             state = "failed" if exc.code else "unknown"
         else:
             state = "sent" if sent else "unknown"
-        self.queue.result(row["id"], state)
+        if state == "sent" and draft.get("ad") and (draft.get("pin") or draft.get("delete_after")):
+            mid = posted[0].get("message_id") if isinstance(posted[0], dict) else None
+            if isinstance(mid, int):
+                self.queue.finish_ad(row, draft, mid, int(self.clock()))
+            else:
+                state = "unknown"
+                self.queue.result(row["id"], state)
+        else:
+            self.queue.result(row["id"], state)
         if state != "sent" or "max_mid" not in draft:
-            self.notice(row["owner"], f"Пост №{row['id']} — {STATUS[state]}.{reason}")
+            platform = "MAX" if draft.get("platform") == "max" else "Telegram"
+            self.notice(row["owner"], f"Пост №{row['id']} ({platform}) — {STATUS[state]}.{reason}")
+        return True
+
+    def run_action(self):
+        now = int(self.clock())
+        row = self.queue.next_action(now)
+        if row is None:
+            return False
+        retry = None
+        try:
+            if now >= row["deadline"]:
+                raise BotAPIError(400)
+            self.api.call(row["action"], chat_id=row["channel"], message_id=row["mid"])
+        except BotAPIError as exc:
+            if exc.code in (None, 429) and now < row["deadline"]:
+                retry = min(row["deadline"], now + max(10, exc.retry_after))
+            else:
+                action = "закрепление" if row["action"] == "pinChatMessage" else "удаление"
+                self.notice(row["owner"], f"Пост №{row['post']}: Telegram не подтвердил {action}. Проверь канал и права бота.")
+        self.queue.complete_action(row, retry)
         return True
 
     def run(self, me):
@@ -341,7 +464,8 @@ class TelegramBot:
                     LOG.warning("Не удалось проверить новые посты MAX: %s", exc)
                     poll_after = time.monotonic() + 30
             try:
-                timeout = 1 if self.publish_due() else 5
+                action_ran = self.run_action()
+                timeout = 0 if self.publish_due() or action_ran else 3
                 updates = self.api.call("getUpdates", offset=self.queue.offset(), timeout=timeout,
                                         allowed_updates=["message", "callback_query", "channel_post"])
                 for update in updates:
